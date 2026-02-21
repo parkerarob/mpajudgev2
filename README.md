@@ -16,6 +16,14 @@ Frontend config:
 - Update `public/app.js` with your Firebase web config.
 - Create an admin user doc in `users/{uid}` via the Firebase console or emulator UI.
 
+Emulator seed (optional):
+```bash
+firebase emulators:start
+```
+```bash
+npm --prefix functions run seed:emulator
+```
+
 ## Deploy
 
 ```bash

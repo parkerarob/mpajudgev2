@@ -30,6 +30,10 @@ const FIELDS = {
     status: "status",
     locked: "locked",
     judgeUid: "judgeUid",
+    judgeName: "judgeName",
+    judgeEmail: "judgeEmail",
+    judgeTitle: "judgeTitle",
+    judgeAffiliation: "judgeAffiliation",
     schoolId: "schoolId",
     eventId: "eventId",
     ensembleId: "ensembleId",
@@ -54,6 +58,13 @@ const STATUSES = {
 
 const FORM_TYPES = {
   stage: "stage",
+  sight: "sight",
+};
+
+const JUDGE_POSITIONS = {
+  stage1: "stage1",
+  stage2: "stage2",
+  stage3: "stage3",
   sight: "sight",
 };
 
@@ -83,5 +94,6 @@ module.exports = {
   FIELDS,
   STATUSES,
   FORM_TYPES,
+  JUDGE_POSITIONS,
   CAPTION_TEMPLATES,
 };

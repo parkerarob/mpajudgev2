@@ -215,6 +215,10 @@ let audioDurationSec = 0;
 let captionsState = {};
 let mediaRecorder = null;
 let recordingChunks = [];
+let unsubscribeEvents = null;
+let unsubscribeActiveEvent = null;
+let unsubscribeRoster = null;
+let unsubscribeAssignments = null;
 
 function setRoleHint(message) {
   els.roleHint.textContent = message;
@@ -598,8 +602,9 @@ function bindJudgeHandlers() {
 }
 
 function watchEvents() {
+  if (unsubscribeEvents) unsubscribeEvents();
   const eventsQuery = query(collection(db, COLLECTIONS.events));
-  onSnapshot(eventsQuery, (snapshot) => {
+  unsubscribeEvents = onSnapshot(eventsQuery, (snapshot) => {
     els.eventList.innerHTML = "";
     snapshot.forEach((docSnap) => {
       const data = docSnap.data();
@@ -630,12 +635,13 @@ async function setActiveEvent(eventId) {
 }
 
 function watchActiveEvent() {
+  if (unsubscribeActiveEvent) unsubscribeActiveEvent();
   const activeQuery = query(
     collection(db, COLLECTIONS.events),
     where(FIELDS.events.isActive, "==", true)
   );
 
-  onSnapshot(activeQuery, (snapshot) => {
+  unsubscribeActiveEvent = onSnapshot(activeQuery, (snapshot) => {
     activeEvent = snapshot.docs[0]
       ? { id: snapshot.docs[0].id, ...snapshot.docs[0].data() }
       : null;
@@ -651,6 +657,7 @@ function watchActiveEvent() {
 }
 
 function watchRoster() {
+  if (unsubscribeRoster) unsubscribeRoster();
   if (!activeEvent) {
     rosterEntries = [];
     renderRosterList();
@@ -660,7 +667,7 @@ function watchRoster() {
     collection(db, COLLECTIONS.events, activeEvent.id, COLLECTIONS.schedule),
     orderBy(FIELDS.schedule.orderIndex, "asc")
   );
-  onSnapshot(rosterQuery, (snapshot) => {
+  unsubscribeRoster = onSnapshot(rosterQuery, (snapshot) => {
     rosterEntries = snapshot.docs.map((docSnap) => ({
       id: docSnap.id,
       ...docSnap.data(),
@@ -683,6 +690,7 @@ function renderAdminSchedule() {
 }
 
 function watchAssignments() {
+  if (unsubscribeAssignments) unsubscribeAssignments();
   if (!activeEvent) {
     assignments = null;
     judgePosition = null;
@@ -699,7 +707,7 @@ function watchAssignments() {
     "positions"
   );
 
-  onSnapshot(assignmentsRef, (snapshot) => {
+  unsubscribeAssignments = onSnapshot(assignmentsRef, (snapshot) => {
     assignments = snapshot.exists() ? snapshot.data() : null;
     if (!currentUser) return;
     judgePosition = detectJudgePosition(assignments, currentUser.uid);
@@ -720,6 +728,22 @@ function detectJudgePosition(assignmentsDoc, uid) {
   return null;
 }
 
+function stopWatchers() {
+  if (unsubscribeEvents) unsubscribeEvents();
+  if (unsubscribeActiveEvent) unsubscribeActiveEvent();
+  if (unsubscribeRoster) unsubscribeRoster();
+  if (unsubscribeAssignments) unsubscribeAssignments();
+  unsubscribeEvents = null;
+  unsubscribeActiveEvent = null;
+  unsubscribeRoster = null;
+  unsubscribeAssignments = null;
+}
+
+function startWatchers() {
+  watchEvents();
+  watchActiveEvent();
+}
+
 bindAuthHandlers();
 bindAdminHandlers();
 bindJudgeHandlers();
@@ -732,6 +756,7 @@ onAuthStateChanged(auth, async (user) => {
     userProfile = null;
     updateRoleUI();
     resetJudgeState();
+    stopWatchers();
     return;
   }
 
@@ -739,10 +764,8 @@ onAuthStateChanged(auth, async (user) => {
   const snap = await getDoc(userRef);
   userProfile = snap.exists() ? snap.data() : null;
   updateRoleUI();
+  startWatchers();
 });
-
-watchEvents();
-watchActiveEvent();
 
 if (firebaseConfig.apiKey === "YOUR_API_KEY") {
   setRoleHint("Update firebaseConfig in app.js to match your project.");

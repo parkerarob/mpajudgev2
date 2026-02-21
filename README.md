@@ -24,6 +24,11 @@ firebase emulators:start
 npm --prefix functions run seed:emulator
 ```
 
+Grade I lookup test:
+```bash
+node functions/scripts/test-grade1-lookup.js
+```
+
 ## Deploy
 
 ```bash

@@ -48,41 +48,10 @@ function normalizeGrade(value) {
   return null;
 }
 
-const GRADE_ONE_MAP = {
-  111: "I",
-  112: "I",
-  113: "I",
-  114: "I",
-  115: "I",
-  122: "II",
-  123: "II",
-  222: "II",
-  223: "II",
-  224: "II",
-  225: "II",
-  133: "III",
-  234: "III",
-  332: "III",
-  333: "III",
-  334: "III",
-  335: "III",
-  144: "IV",
-  345: "IV",
-  442: "IV",
-  443: "IV",
-  444: "IV",
-  445: "IV",
-  155: "V",
-  255: "V",
-  355: "V",
-  455: "V",
-  555: "V",
-};
-
-function computeGradeOneKey(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted.join("");
-}
+const {
+  GRADE_ONE_MAP,
+  computeGradeOneKey,
+} = require("./shared/grade1-lookup");
 
 async function resolvePerformanceGrade(eventId, ensembleId) {
   const db = admin.firestore();

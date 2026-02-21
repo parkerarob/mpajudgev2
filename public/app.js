@@ -69,6 +69,10 @@ const FIELDS = {
     status: "status",
     locked: "locked",
     judgeUid: "judgeUid",
+    judgeName: "judgeName",
+    judgeEmail: "judgeEmail",
+    judgeTitle: "judgeTitle",
+    judgeAffiliation: "judgeAffiliation",
     schoolId: "schoolId",
     eventId: "eventId",
     ensembleId: "ensembleId",
@@ -96,6 +100,13 @@ const JUDGE_POSITIONS = {
   stage2: "stage2",
   stage3: "stage3",
   sight: "sight",
+};
+
+const JUDGE_POSITION_LABELS = {
+  stage1: "Stage 1",
+  stage2: "Stage 2",
+  stage3: "Stage 3",
+  sight: "Sight",
 };
 
 const FORM_TYPES = {
@@ -184,6 +195,7 @@ const els = {
   stage2UidInput: document.getElementById("stage2UidInput"),
   stage3UidInput: document.getElementById("stage3UidInput"),
   sightUidInput: document.getElementById("sightUidInput"),
+  packetView: document.getElementById("packetView"),
   activeEventDisplay: document.getElementById("activeEventDisplay"),
   judgePositionDisplay: document.getElementById("judgePositionDisplay"),
   rosterSearch: document.getElementById("rosterSearch"),
@@ -200,6 +212,9 @@ const els = {
   captionTotal: document.getElementById("captionTotal"),
   finalRating: document.getElementById("finalRating"),
   submitBtn: document.getElementById("submitBtn"),
+  directorCard: document.getElementById("directorCard"),
+  directorHint: document.getElementById("directorHint"),
+  directorPackets: document.getElementById("directorPackets"),
 };
 
 let currentUser = null;
@@ -219,6 +234,7 @@ let unsubscribeEvents = null;
 let unsubscribeActiveEvent = null;
 let unsubscribeRoster = null;
 let unsubscribeAssignments = null;
+let unsubscribeDirectorPackets = null;
 
 function setRoleHint(message) {
   els.roleHint.textContent = message;
@@ -238,6 +254,7 @@ function updateRoleUI() {
   if (!userProfile) {
     els.adminCard.style.display = "none";
     els.judgeCard.style.display = "none";
+    els.directorCard.style.display = "none";
     setRoleHint("No user profile. Create one for judge or director.");
     return;
   }
@@ -245,6 +262,8 @@ function updateRoleUI() {
   setRoleHint(`Role: ${userProfile.role || "unknown"}`);
   els.adminCard.style.display = userProfile.role === "admin" ? "grid" : "none";
   els.judgeCard.style.display = userProfile.role === "judge" ? "grid" : "none";
+  els.directorCard.style.display =
+    userProfile.role === "director" ? "grid" : "none";
 }
 
 function resetJudgeState() {
@@ -276,6 +295,59 @@ function computeFinalRating(total) {
   if (total >= 25 && total <= 31) return { label: "IV", value: 4 };
   if (total >= 32 && total <= 35) return { label: "V", value: 5 };
   return { label: "N/A", value: null };
+}
+
+function normalizeGrade(value) {
+  if (!value) return null;
+  const text = String(value).trim().toUpperCase();
+  const roman = ["I", "II", "III", "IV", "V", "VI"];
+  if (roman.includes(text)) return text;
+  const num = Number(text);
+  if (!Number.isNaN(num) && num >= 1 && num <= 6) return roman[num - 1];
+  return null;
+}
+
+function mapOverallLabelFromTotal(total) {
+  if (total >= 4 && total <= 6) return "I";
+  if (total >= 7 && total <= 10) return "II";
+  if (total >= 11 && total <= 14) return "III";
+  if (total >= 15 && total <= 18) return "IV";
+  if (total >= 19 && total <= 20) return "V";
+  return "N/A";
+}
+
+function mapGradeOneLabelFromTotal(total) {
+  if (total >= 3 && total <= 4) return "I";
+  if (total >= 5 && total <= 7) return "II";
+  if (total >= 8 && total <= 10) return "III";
+  if (total >= 11 && total <= 13) return "IV";
+  if (total >= 14 && total <= 15) return "V";
+  return "N/A";
+}
+
+function computeOverallPacketRating(grade, stageScores, sightScore) {
+  const normalizedGrade = normalizeGrade(grade);
+  const stageValues = stageScores.filter((value) => Number.isFinite(value));
+  if (normalizedGrade === "I") {
+    if (stageValues.length !== 3) return { label: "N/A", value: null };
+    const total = stageValues.reduce((sum, value) => sum + value, 0);
+    const label = mapGradeOneLabelFromTotal(total);
+    return { label, value: label === "N/A" ? null : label };
+  }
+
+  if (stageValues.length !== 3 || !Number.isFinite(sightScore)) {
+    return { label: "N/A", value: null };
+  }
+
+  const [s1, s2, s3] = stageValues;
+  if (s1 === s2 && s2 === s3 && [3, 4, 5].includes(s1)) {
+    const unanimousLabel = ["I", "II", "III", "IV", "V"][s1 - 1] || "N/A";
+    return { label: unanimousLabel, value: unanimousLabel };
+  }
+
+  const total = s1 + s2 + s3 + sightScore;
+  const label = mapOverallLabelFromTotal(total);
+  return { label, value: label === "N/A" ? null : label };
 }
 
 function renderCaptionForm() {
@@ -421,6 +493,12 @@ async function handleSubmit(event) {
     [FIELDS.submissions.status]: STATUSES.submitted,
     [FIELDS.submissions.locked]: true,
     [FIELDS.submissions.judgeUid]: currentUser.uid,
+    [FIELDS.submissions.judgeName]:
+      userProfile?.displayName || currentUser.displayName || "",
+    [FIELDS.submissions.judgeEmail]:
+      userProfile?.email || currentUser.email || "",
+    [FIELDS.submissions.judgeTitle]: userProfile?.title || "",
+    [FIELDS.submissions.judgeAffiliation]: userProfile?.affiliation || "",
     [FIELDS.submissions.schoolId]: selectedRosterEntry.schoolId,
     [FIELDS.submissions.eventId]: activeEvent.id,
     [FIELDS.submissions.ensembleId]: selectedRosterEntry.ensembleId,
@@ -482,6 +560,10 @@ function bindAuthHandlers() {
       },
       { merge: true }
     );
+    const snap = await getDoc(userRef);
+    userProfile = snap.exists() ? snap.data() : null;
+    updateRoleUI();
+    startWatchers();
   });
 }
 
@@ -685,7 +767,359 @@ function renderAdminSchedule() {
       <div><strong>${entry.stageTime}</strong> — ${entry.ensembleId}</div>
       <div class="hint">School: ${entry.schoolId} | Order ${entry.orderIndex}</div>
     `;
+    const packetBtn = document.createElement("button");
+    packetBtn.textContent = "View Packet";
+    packetBtn.addEventListener("click", () => loadPacketView(entry));
+    li.appendChild(packetBtn);
     els.scheduleList.appendChild(li);
+  });
+}
+
+async function fetchEnsembleGrade(ensembleId) {
+  const ensembleRef = doc(db, COLLECTIONS.ensembles, ensembleId);
+  const ensembleSnap = await getDoc(ensembleRef);
+  if (ensembleSnap.exists()) {
+    return normalizeGrade(ensembleSnap.data().performanceGrade);
+  }
+  return null;
+}
+
+async function fetchPacketSubmissions(eventId, ensembleId) {
+  const positions = [
+    JUDGE_POSITIONS.stage1,
+    JUDGE_POSITIONS.stage2,
+    JUDGE_POSITIONS.stage3,
+    JUDGE_POSITIONS.sight,
+  ];
+  const submissions = {};
+  await Promise.all(
+    positions.map(async (position) => {
+      const submissionId = `${eventId}_${ensembleId}_${position}`;
+      const submissionRef = doc(db, COLLECTIONS.submissions, submissionId);
+      const submissionSnap = await getDoc(submissionRef);
+      submissions[position] = submissionSnap.exists()
+        ? { id: submissionSnap.id, ...submissionSnap.data() }
+        : null;
+    })
+  );
+  return submissions;
+}
+
+function isSubmissionComplete(submission) {
+  if (!submission) return false;
+  if (!submission.locked) return false;
+  if (submission.status !== STATUSES.submitted) return false;
+  if (!submission.audioUrl) return false;
+  if (!submission.captions) return false;
+  if (Object.keys(submission.captions).length < 7) return false;
+  if (!Number.isFinite(submission.captionScoreTotal)) return false;
+  if (!Number.isFinite(submission.computedFinalRatingJudge)) return false;
+  return true;
+}
+
+function computePacketSummary(grade, submissions) {
+  const normalizedGrade = normalizeGrade(grade);
+  const requiredPositions =
+    normalizedGrade === "I"
+      ? [JUDGE_POSITIONS.stage1, JUDGE_POSITIONS.stage2, JUDGE_POSITIONS.stage3]
+      : [
+          JUDGE_POSITIONS.stage1,
+          JUDGE_POSITIONS.stage2,
+          JUDGE_POSITIONS.stage3,
+          JUDGE_POSITIONS.sight,
+        ];
+
+  const requiredComplete = requiredPositions.every((position) =>
+    isSubmissionComplete(submissions[position])
+  );
+  const requiredReleased = requiredPositions.every(
+    (position) => submissions[position]?.status === STATUSES.released
+  );
+
+  const stageScores = [
+    submissions.stage1?.computedFinalRatingJudge,
+    submissions.stage2?.computedFinalRatingJudge,
+    submissions.stage3?.computedFinalRatingJudge,
+  ];
+  const sightScore = submissions.sight?.computedFinalRatingJudge;
+  const overall = computeOverallPacketRating(
+    normalizedGrade,
+    stageScores,
+    sightScore
+  );
+
+  return {
+    grade: normalizedGrade,
+    requiredPositions,
+    requiredComplete,
+    requiredReleased,
+    overall,
+  };
+}
+
+function renderSubmissionCard(submission, position) {
+  const card = document.createElement("div");
+  card.className = "packet-card";
+  if (!submission) {
+    card.innerHTML = `
+      <div class="badge">${JUDGE_POSITION_LABELS[position]}</div>
+      <div class="note">No submission yet.</div>
+    `;
+    return card;
+  }
+
+  const header = document.createElement("div");
+  header.className = "row";
+  header.innerHTML = `
+    <span class="badge">${JUDGE_POSITION_LABELS[position]}</span>
+    <span class="note">Status: ${submission.status || "unknown"}</span>
+    <span class="note">Locked: ${submission.locked ? "yes" : "no"}</span>
+  `;
+
+  const judgeInfo = document.createElement("div");
+  judgeInfo.className = "note";
+  const judgeName = submission.judgeName || submission.judgeUid || "Unknown";
+  const judgeEmail = submission.judgeEmail || "No email";
+  const judgeTitle = submission.judgeTitle || "";
+  judgeInfo.textContent = `${judgeName} • ${judgeEmail}${judgeTitle ? ` • ${judgeTitle}` : ""}`;
+
+  const audio = document.createElement("audio");
+  audio.controls = true;
+  audio.className = "audio";
+  if (submission.audioUrl) {
+    audio.src = submission.audioUrl;
+  }
+
+  const captionSummary = document.createElement("div");
+  captionSummary.className = "caption-grid";
+  const captions = submission.captions || {};
+  Object.entries(captions).forEach(([key, value]) => {
+    const row = document.createElement("div");
+    row.className = "caption-row";
+    const gradeDisplay = `${value.gradeLetter || ""}${value.gradeModifier || ""}`;
+    row.innerHTML = `
+      <strong>${key}</strong>
+      <div>Grade: ${gradeDisplay}</div>
+      <div>${value.comment || ""}</div>
+    `;
+    captionSummary.appendChild(row);
+  });
+
+  const transcript = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = "Transcript";
+  transcript.appendChild(summary);
+  const transcriptBody = document.createElement("div");
+  transcriptBody.className = "note";
+  transcriptBody.textContent = submission.transcript || "No transcript.";
+  transcript.appendChild(transcriptBody);
+
+  const footer = document.createElement("div");
+  footer.className = "note";
+  footer.textContent = `Caption Total: ${submission.captionScoreTotal || 0} • Final Rating: ${submission.computedFinalRatingLabel || "N/A"}`;
+
+  card.appendChild(header);
+  card.appendChild(judgeInfo);
+  card.appendChild(audio);
+  card.appendChild(captionSummary);
+  card.appendChild(transcript);
+  card.appendChild(footer);
+
+  return card;
+}
+
+async function loadPacketView(entry) {
+  if (!activeEvent) return;
+  els.packetView.innerHTML = "";
+  const grade = await fetchEnsembleGrade(entry.ensembleId);
+  const submissions = await fetchPacketSubmissions(
+    activeEvent.id,
+    entry.ensembleId
+  );
+  const summary = computePacketSummary(grade, submissions);
+
+  const header = document.createElement("div");
+  header.className = "packet-header";
+  header.innerHTML = `
+    <div><strong>Ensemble:</strong> ${entry.ensembleId}</div>
+    <div class="note">School: ${entry.schoolId}</div>
+    <div class="note">Grade: ${summary.grade || "Unknown"}</div>
+    <div class="note">Overall: ${summary.overall.label}</div>
+    <div class="note">Released: ${summary.requiredReleased ? "yes" : "no"}</div>
+  `;
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const releaseBtn = document.createElement("button");
+  releaseBtn.textContent = "Release Packet";
+  releaseBtn.disabled =
+    !summary.requiredComplete || summary.requiredReleased || !summary.grade;
+  releaseBtn.addEventListener("click", async () => {
+    const releasePacket = httpsCallable(functions, "releasePacket");
+    await releasePacket({
+      eventId: activeEvent.id,
+      ensembleId: entry.ensembleId,
+    });
+    await loadPacketView(entry);
+  });
+
+  const unreleaseBtn = document.createElement("button");
+  unreleaseBtn.textContent = "Unrelease Packet";
+  unreleaseBtn.className = "ghost";
+  unreleaseBtn.disabled = !summary.requiredReleased;
+  unreleaseBtn.addEventListener("click", async () => {
+    const unreleasePacket = httpsCallable(functions, "unreleasePacket");
+    await unreleasePacket({
+      eventId: activeEvent.id,
+      ensembleId: entry.ensembleId,
+    });
+    await loadPacketView(entry);
+  });
+
+  actions.appendChild(releaseBtn);
+  actions.appendChild(unreleaseBtn);
+
+  const grid = document.createElement("div");
+  grid.className = "packet-grid";
+  Object.values(JUDGE_POSITIONS).forEach((position) => {
+    const submission = submissions[position];
+    const card = renderSubmissionCard(submission, position);
+    if (submission) {
+      const lockRow = document.createElement("div");
+      lockRow.className = "actions";
+      const unlockBtn = document.createElement("button");
+      unlockBtn.textContent = "Unlock";
+      unlockBtn.className = "ghost";
+      unlockBtn.disabled = submission.locked === false;
+      unlockBtn.addEventListener("click", async () => {
+        const unlockSubmission = httpsCallable(functions, "unlockSubmission");
+        await unlockSubmission({
+          eventId: activeEvent.id,
+          ensembleId: entry.ensembleId,
+          judgePosition: submission.judgePosition,
+        });
+        await loadPacketView(entry);
+      });
+
+      const lockBtn = document.createElement("button");
+      lockBtn.textContent = "Lock";
+      lockBtn.disabled = submission.locked === true;
+      lockBtn.addEventListener("click", async () => {
+        const lockSubmission = httpsCallable(functions, "lockSubmission");
+        await lockSubmission({
+          eventId: activeEvent.id,
+          ensembleId: entry.ensembleId,
+          judgePosition: submission.judgePosition,
+        });
+        await loadPacketView(entry);
+      });
+
+      lockRow.appendChild(unlockBtn);
+      lockRow.appendChild(lockBtn);
+      card.appendChild(lockRow);
+    }
+    grid.appendChild(card);
+  });
+
+  els.packetView.appendChild(header);
+  els.packetView.appendChild(actions);
+  els.packetView.appendChild(grid);
+  if (!summary.requiredComplete && !summary.requiredReleased) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent =
+      "Packet incomplete. Release requires all required submissions locked and submitted.";
+    els.packetView.appendChild(empty);
+  }
+}
+
+function renderDirectorPackets(groups) {
+  els.directorPackets.innerHTML = "";
+  if (!groups.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No released packets yet.";
+    els.directorPackets.appendChild(empty);
+    return;
+  }
+
+  groups.forEach((group) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "packet";
+
+    const header = document.createElement("div");
+    header.className = "packet-header";
+    header.innerHTML = `
+      <div><strong>Ensemble:</strong> ${group.ensembleId}</div>
+      <div class="note">Event: ${group.eventId}</div>
+      <div class="note">Grade: ${group.grade || "Unknown"}</div>
+      <div class="note">Overall: ${group.overall.label}</div>
+    `;
+
+    const grid = document.createElement("div");
+    grid.className = "packet-grid";
+    Object.values(JUDGE_POSITIONS).forEach((position) => {
+      const submission = group.submissions[position];
+      if (submission && submission.status === STATUSES.released) {
+        grid.appendChild(renderSubmissionCard(submission, position));
+      }
+    });
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(grid);
+    els.directorPackets.appendChild(wrapper);
+  });
+}
+
+function watchDirectorPackets() {
+  if (unsubscribeDirectorPackets) unsubscribeDirectorPackets();
+  if (!userProfile || userProfile.role !== "director") {
+    els.directorHint.textContent = "";
+    return;
+  }
+  if (!userProfile.schoolId) {
+    els.directorHint.textContent =
+      "Director profile missing schoolId. Update user profile or school membership.";
+    return;
+  }
+
+  const submissionsQuery = query(
+    collection(db, COLLECTIONS.submissions),
+    where(FIELDS.submissions.schoolId, "==", userProfile.schoolId),
+    where(FIELDS.submissions.status, "==", STATUSES.released)
+  );
+
+  unsubscribeDirectorPackets = onSnapshot(submissionsQuery, async (snapshot) => {
+    const grouped = {};
+    snapshot.docs.forEach((docSnap) => {
+      const data = docSnap.data();
+      const key = `${data.eventId}_${data.ensembleId}`;
+      if (!grouped[key]) {
+        grouped[key] = {
+          eventId: data.eventId,
+          ensembleId: data.ensembleId,
+          submissions: {},
+        };
+      }
+      grouped[key].submissions[data.judgePosition] = {
+        id: docSnap.id,
+        ...data,
+      };
+    });
+
+    const groups = await Promise.all(
+      Object.values(grouped).map(async (group) => {
+        const grade = await fetchEnsembleGrade(group.ensembleId);
+        const summary = computePacketSummary(grade, group.submissions);
+        return {
+          ...group,
+          grade,
+          overall: summary.overall,
+        };
+      })
+    );
+
+    renderDirectorPackets(groups);
   });
 }
 
@@ -733,15 +1167,18 @@ function stopWatchers() {
   if (unsubscribeActiveEvent) unsubscribeActiveEvent();
   if (unsubscribeRoster) unsubscribeRoster();
   if (unsubscribeAssignments) unsubscribeAssignments();
+  if (unsubscribeDirectorPackets) unsubscribeDirectorPackets();
   unsubscribeEvents = null;
   unsubscribeActiveEvent = null;
   unsubscribeRoster = null;
   unsubscribeAssignments = null;
+  unsubscribeDirectorPackets = null;
 }
 
 function startWatchers() {
   watchEvents();
   watchActiveEvent();
+  watchDirectorPackets();
 }
 
 bindAuthHandlers();

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MPA Judge</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">MPA Judge</p>
+        <h1>Phase 1 Admin + Judge Console</h1>
+        <p class="lede">
+          Minimal scaffolding for active events, roster, assignments, and
+          submissions.
+        </p>
+      </div>
+      <div class="auth-status" id="authStatus">Signed out</div>
+    </header>
+
+    <main class="grid">
+      <section class="card" id="authCard">
+        <h2>Sign In</h2>
+        <form id="emailForm" class="stack">
+          <label>
+            Email
+            <input type="email" id="emailInput" required />
+          </label>
+          <label>
+            Password
+            <input type="password" id="passwordInput" required />
+          </label>
+        <div class="row">
+          <button type="submit">Email Sign In</button>
+          <button type="button" id="anonymousBtn">Anonymous Sign In</button>
+        </div>
+      </form>
+        <div class="stack">
+          <label>
+            Role (self-create)
+            <select id="roleSelect">
+              <option value="judge">judge</option>
+              <option value="director">director</option>
+            </select>
+          </label>
+          <label>
+            School ID (required for director)
+            <input type="text" id="schoolIdInput" placeholder="school_001" />
+          </label>
+          <button type="button" id="createUserBtn">Create User Profile</button>
+        </div>
+      <div class="row">
+        <button type="button" id="signOutBtn" class="ghost" disabled>
+          Sign Out
+        </button>
+      </div>
+        <div class="note" id="roleHint"></div>
+      </section>
+
+      <section class="card" id="adminCard">
+        <h2>Admin Tools</h2>
+        <div class="stack">
+          <div>
+            <h3>Active Event</h3>
+            <div class="row">
+              <input type="text" id="eventNameInput" placeholder="New event name" />
+              <button type="button" id="createEventBtn">Create Event</button>
+            </div>
+            <ul id="eventList" class="list"></ul>
+          </div>
+
+          <div>
+            <h3>Schedule Roster</h3>
+            <p class="hint">Active event schedule only.</p>
+            <form id="scheduleForm" class="stack">
+              <label>
+                Order Index
+                <input type="number" id="orderIndexInput" min="1" required />
+              </label>
+              <label>
+                Stage Time
+                <input type="text" id="stageTimeInput" placeholder="10:30 AM" required />
+              </label>
+              <label>
+                School ID
+                <input type="text" id="scheduleSchoolIdInput" required />
+              </label>
+              <label>
+                Ensemble ID
+                <input type="text" id="scheduleEnsembleIdInput" required />
+              </label>
+              <button type="submit">Add Schedule Entry</button>
+            </form>
+            <ul id="scheduleList" class="list"></ul>
+          </div>
+
+          <div>
+            <h3>Judge Assignments</h3>
+            <form id="assignmentsForm" class="stack">
+              <label>
+                Stage 1 UID
+                <input type="text" id="stage1UidInput" />
+              </label>
+              <label>
+                Stage 2 UID
+                <input type="text" id="stage2UidInput" />
+              </label>
+              <label>
+                Stage 3 UID
+                <input type="text" id="stage3UidInput" />
+              </label>
+              <label>
+                Sight UID
+                <input type="text" id="sightUidInput" />
+              </label>
+              <button type="submit">Save Assignments</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" id="judgeCard">
+        <h2>Judge Console</h2>
+        <div class="stack">
+          <div>
+            <h3>Active Event</h3>
+            <div id="activeEventDisplay" class="note">No active event.</div>
+            <div id="judgePositionDisplay" class="note"></div>
+          </div>
+
+          <div>
+            <h3>Roster</h3>
+            <input type="search" id="rosterSearch" placeholder="Search roster" />
+            <ul id="rosterList" class="list"></ul>
+          </div>
+
+          <div>
+            <h3>Submission</h3>
+            <div class="note" id="submissionHint">Select an ensemble to begin.</div>
+            <form id="submissionForm" class="stack">
+              <label>
+                Recording
+                <div class="row">
+                  <button type="button" id="recordBtn">Record</button>
+                  <button type="button" id="stopBtn" disabled>Stop</button>
+                  <span id="recordingStatus" class="hint"></span>
+                </div>
+                <audio id="playback" controls class="audio"></audio>
+              </label>
+              <label>
+                Transcript
+                <textarea id="transcriptInput" rows="4"></textarea>
+              </label>
+              <button type="button" id="draftBtn">Draft Captions from Transcript</button>
+              <div id="captionForm" class="stack"></div>
+              <div class="row">
+                <div class="note">Caption Total: <span id="captionTotal">0</span></div>
+                <div class="note">Final Rating: <span id="finalRating">N/A</span></div>
+              </div>
+              <button type="submit" id="submitBtn">Submit</button>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

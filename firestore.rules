@@ -98,6 +98,8 @@ service cloud.firestore {
         || (isJudge()
           && resource.data.judgeUid == request.auth.uid
           && resource.data.locked == false
+          && resource.data.status == "submitted"
+          && request.resource.data.locked == resource.data.locked
           && request.resource.data.judgeUid == resource.data.judgeUid
           && request.resource.data.eventId == resource.data.eventId
           && request.resource.data.ensembleId == resource.data.ensembleId

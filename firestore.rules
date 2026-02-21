@@ -1,0 +1,114 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userRole() {
+      return userData().role;
+    }
+
+    function userSchoolId() {
+      return userData().schoolId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && userRole() == "admin";
+    }
+
+    function isJudge() {
+      return isSignedIn() && userRole() == "judge";
+    }
+
+    function isDirector() {
+      return isSignedIn() && userRole() == "director";
+    }
+
+    function isDirectorForSchool(schoolId) {
+      return isDirector()
+        && get(/databases/$(database)/documents/schools/$(schoolId))
+          .data.directors[request.auth.uid] == true;
+    }
+
+    function isActiveEvent(eventId) {
+      return get(/databases/$(database)/documents/events/$(eventId))
+        .data.isActive == true;
+    }
+
+    match /users/{userId} {
+      allow read: if isAdmin() || request.auth.uid == userId;
+      allow create: if isAdmin()
+        || (request.auth.uid == userId
+          && request.resource.data.role in ["judge", "director"]);
+      allow update: if isAdmin()
+        || (request.auth.uid == userId
+          && request.resource.data.role == resource.data.role);
+      allow delete: if isAdmin();
+    }
+
+    match /schools/{schoolId} {
+      allow read: if isAdmin() || isDirectorForSchool(schoolId);
+      allow write: if isAdmin();
+    }
+
+    match /ensembles/{ensembleId} {
+      allow read: if isAdmin()
+        || isDirectorForSchool(resource.data.schoolId);
+      allow create: if isAdmin()
+        || isDirectorForSchool(request.resource.data.schoolId);
+      allow update: if isAdmin()
+        || (isDirectorForSchool(resource.data.schoolId)
+          && request.resource.data.schoolId == resource.data.schoolId);
+      allow delete: if isAdmin();
+    }
+
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+
+      match /schedule/{entryId} {
+        allow read: if (isAdmin() || isJudge()) && isActiveEvent(eventId);
+        allow write: if isAdmin();
+      }
+
+      match /assignments/{assignmentId} {
+        allow read: if isAdmin() || isJudge();
+        allow write: if isAdmin();
+      }
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isAdmin()
+        || (isJudge() && resource.data.judgeUid == request.auth.uid)
+        || (isDirectorForSchool(resource.data.schoolId)
+          && resource.data.status == "released");
+
+      allow create: if isJudge()
+        && request.resource.data.judgeUid == request.auth.uid
+        && request.resource.data.status == "submitted"
+        && request.resource.data.locked == true;
+
+      allow update: if isAdmin()
+        || (isJudge()
+          && resource.data.judgeUid == request.auth.uid
+          && resource.data.locked == false
+          && request.resource.data.judgeUid == resource.data.judgeUid
+          && request.resource.data.eventId == resource.data.eventId
+          && request.resource.data.ensembleId == resource.data.ensembleId
+          && request.resource.data.judgePosition == resource.data.judgePosition
+          && request.resource.data.status == resource.data.status);
+
+      allow delete: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

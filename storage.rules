@@ -1,0 +1,55 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userData() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userRole() {
+      return userData().role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && userRole() == "admin";
+    }
+
+    function isJudge() {
+      return isSignedIn() && userRole() == "judge";
+    }
+
+    function isDirector() {
+      return isSignedIn() && userRole() == "director";
+    }
+
+    function isDirectorForSchool(schoolId) {
+      return isDirector()
+        && firestore.get(/databases/(default)/documents/schools/$(schoolId))
+          .data.directors[request.auth.uid] == true;
+    }
+
+    function submissionDoc(submissionId) {
+      return firestore.get(
+        /databases/(default)/documents/submissions/$(submissionId)
+      ).data;
+    }
+
+    match /audio/{judgeUid}/{submissionId}/{fileName} {
+      allow read: if isAdmin()
+        || (isJudge() && request.auth.uid == judgeUid)
+        || (isDirectorForSchool(submissionDoc(submissionId).schoolId)
+          && submissionDoc(submissionId).status == "released");
+
+      allow write: if isAdmin()
+        || (isJudge() && request.auth.uid == judgeUid);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

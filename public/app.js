@@ -317,12 +317,43 @@ function mapOverallLabelFromTotal(total) {
 }
 
 function mapGradeOneLabelFromTotal(total) {
-  if (total >= 3 && total <= 4) return "I";
-  if (total >= 5 && total <= 7) return "II";
-  if (total >= 8 && total <= 10) return "III";
-  if (total >= 11 && total <= 13) return "IV";
-  if (total >= 14 && total <= 15) return "V";
   return "N/A";
+}
+
+const GRADE_ONE_MAP = {
+  111: "I",
+  112: "I",
+  113: "I",
+  114: "I",
+  115: "I",
+  122: "II",
+  123: "II",
+  222: "II",
+  223: "II",
+  224: "II",
+  225: "II",
+  133: "III",
+  234: "III",
+  332: "III",
+  333: "III",
+  334: "III",
+  335: "III",
+  144: "IV",
+  345: "IV",
+  442: "IV",
+  443: "IV",
+  444: "IV",
+  445: "IV",
+  155: "V",
+  255: "V",
+  355: "V",
+  455: "V",
+  555: "V",
+};
+
+function computeGradeOneKey(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted.join("");
 }
 
 function computeOverallPacketRating(grade, stageScores, sightScore) {
@@ -330,9 +361,13 @@ function computeOverallPacketRating(grade, stageScores, sightScore) {
   const stageValues = stageScores.filter((value) => Number.isFinite(value));
   if (normalizedGrade === "I") {
     if (stageValues.length !== 3) return { label: "N/A", value: null };
-    const total = stageValues.reduce((sum, value) => sum + value, 0);
-    const label = mapGradeOneLabelFromTotal(total);
-    return { label, value: label === "N/A" ? null : label };
+    const key = computeGradeOneKey(stageValues);
+    const label = GRADE_ONE_MAP[key] || "N/A";
+    return {
+      label,
+      value: label === "N/A" ? null : label,
+      gradeOneKey: key,
+    };
   }
 
   if (stageValues.length !== 3 || !Number.isFinite(sightScore)) {
@@ -948,12 +983,22 @@ async function loadPacketView(entry) {
     <div class="note">Released: ${summary.requiredReleased ? "yes" : "no"}</div>
   `;
 
+  if (summary.grade === "I" && summary.overall.label === "N/A") {
+    const warning = document.createElement("div");
+    warning.className = "empty";
+    warning.textContent = `Grade I mapping missing for key ${summary.overall.gradeOneKey || "unknown"}. Release blocked.`;
+    els.packetView.appendChild(warning);
+  }
+
   const actions = document.createElement("div");
   actions.className = "actions";
   const releaseBtn = document.createElement("button");
   releaseBtn.textContent = "Release Packet";
   releaseBtn.disabled =
-    !summary.requiredComplete || summary.requiredReleased || !summary.grade;
+    !summary.requiredComplete ||
+    summary.requiredReleased ||
+    !summary.grade ||
+    (summary.grade === "I" && summary.overall.label === "N/A");
   releaseBtn.addEventListener("click", async () => {
     const releasePacket = httpsCallable(functions, "releasePacket");
     await releasePacket({

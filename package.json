@@ -1,0 +1,14 @@
+{
+  "name": "mpa-judge-phase1",
+  "private": true,
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "test:phase1": "playwright test -c playwright.config.ts",
+    "report:phase1": "node scripts/phase1_report.js",
+    "verify:phase1": "node scripts/phase1_verify.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

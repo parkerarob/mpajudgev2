@@ -12,19 +12,19 @@ process.env.FIREBASE_AUTH_EMULATOR_HOST =
 process.env.FIREBASE_STORAGE_EMULATOR_HOST =
   process.env.FIREBASE_STORAGE_EMULATOR_HOST || "127.0.0.1:9199";
 
-admin.initializeApp({ projectId });
+admin.initializeApp({projectId});
 
 const db = admin.firestore();
 const auth = admin.auth();
 
-async function ensureUser({ uid, email, password, displayName }) {
+async function ensureUser({uid, email, password, displayName}) {
   try {
     return await auth.getUser(uid);
   } catch (error) {
     if (error.code !== "auth/user-not-found") throw error;
   }
 
-  return auth.createUser({ uid, email, password, displayName });
+  return auth.createUser({uid, email, password, displayName});
 }
 
 async function main() {
@@ -82,13 +82,13 @@ async function main() {
 
   const judgeDocs = [stage1, stage2, stage3, sight];
   await Promise.all(
-    judgeDocs.map((judge) =>
-      db.collection("users").doc(judge.uid).set({
-        role: "judge",
-        email: judge.email,
-        displayName: judge.displayName,
-      })
-    )
+      judgeDocs.map((judge) =>
+        db.collection("users").doc(judge.uid).set({
+          role: "judge",
+          email: judge.email,
+          displayName: judge.displayName,
+        }),
+      ),
   );
 
   await db.collection("users").doc(director.uid).set({
@@ -117,27 +117,27 @@ async function main() {
   });
 
   await db
-    .collection("events")
-    .doc(eventId)
-    .collection("schedule")
-    .add({
-      orderIndex: 1,
-      stageTime: "10:30 AM",
-      schoolId,
-      ensembleId,
-    });
+      .collection("events")
+      .doc(eventId)
+      .collection("schedule")
+      .add({
+        orderIndex: 1,
+        stageTime: "10:30 AM",
+        schoolId,
+        ensembleId,
+      });
 
   await db
-    .collection("events")
-    .doc(eventId)
-    .collection("assignments")
-    .doc("positions")
-    .set({
-      stage1Uid: stage1.uid,
-      stage2Uid: stage2.uid,
-      stage3Uid: stage3.uid,
-      sightUid: sight.uid,
-    });
+      .collection("events")
+      .doc(eventId)
+      .collection("assignments")
+      .doc("positions")
+      .set({
+        stage1Uid: stage1.uid,
+        stage2Uid: stage2.uid,
+        stage3Uid: stage3.uid,
+        sightUid: sight.uid,
+      });
 
   console.log("Seed complete.");
 }

@@ -19,21 +19,22 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isSignedIn() && userRole() == "admin";
+      return isSignedIn()
+        && (userRole() == "admin" || userData().roles.admin == true);
     }
 
     function isJudge() {
-      return isSignedIn() && userRole() == "judge";
+      return isSignedIn()
+        && (userRole() == "judge" || userData().roles.judge == true);
     }
 
     function isDirector() {
-      return isSignedIn() && userRole() == "director";
+      return isSignedIn()
+        && (userRole() == "director" || userData().roles.director == true);
     }
 
     function isDirectorForSchool(schoolId) {
-      return isDirector()
-        && get(/databases/$(database)/documents/schools/$(schoolId))
-          .data.directors[request.auth.uid] == true;
+      return isDirector() && userSchoolId() == schoolId;
     }
 
     function isActiveEvent(eventId) {
@@ -41,20 +42,56 @@ service cloud.firestore {
         .data.isActive == true;
     }
 
+    function schoolExists(schoolId) {
+      return exists(/databases/$(database)/documents/schools/$(schoolId));
+    }
+
+    function schoolEnsembleExists(schoolId, ensembleId) {
+      return exists(/databases/$(database)/documents/schools/$(schoolId)/ensembles/$(ensembleId));
+    }
+
     match /users/{userId} {
       allow read: if isAdmin() || request.auth.uid == userId;
       allow create: if isAdmin()
         || (request.auth.uid == userId
-          && request.resource.data.role in ["judge", "director"]);
+          && request.resource.data.role == "director"
+          && request.resource.data.keys().hasOnly(["role", "roles", "schoolId", "email", "createdAt", "updatedAt"])
+          && request.resource.data.roles is map
+          && request.resource.data.roles.director == true
+          && request.resource.data.email is string
+          && (request.resource.data.schoolId == null
+            || (request.resource.data.schoolId is string
+              && exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)))));
       allow update: if isAdmin()
         || (request.auth.uid == userId
-          && request.resource.data.role == resource.data.role);
+          && userRole() == "director"
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly([
+              "schoolId",
+              "updatedAt",
+              "displayName",
+              "nafmeMembershipNumber",
+              "nafmeMembershipExp",
+              "nafmeCardImageUrl",
+              "nafmeCardImagePath"
+            ])
+          && request.resource.data.roles == resource.data.roles
+          && (request.resource.data.schoolId == null
+            || exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId))));
       allow delete: if isAdmin();
     }
 
     match /schools/{schoolId} {
-      allow read: if isAdmin() || isDirectorForSchool(schoolId);
+      allow read: if true;
       allow write: if isAdmin();
+
+      match /ensembles/{ensembleId} {
+        allow read: if isAdmin()
+          || (isDirector() && userSchoolId() == schoolId);
+        allow create, update, delete: if isAdmin()
+          || (isDirector() && userSchoolId() == schoolId);
+      }
     }
 
     match /ensembles/{ensembleId} {
@@ -74,7 +111,27 @@ service cloud.firestore {
 
       match /schedule/{entryId} {
         allow read: if (isAdmin() || isJudge()) && isActiveEvent(eventId);
-        allow write: if isAdmin();
+        allow create, update: if isAdmin()
+          && request.resource.data.performanceAt is timestamp
+          && request.resource.data.schoolId is string
+          && request.resource.data.ensembleId is string
+          && schoolExists(request.resource.data.schoolId)
+          && schoolEnsembleExists(
+            request.resource.data.schoolId,
+            request.resource.data.ensembleId
+          );
+        allow delete: if isAdmin();
+      }
+
+      match /entries/{ensembleId} {
+        allow read: if isAdmin()
+          || (isDirector() && (resource == null || resource.data.schoolId == userSchoolId()))
+          || (isJudge() && isActiveEvent(eventId));
+        allow create, update: if isAdmin()
+          || (isDirector()
+            && request.resource.data.schoolId == userSchoolId()
+            && request.resource.data.eventId == eventId
+            && request.resource.data.ensembleId == ensembleId);
       }
 
       match /assignments/{assignmentId} {
@@ -85,8 +142,10 @@ service cloud.firestore {
 
     match /submissions/{submissionId} {
       allow read: if isAdmin()
-        || (isJudge() && resource.data.judgeUid == request.auth.uid)
-        || (isDirectorForSchool(resource.data.schoolId)
+        || (isJudge()
+          && (resource == null || resource.data.judgeUid == request.auth.uid))
+        || (resource != null
+          && isDirectorForSchool(resource.data.schoolId)
           && resource.data.status == "released");
 
       allow create: if isJudge()
@@ -107,6 +166,10 @@ service cloud.firestore {
           && request.resource.data.status == resource.data.status);
 
       allow delete: if isAdmin();
+    }
+
+    match /rateLimits/{docId} {
+      allow read, write: if false;
     }
 
     match /{document=**} {

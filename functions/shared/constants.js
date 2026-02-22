@@ -6,12 +6,15 @@ const COLLECTIONS = {
   assignments: "assignments",
   submissions: "submissions",
   ensembles: "ensembles",
+  entries: "entries",
 };
 
 const FIELDS = {
   users: {
     role: "role",
     schoolId: "schoolId",
+    roles: "roles",
+    email: "email",
   },
   schools: {
     directors: "directors",
@@ -49,6 +52,9 @@ const FIELDS = {
     createdAt: "createdAt",
     updatedAt: "updatedAt",
   },
+  entries: {
+    performanceGrade: "performanceGrade",
+  },
 };
 
 const STATUSES = {
@@ -70,22 +76,22 @@ const JUDGE_POSITIONS = {
 
 const CAPTION_TEMPLATES = {
   stage: [
-    { key: "toneQuality", label: "Tone Quality" },
-    { key: "intonation", label: "Intonation" },
-    { key: "rhythm", label: "Rhythm & Precision" },
-    { key: "balanceBlend", label: "Balance & Blend" },
-    { key: "expression", label: "Expression" },
-    { key: "technique", label: "Technique" },
-    { key: "musicianship", label: "Musicianship" },
+    {key: "toneQuality", label: "Tone Quality"},
+    {key: "intonation", label: "Intonation"},
+    {key: "rhythm", label: "Rhythm & Precision"},
+    {key: "balanceBlend", label: "Balance & Blend"},
+    {key: "expression", label: "Expression"},
+    {key: "technique", label: "Technique"},
+    {key: "musicianship", label: "Musicianship"},
   ],
   sight: [
-    { key: "accuracy", label: "Accuracy" },
-    { key: "rhythm", label: "Rhythm & Pulse" },
-    { key: "toneQuality", label: "Tone Quality" },
-    { key: "balanceBlend", label: "Balance & Blend" },
-    { key: "expression", label: "Expression" },
-    { key: "musicianship", label: "Musicianship" },
-    { key: "sightReading", label: "Sight Reading Fundamentals" },
+    {key: "accuracy", label: "Accuracy"},
+    {key: "rhythm", label: "Rhythm & Pulse"},
+    {key: "toneQuality", label: "Tone Quality"},
+    {key: "balanceBlend", label: "Balance & Blend"},
+    {key: "expression", label: "Expression"},
+    {key: "musicianship", label: "Musicianship"},
+    {key: "sightReading", label: "Sight Reading Fundamentals"},
   ],
 };
 

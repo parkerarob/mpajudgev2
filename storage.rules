@@ -14,22 +14,27 @@ service firebase.storage {
       return userData().role;
     }
 
+    function userSchoolId() {
+      return userData().schoolId;
+    }
+
     function isAdmin() {
-      return isSignedIn() && userRole() == "admin";
+      return isSignedIn()
+        && (userRole() == "admin" || userData().roles.admin == true);
     }
 
     function isJudge() {
-      return isSignedIn() && userRole() == "judge";
+      return isSignedIn()
+        && (userRole() == "judge" || userData().roles.judge == true);
     }
 
     function isDirector() {
-      return isSignedIn() && userRole() == "director";
+      return isSignedIn()
+        && (userRole() == "director" || userData().roles.director == true);
     }
 
     function isDirectorForSchool(schoolId) {
-      return isDirector()
-        && firestore.get(/databases/(default)/documents/schools/$(schoolId))
-          .data.directors[request.auth.uid] == true;
+      return isDirector() && userSchoolId() == schoolId;
     }
 
     function submissionDoc(submissionId) {
@@ -46,6 +51,13 @@ service firebase.storage {
 
       allow write: if isAdmin()
         || (isJudge() && request.auth.uid == judgeUid);
+    }
+
+    match /director_cards/{uid}/{fileName} {
+      allow read: if isAdmin()
+        || (isDirector() && request.auth.uid == uid);
+      allow write: if isAdmin()
+        || (isDirector() && request.auth.uid == uid);
     }
 
     match /{allPaths=**} {

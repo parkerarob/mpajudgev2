@@ -922,12 +922,6 @@ function updateAuthUI() {
     if (els.accountSummary) {
       els.accountSummary.textContent = `Signed in as ${label}`;
     }
-    if (els.currentUidDisplay) {
-      els.currentUidDisplay.textContent = "Hidden";
-    }
-    if (els.copyUidBtn) {
-      els.copyUidBtn.disabled = true;
-    }
     if (els.headerAuthActions && els.signOutBtn.parentElement !== els.headerAuthActions) {
       els.headerAuthActions.appendChild(els.signOutBtn);
     }
@@ -938,12 +932,6 @@ function updateAuthUI() {
     els.signOutBtn.disabled = true;
     if (els.accountSummary) {
       els.accountSummary.textContent = "Signed out";
-    }
-    if (els.currentUidDisplay) {
-      els.currentUidDisplay.textContent = "Signed out";
-    }
-    if (els.copyUidBtn) {
-      els.copyUidBtn.disabled = true;
     }
     if (els.modalAuthActions && els.signOutBtn.parentElement !== els.modalAuthActions) {
       els.modalAuthActions.appendChild(els.signOutBtn);
@@ -1104,6 +1092,10 @@ function updateRoleUI() {
   }
   setRoleHint(`Role: ${state.auth.userProfile.role || "unknown"}`);
   setProvisioningNotice("");
+  els.tabButtons.forEach((button) => {
+    const allowed = isTabAllowed(button.dataset.tab, state.auth.userProfile.role);
+    button.style.display = allowed ? "inline-flex" : "none";
+  });
   const defaultTab = getDefaultTabForRole(state.auth.userProfile.role);
   setTab(defaultTab, { force: true });
   if (state.auth.userProfile.role === "director") {
@@ -1123,11 +1115,12 @@ function updateRoleUI() {
 }
 
 function updateDirectorAttachUI() {
-  if (!els.directorAttachGate) return;
   const isDirector = isDirectorManager();
   const hasSchool = Boolean(state.auth.userProfile?.schoolId);
-  els.directorAttachGate.style.display =
-    isDirector && !hasSchool ? "block" : "none";
+  if (els.directorAttachGate) {
+    els.directorAttachGate.style.display =
+      isDirector && !hasSchool ? "block" : "none";
+  }
   if (els.directorAttachControls) {
     els.directorAttachControls.style.display =
       isDirector && !hasSchool ? "flex" : "none";
@@ -1138,6 +1131,10 @@ function updateDirectorAttachUI() {
   }
   if (els.directorEnsemblesSection) {
     els.directorEnsemblesSection.style.display =
+      isDirector && hasSchool ? "grid" : "none";
+  }
+  if (els.directorMainStack) {
+    els.directorMainStack.style.display =
       isDirector && hasSchool ? "grid" : "none";
   }
   if (els.directorEnsembleForm) {
@@ -1176,7 +1173,9 @@ function resetJudgeState() {
   els.captionForm.innerHTML = "";
   els.captionTotal.textContent = "0";
   els.finalRating.textContent = "N/A";
-  els.submissionHint.textContent = "Select an ensemble to begin.";
+  if (els.submissionHint) {
+    els.submissionHint.textContent = "Select an ensemble to begin.";
+  }
   if (els.judgeEntrySummary) {
     els.judgeEntrySummary.textContent = "";
   }
@@ -1230,15 +1229,6 @@ function updateTranscribeState() {
     !!state.judge.selectedRosterEntry &&
     !!state.judge.position &&
     (state.judge.currentSubmissionHasAudio || hasLocalAudio);
-  console.log("transcribeGate", {
-    hasUser: Boolean(state.auth.currentUser),
-    hasEvent: Boolean(state.event.active),
-    hasRoster: Boolean(state.judge.selectedRosterEntry),
-    hasPosition: Boolean(state.judge.position),
-    hasSubmissionAudio: state.judge.currentSubmissionHasAudio,
-    hasLocalAudio,
-    ready,
-  });
   els.transcribeBtn.disabled = !ready;
   els.transcribeBtn.title = ready
     ? ""
@@ -2036,7 +2026,6 @@ async function saveRule3cSection() {
 }
 
 function computeDirectorCompletionState(entry) {
-  const hasSchool = Boolean(state.auth.userProfile?.schoolId);
   const hasEnsemble = Boolean(state.director.selectedEnsembleId);
   const marchTitle = entry?.repertoire?.march?.titleText?.trim();
   const selection1Title = entry?.repertoire?.selection1?.titleText?.trim();
@@ -2055,9 +2044,8 @@ function computeDirectorCompletionState(entry) {
   );
   const instrumentationComplete = hasStandardCount;
   const gradeComputed = Boolean(entry?.performanceGrade?.trim?.());
-  const ready = hasSchool && hasEnsemble && repertoireComplete && instrumentationComplete && gradeComputed;
+  const ready = hasEnsemble && repertoireComplete && instrumentationComplete && gradeComputed;
   return {
-    school: hasSchool,
     ensemble: hasEnsemble,
     repertoire: repertoireComplete,
     instrumentation: instrumentationComplete,
@@ -2119,7 +2107,6 @@ function renderDirectorChecklist(entry) {
   if (!els.directorChecklist) return;
   const s = computeDirectorCompletionState(entry);
   const items = [
-    { key: "school", label: "School" },
     { key: "ensemble", label: "Ensemble" },
     { key: "repertoire", label: "Repertoire" },
     { key: "instrumentation", label: "Instrumentation" },
@@ -2846,8 +2833,12 @@ function setTestMode(next) {
 }
 
 function renderRosterList() {
-  const search = els.rosterSearch.value.trim().toLowerCase();
+  const search = (els.rosterSearch?.value || "").trim().toLowerCase();
+  const readyOnly = state.auth.userProfile?.role === "judge";
+  const readySet = state.event.readyEnsembles || new Set();
   const filtered = state.event.rosterEntries.filter((entry) => {
+    if (readyOnly && !readySet.has(entry.ensembleId)) return false;
+    if (!search) return true;
     const timeLabel = formatPerformanceAt(entry.performanceAt) || "";
     const searchText = [entry.schoolId, entry.ensembleId, entry.ensembleName, timeLabel]
       .filter(Boolean)
@@ -2857,32 +2848,76 @@ function renderRosterList() {
   });
 
   els.rosterList.innerHTML = "";
-  filtered.forEach((entry) => {
-    const performanceLabel = formatPerformanceAt(entry.performanceAt);
+  if (!filtered.length) {
     const li = document.createElement("li");
+    li.className = "note";
+    li.textContent = "No ready ensembles yet.";
+    els.rosterList.appendChild(li);
+    return;
+  }
+  const MAX_ROSTER_ROWS = 50;
+  const visible = filtered.slice(0, MAX_ROSTER_ROWS);
+  visible.forEach((entry) => {
+    const performanceLabel = formatPerformanceAt(entry.performanceAt);
+    const schoolName = entry.schoolName || getSchoolNameById(entry.schoolId);
+    const ensembleName = entry.ensembleName || entry.ensembleId || "Ensemble";
+    const selectedId = state.judge.selectedRosterEntry?.id || state.judge.selectedRosterEntry?.ensembleId;
+    const entryId = entry.id || entry.ensembleId;
+    const isSelected = selectedId && entryId === selectedId;
+    const li = document.createElement("li");
+    if (isSelected) {
+      li.classList.add("is-selected");
+    }
     const top = document.createElement("div");
     const strong = document.createElement("strong");
     strong.textContent = performanceLabel || "Missing datetime";
     top.appendChild(strong);
-    top.appendChild(
-      document.createTextNode(` - ${entry.ensembleName || entry.ensembleId}`)
-    );
-    const hint = document.createElement("div");
-    hint.className = "hint";
-    hint.textContent = `School: ${entry.schoolId}`;
+    top.appendChild(document.createTextNode(` - ${schoolName} — ${ensembleName}`));
+    if (isSelected) {
+      const badge = document.createElement("span");
+      badge.className = "roster-selected-badge";
+      badge.textContent = "Selected";
+      top.appendChild(badge);
+    }
     li.appendChild(top);
-    li.appendChild(hint);
     const selectBtn = document.createElement("button");
-    selectBtn.textContent = "Select";
+    selectBtn.textContent = isSelected ? "Selected" : "Select";
+    selectBtn.disabled = isSelected;
     selectBtn.addEventListener("click", () => selectRosterEntry(entry));
     li.appendChild(selectBtn);
     els.rosterList.appendChild(li);
+  });
+  if (filtered.length > MAX_ROSTER_ROWS) {
+    const li = document.createElement("li");
+    li.className = "note";
+    li.textContent = `Showing ${MAX_ROSTER_ROWS} of ${filtered.length}. Refine your search to narrow results.`;
+    els.rosterList.appendChild(li);
+  }
+}
+
+function watchReadyEntries() {
+  if (state.subscriptions.readyEntries) state.subscriptions.readyEntries();
+  if (!state.event.active) {
+    state.event.readyEnsembles = new Set();
+    renderRosterList();
+    return;
+  }
+  const readyQuery = query(
+    collection(db, COLLECTIONS.events, state.event.active.id, COLLECTIONS.entries),
+    where("status", "==", "ready")
+  );
+  state.subscriptions.readyEntries = onSnapshot(readyQuery, (snapshot) => {
+    state.event.readyEnsembles = new Set(snapshot.docs.map((docSnap) => docSnap.id));
+    renderRosterList();
   });
 }
 
 async function selectRosterEntry(entry) {
   state.judge.selectedRosterEntry = entry;
-  els.submissionHint.textContent = `Selected ensemble ${entry.ensembleId}.`;
+  if (els.submissionHint) {
+    els.submissionHint.textContent = `Selected ensemble ${entry.ensembleId}.`;
+  }
+  renderRosterList();
   renderJudgeReadiness();
   renderCaptionForm();
   loadJudgeEntrySummary(entry);
@@ -2894,8 +2929,10 @@ async function selectRosterEntry(entry) {
   const submissionRef = doc(db, COLLECTIONS.submissions, submissionId);
   const submissionSnap = await getDoc(submissionRef);
   if (submissionSnap.exists() && submissionSnap.data().locked) {
-    els.submissionHint.textContent =
-      "Submission already locked. Admin must unlock for edits.";
+    if (els.submissionHint) {
+      els.submissionHint.textContent =
+        "Submission already locked. Admin must unlock for edits.";
+    }
     els.submitBtn.disabled = true;
   } else {
     els.submitBtn.disabled = false;
@@ -2914,8 +2951,10 @@ async function handleSubmit(event) {
   event.preventDefault();
   if (!state.auth.currentUser || !state.auth.userProfile || state.auth.userProfile.role !== "judge") return;
   if (state.judge.isTestMode) {
-    els.submissionHint.textContent =
-      "Test mode active. Submissions are disabled.";
+    if (els.submissionHint) {
+      els.submissionHint.textContent =
+        "Test mode active. Submissions are disabled.";
+    }
     return;
   }
   if (!state.event.active || !state.judge.selectedRosterEntry || !state.judge.position || !state.judge.formType) {
@@ -2984,10 +3023,14 @@ async function handleSubmit(event) {
   }
 
   if (nextLocked) {
-    els.submissionHint.textContent = "Submitted and locked.";
+    if (els.submissionHint) {
+      els.submissionHint.textContent = "Submitted and locked.";
+    }
   } else {
-    els.submissionHint.textContent =
-      "Saved (unlocked). Admin must lock when finalized.";
+    if (els.submissionHint) {
+      els.submissionHint.textContent =
+        "Saved (unlocked). Admin must lock when finalized.";
+    }
   }
   els.submitBtn.disabled = Boolean(nextLocked);
   state.judge.currentSubmissionHasAudio = Boolean(
@@ -3124,14 +3167,6 @@ function bindAuthHandlers() {
     await signOut(auth);
   });
 
-  if (els.copyUidBtn) {
-    els.copyUidBtn.addEventListener("click", async () => {
-      if (els.provisionResult) {
-        els.provisionResult.textContent = "UID display is disabled.";
-      }
-    });
-  }
-
 }
 
 function bindAdminHandlers() {
@@ -3248,7 +3283,7 @@ function bindAdminHandlers() {
       if (!stage1Uid || !stage2Uid || !stage3Uid || !sightUid) {
         if (els.assignmentsError) {
           els.assignmentsError.textContent =
-            "All judge UID fields are required before saving assignments.";
+            "All judge assignment fields are required before saving assignments.";
         }
         return;
       }
@@ -3410,7 +3445,6 @@ function bindAdminHandlers() {
 }
 
 function bindJudgeHandlers() {
-  els.rosterSearch.addEventListener("input", renderRosterList);
   els.submissionForm.addEventListener("submit", async (event) => {
     if (els.submitBtn) {
       els.submitBtn.dataset.loadingLabel = "Submitting...";
@@ -3795,7 +3829,7 @@ function watchActiveEvent() {
       const startLabel = state.event.active.startAt ? formatPerformanceAt(state.event.active.startAt) : "";
       const endLabel = state.event.active.endAt ? formatPerformanceAt(state.event.active.endAt) : "";
       const dateLabel = startLabel && endLabel ? ` • ${startLabel} → ${endLabel}` : "";
-      els.activeEventDisplay.textContent = `${state.event.active.name || "Active"} (${state.event.active.id})${dateLabel}`;
+      els.activeEventDisplay.textContent = `${state.event.active.name || "Active"}${dateLabel}`;
     } else {
       els.activeEventDisplay.textContent = "No active event.";
     }
@@ -3815,6 +3849,9 @@ function watchActiveEvent() {
     renderJudgeReadiness();
     watchRoster();
     watchAssignments();
+    if (state.auth.userProfile?.role === "judge") {
+      watchReadyEntries();
+    }
   });
 }
 
@@ -4312,7 +4349,9 @@ function watchRoster() {
       ...docSnap.data(),
     }));
     renderRosterList();
-    renderAdminSchedule();
+    if (state.auth.userProfile?.role === "admin") {
+      renderAdminSchedule();
+    }
   });
 }
 
@@ -5135,6 +5174,7 @@ function stopWatchers() {
   if (state.subscriptions.events) state.subscriptions.events();
   if (state.subscriptions.activeEvent) state.subscriptions.activeEvent();
   if (state.subscriptions.roster) state.subscriptions.roster();
+  if (state.subscriptions.readyEntries) state.subscriptions.readyEntries();
   if (state.subscriptions.assignments) state.subscriptions.assignments();
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
   if (state.subscriptions.directorSchool) state.subscriptions.directorSchool();
@@ -5144,6 +5184,7 @@ function stopWatchers() {
   state.subscriptions.events = null;
   state.subscriptions.activeEvent = null;
   state.subscriptions.roster = null;
+  state.subscriptions.readyEntries = null;
   state.subscriptions.assignments = null;
   state.subscriptions.directorPackets = null;
   state.subscriptions.directorSchool = null;
@@ -5155,10 +5196,17 @@ function stopWatchers() {
 function startWatchers() {
   watchEvents();
   watchActiveEvent();
-  watchDirectorPackets();
-  watchDirectorSchool();
-  watchDirectorEnsembles();
-  watchJudges();
+  if (isDirectorManager()) {
+    watchDirectorPackets();
+    watchDirectorSchool();
+    watchDirectorEnsembles();
+  }
+  if (state.auth.userProfile?.role === "judge") {
+    watchReadyEntries();
+  }
+  if (state.auth.userProfile?.role === "admin") {
+    watchJudges();
+  }
 }
 
 bindAuthHandlers();

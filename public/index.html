@@ -100,14 +100,6 @@
 
               <div>
                 <h4>Judge Assignments</h4>
-                <div class="note">
-                  Current user: <span id="currentUidDisplay">Signed out</span>
-                </div>
-                <div class="row">
-                  <button type="button" id="copyUidBtn" class="ghost" disabled>
-                    UID Hidden
-                  </button>
-                </div>
                 <div class="error" id="assignmentsError"></div>
                 <form id="assignmentsForm" class="stack">
                   <label>
@@ -202,7 +194,7 @@
                 <h4>Provision User</h4>
                 <p class="hint">
                   Admin-only. Creates an Auth user (email/password) and writes
-                  users/{uid}. Share the temporary password securely.
+                  a user profile document. Share the temporary password securely.
                 </p>
                 <form id="provisionForm" class="stack">
                   <label>
@@ -259,45 +251,11 @@
 
           <div>
             <h3>Roster</h3>
-            <input type="search" id="rosterSearch" placeholder="Search roster" />
             <ul id="rosterList" class="list"></ul>
           </div>
 
           <div>
             <h3>Submission</h3>
-            <div class="panel" id="judgeReadinessPanel">
-              <div class="readiness-header">
-                <h3>Submission Readiness</h3>
-                <span class="pill">Draft</span>
-              </div>
-
-              <div class="readiness-summary">
-                <div class="readiness-main">
-                  <div class="readiness-title"></div>
-                  <div class="readiness-meta"></div>
-                </div>
-
-                <div class="readiness-actions"></div>
-              </div>
-
-              <div class="progress" aria-hidden="true">
-                <div class="progress-bar" style="width: 0%"></div>
-              </div>
-
-              <details class="accordion-card readiness-details" id="judgeReadinessDetails">
-                <summary>
-                  <span>View details</span>
-                  <span class="muted readiness-hint"> </span>
-                </summary>
-                <ul id="judgeReadinessChecklist" class="list list--compact"></ul>
-              </details>
-            </div>
-            <div class="row">
-              <div class="note" id="submissionHint">Select an ensemble to begin.</div>
-              <span class="badge is-hidden" id="submissionSubmittedBadge">Submitted</span>
-            </div>
-            <div class="note" id="submissionSubmittedAt"></div>
-            <div class="note" id="judgeEntrySummary"></div>
             <form id="submissionForm" class="stack" data-mode="live">
               <div class="step-heading">
                 <span class="badge">Step 1</span>
@@ -441,8 +399,11 @@
             <div class="note" id="directorSummaryEmail"></div>
           </div>
           <div class="director-summary-school">
-            <div class="note">School</div>
             <div class="director-summary-school-name" id="directorSummarySchool">No school attached</div>
+            <div class="row" id="directorAttachControls">
+              <select id="directorAttachSelect"></select>
+              <button type="button" id="directorAttachBtn">Confirm School</button>
+            </div>
             <div class="actions">
               <div class="row" id="directorDetachControls">
                 <button type="button" id="directorDetachBtn" class="ghost">
@@ -453,7 +414,7 @@
             </div>
           </div>
         </div>
-        <div class="stack">
+        <div class="stack" id="directorMainStack">
           <div class="panel" id="directorChecklistPanel">
             <div class="readiness-header">
               <h3>Entry Readiness</h3>
@@ -483,20 +444,6 @@
           </div>
 
           <div class="panel">
-            <h3>School</h3>
-            <div class="note" id="directorSchoolHeader">
-              Selected school: <span id="directorSchoolName">No school attached</span>
-            </div>
-            <div class="empty" id="directorAttachGate">
-              Select your school to continue.
-            </div>
-            <div class="row" id="directorAttachControls">
-              <select id="directorAttachSelect"></select>
-              <button type="button" id="directorAttachBtn">Confirm School</button>
-            </div>
-            <div class="note" id="directorHint"></div>
-          </div>
-
           <div class="panel" id="directorEnsemblesSection">
             <h3>Ensembles</h3>
             <div class="actions">

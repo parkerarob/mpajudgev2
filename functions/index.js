@@ -207,7 +207,7 @@ function isSubmissionReady(submission) {
 }
 
 exports.parseTranscript = onCall(
-    {secrets: [OPENAI_API_KEY], enforceAppCheck: true},
+    {secrets: [OPENAI_API_KEY]},
     async (request) => {
       await assertRole(request, ["judge", "admin"]);
       await checkRateLimit(request.auth.uid, "parseTranscript", 20, 60);
@@ -345,7 +345,7 @@ exports.parseTranscript = onCall(
 );
 
 exports.transcribeSubmissionAudio = onCall(
-    {secrets: [OPENAI_API_KEY], enforceAppCheck: true},
+    {secrets: [OPENAI_API_KEY]},
     async (request) => {
       if (!request.auth || !request.auth.uid) {
         throw new HttpsError("unauthenticated", "Authentication required.");
@@ -484,7 +484,7 @@ exports.transcribeSubmissionAudio = onCall(
 );
 
 exports.transcribeTestAudio = onCall(
-    {secrets: [OPENAI_API_KEY], enforceAppCheck: true},
+    {secrets: [OPENAI_API_KEY]},
     async (request) => {
       if (!request.auth || !request.auth.uid) {
         throw new HttpsError("unauthenticated", "Authentication required.");

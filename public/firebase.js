@@ -51,18 +51,13 @@ if (useEmulators) {
   connectStorageEmulator(storage, "127.0.0.1", 9199);
 }
 
-const hasValidAppCheckKey =
-  APP_CHECK_SITE_KEY && APP_CHECK_SITE_KEY !== "REPLACE_WITH_RECAPTCHA_V3_SITE_KEY";
-
 if (useEmulators) {
   self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
 }
 
-if (useEmulators || hasValidAppCheckKey) {
+if (useEmulators) {
   initializeAppCheck(app, {
-    provider: new ReCaptchaV3Provider(
-      hasValidAppCheckKey ? APP_CHECK_SITE_KEY : "debug"
-    ),
+    provider: new ReCaptchaV3Provider("debug"),
     isTokenAutoRefreshEnabled: true,
   });
 }

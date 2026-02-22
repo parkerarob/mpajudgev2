@@ -76,7 +76,7 @@ service cloud.firestore {
               && exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)))));
       allow update: if isAdmin()
         || (request.auth.uid == userId
-          && userRole() == "director"
+          && isDirector()
           && request.resource.data.role == resource.data.role
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly([

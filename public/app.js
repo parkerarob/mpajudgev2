@@ -4107,17 +4107,37 @@ function bindDirectorHandlers() {
       const expValue = els.directorProfileNafmeExpInput?.value || "";
       try {
         setDirectorProfileStatus("Saving...");
-        await updateDoc(doc(db, COLLECTIONS.users, state.auth.currentUser.uid), {
+        const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
+        const userSnap = await getDoc(userRef);
+        const rolesPayload = userSnap.exists() && !userSnap.data()?.roles
+          ? { roles: { director: true, judge: false, admin: false } }
+          : {};
+        const payload = {
           displayName: name,
           nafmeMembershipNumber: nafmeNumber,
           nafmeMembershipExp: expValue ? Timestamp.fromDate(new Date(expValue)) : null,
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (userSnap.exists()) {
+          await setDoc(userRef, { ...payload, ...rolesPayload }, { merge: true });
+        } else {
+          await setDoc(userRef, {
+            role: "director",
+            roles: { director: true, judge: false, admin: false },
+            schoolId: state.auth.userProfile?.schoolId || null,
+            email: state.auth.userProfile?.email || state.auth.currentUser?.email || "",
+            createdAt: serverTimestamp(),
+            ...payload,
+          });
+        }
         state.auth.userProfile.displayName = name;
         state.auth.userProfile.nafmeMembershipNumber = nafmeNumber;
         state.auth.userProfile.nafmeMembershipExp = expValue
           ? Timestamp.fromDate(new Date(expValue))
           : null;
+        if (rolesPayload.roles) {
+          state.auth.userProfile.roles = rolesPayload.roles;
+        }
         if (els.directorSummaryName) {
           els.directorSummaryName.textContent = name || "Director";
         }
@@ -4125,7 +4145,9 @@ function bindDirectorHandlers() {
         closeDirectorProfileModal();
       } catch (error) {
         console.error("Profile save failed", error);
-        setDirectorProfileStatus("Unable to save.");
+        setDirectorProfileStatus(
+          error?.code ? `Unable to save (${error.code}).` : "Unable to save."
+        );
       }
     });
   }
@@ -4144,18 +4166,40 @@ function bindDirectorHandlers() {
         const storageRef = ref(storage, objectPath);
         await uploadBytes(storageRef, file, { contentType: file.type });
         const url = await getDownloadURL(storageRef);
-        await updateDoc(doc(db, COLLECTIONS.users, state.auth.currentUser.uid), {
+        const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
+        const userSnap = await getDoc(userRef);
+        const rolesPayload = userSnap.exists() && !userSnap.data()?.roles
+          ? { roles: { director: true, judge: false, admin: false } }
+          : {};
+        const payload = {
           nafmeCardImageUrl: url,
           nafmeCardImagePath: objectPath,
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (userSnap.exists()) {
+          await setDoc(userRef, { ...payload, ...rolesPayload }, { merge: true });
+        } else {
+          await setDoc(userRef, {
+            role: "director",
+            roles: { director: true, judge: false, admin: false },
+            schoolId: state.auth.userProfile?.schoolId || null,
+            email: state.auth.userProfile?.email || state.auth.currentUser?.email || "",
+            createdAt: serverTimestamp(),
+            ...payload,
+          });
+        }
         state.auth.userProfile.nafmeCardImageUrl = url;
         state.auth.userProfile.nafmeCardImagePath = objectPath;
+        if (rolesPayload.roles) {
+          state.auth.userProfile.roles = rolesPayload.roles;
+        }
         renderDirectorProfile();
         setDirectorProfileStatus("Uploaded.");
       } catch (error) {
         console.error("Profile card upload failed", error);
-        setDirectorProfileStatus("Upload failed.");
+        setDirectorProfileStatus(
+          error?.code ? `Upload failed (${error.code}).` : "Upload failed."
+        );
       }
     });
   }

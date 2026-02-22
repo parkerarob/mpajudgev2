@@ -55,7 +55,19 @@ service cloud.firestore {
       allow create: if isAdmin()
         || (request.auth.uid == userId
           && request.resource.data.role == "director"
-          && request.resource.data.keys().hasOnly(["role", "roles", "schoolId", "email", "createdAt", "updatedAt"])
+          && request.resource.data.keys().hasOnly([
+            "role",
+            "roles",
+            "schoolId",
+            "email",
+            "displayName",
+            "nafmeMembershipNumber",
+            "nafmeMembershipExp",
+            "nafmeCardImageUrl",
+            "nafmeCardImagePath",
+            "createdAt",
+            "updatedAt"
+          ])
           && request.resource.data.roles is map
           && request.resource.data.roles.director == true
           && request.resource.data.email is string
@@ -76,7 +88,8 @@ service cloud.firestore {
               "nafmeCardImageUrl",
               "nafmeCardImagePath"
             ])
-          && request.resource.data.roles == resource.data.roles
+          && (request.resource.data.roles == resource.data.roles
+            || (resource.data.roles == null && request.resource.data.roles is map))
           && (request.resource.data.schoolId == null
             || exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId))));
       allow delete: if isAdmin();

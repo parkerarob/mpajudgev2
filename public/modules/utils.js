@@ -152,3 +152,42 @@ export function getSchoolNameById(schoolsList, schoolId) {
   const match = list.find((school) => school.id === schoolId);
   return match?.name || schoolId || "Unknown";
 }
+
+export function normalizeCaptions(formType, captions = {}) {
+  const source = captions || {};
+  const stageMap = {
+    toneQuality: "toneQuality",
+    intonation: "intonation",
+    balanceBlend: "balanceBlend",
+    precision: "precision",
+    basicMusicianship: "basicMusicianship",
+    interpretativeMusicianship: "interpretativeMusicianship",
+    generalFactors: "generalFactors",
+    rhythm: "precision",
+    expression: "interpretativeMusicianship",
+    technique: "basicMusicianship",
+    musicianship: "generalFactors",
+  };
+  const sightMap = {
+    toneQuality: "toneQuality",
+    intonation: "intonation",
+    balance: "balance",
+    technique: "technique",
+    rhythm: "rhythm",
+    musicianship: "musicianship",
+    prepTime: "prepTime",
+    balanceBlend: "balance",
+    accuracy: "technique",
+    expression: "musicianship",
+    sightReading: "prepTime",
+  };
+  const map = formType === "sight" ? sightMap : stageMap;
+  const normalized = {};
+  Object.keys(source).forEach((key) => {
+    const targetKey = map[key];
+    if (!targetKey) return;
+    if (normalized[targetKey]) return;
+    normalized[targetKey] = source[key];
+  });
+  return normalized;
+}

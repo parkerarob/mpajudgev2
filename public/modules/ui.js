@@ -20,14 +20,19 @@ import {
   deleteScheduleEntry,
   getPacketData,
   lockSubmission,
+  lockOpenPacket,
+  linkOpenPacketToEnsemble,
   provisionUser,
   releasePacket,
+  releaseOpenPacket,
   saveAssignments,
   saveSchool,
   setActiveEvent,
   unreleasePacket,
+  unlockOpenPacket,
   unlockSubmission,
   updateScheduleEntryTime,
+  watchOpenPacketsAdmin,
   watchActiveEvent,
   watchEvents,
   watchJudges,
@@ -78,11 +83,32 @@ import {
   watchReadyEntries,
 } from "./judge.js";
 import {
+  createOpenPacket,
+  fetchOpenEnsembleIndex,
+  getOpenCaptionTemplate,
+  isOpenPacketEditable,
+  loadOpenPrefs,
+  markJudgeOpenDirty,
+  resetJudgeOpenState,
+  retryOpenSessionUploads,
+  selectOpenPacket,
+  saveOpenPrefs,
+  saveOpenPrefsToServer,
+  startOpenRecording,
+  stopOpenRecording,
+  submitOpenPacket,
+  transcribeOpenSegment,
+  transcribeOpenTape,
+  updateOpenPacketDraft,
+  watchOpenPackets,
+} from "./judge-open.js";
+import {
   createDirectorAccount,
   requestPasswordReset,
   signIn,
   signOut,
 } from "./auth.js";
+import { saveUserDisplayName } from "./profile.js";
 import {
   getDefaultTabForRole,
   hasUnsavedChanges,
@@ -99,6 +125,7 @@ import {
   getSchoolNameById,
   derivePerformanceGrade,
   levelToRoman,
+  normalizeCaptions,
 } from "./utils.js";
 
 export function alertUser(message) {
@@ -107,6 +134,19 @@ export function alertUser(message) {
 
 export function confirmUser(message) {
   return window.confirm(message);
+}
+
+function getEffectiveRole(profile) {
+  if (!profile) return null;
+  if (profile.role) return profile.role;
+  if (profile.roles?.judge) return "judge";
+  if (profile.roles?.admin) return "admin";
+  if (profile.roles?.director) return "director";
+  return null;
+}
+
+function isJudgeRole(profile) {
+  return getEffectiveRole(profile) === "judge";
 }
 
 function updateDirectorReadyControlsFromState(completionState) {
@@ -138,7 +178,7 @@ function applySubmissionToForm(submission) {
     els.transcriptInput.value = submission.transcript || "";
   }
   state.judge.transcriptText = submission.transcript || "";
-  state.judge.captions = submission.captions || {};
+  state.judge.captions = normalizeCaptions(state.judge.formType, submission.captions || {});
   const template = CAPTION_TEMPLATES[state.judge.formType] || [];
   template.forEach(({ key }) => {
     const wrapper = els.captionForm.querySelector(`[data-key="${key}"]`);
@@ -526,6 +566,13 @@ export function setSavingState(button, isSaving, savingLabel = "Saving...") {
   }
 }
 
+function setAuthFormDisabled(disabled) {
+  if (els.emailInput) els.emailInput.disabled = disabled;
+  if (els.passwordInput) els.passwordInput.disabled = disabled;
+  if (els.emailSignInBtn) els.emailSignInBtn.disabled = disabled;
+  if (els.forgotPasswordBtn) els.forgotPasswordBtn.disabled = disabled;
+}
+
 export function ensureButtonSpinner(button) {
   if (!button) return null;
   if (button.querySelector(".button-spinner")) {
@@ -544,11 +591,16 @@ export async function withLoading(buttonElement, asyncFn) {
   }
   if (buttonElement.dataset.loading === "true") return;
   buttonElement.dataset.loading = "true";
-  const originalLabel = buttonElement.textContent;
+  const labelEl = buttonElement.querySelector("[data-button-label]");
+  const originalLabel = labelEl ? labelEl.textContent : buttonElement.textContent;
   const loadingLabel = buttonElement.dataset.loadingLabel || "Saving...";
   buttonElement.dataset.originalLabel = originalLabel;
   buttonElement.disabled = true;
-  buttonElement.textContent = loadingLabel;
+  if (labelEl) {
+    labelEl.textContent = loadingLabel;
+  } else {
+    buttonElement.textContent = loadingLabel;
+  }
   if (buttonElement.dataset.spinner === "true") {
     ensureButtonSpinner(buttonElement);
     buttonElement.classList.add("is-loading");
@@ -559,7 +611,11 @@ export async function withLoading(buttonElement, asyncFn) {
     console.error("Async action failed", error);
   } finally {
     buttonElement.disabled = false;
-    buttonElement.textContent = originalLabel;
+    if (labelEl) {
+      labelEl.textContent = originalLabel;
+    } else {
+      buttonElement.textContent = originalLabel;
+    }
     buttonElement.classList.remove("is-loading");
     delete buttonElement.dataset.loading;
     delete buttonElement.dataset.originalLabel;
@@ -808,6 +864,70 @@ export function setMainInteractionDisabled(disabled) {
   });
 }
 
+function startOpenLevelMeter(stream) {
+  if (!els.judgeOpenLevelMeterFill || !stream) return;
+  if (state.judgeOpen.levelMeter) return;
+  try {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    const source = audioContext.createMediaStreamSource(stream);
+    source.connect(analyser);
+    const dataArray = new Uint8Array(analyser.fftSize);
+    const meter = {
+      audioContext,
+      analyser,
+      source,
+      dataArray,
+      rafId: null,
+    };
+    const tick = () => {
+      analyser.getByteTimeDomainData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i += 1) {
+        const value = (dataArray[i] - 128) / 128;
+        sum += value * value;
+      }
+      const rms = Math.sqrt(sum / dataArray.length);
+      const level = Math.min(1, Math.max(0.05, rms * 2.4));
+      els.judgeOpenLevelMeterFill.style.width = `${Math.round(level * 100)}%`;
+      meter.rafId = window.requestAnimationFrame(tick);
+    };
+    state.judgeOpen.levelMeter = meter;
+    if (els.judgeOpenLevelMeter) {
+      els.judgeOpenLevelMeter.style.display = "block";
+    }
+    tick();
+  } catch (error) {
+    console.warn("Level meter unavailable", error);
+  }
+}
+
+export function stopOpenLevelMeter() {
+  const meter = state.judgeOpen.levelMeter;
+  if (!meter) return;
+  if (meter.rafId) {
+    window.cancelAnimationFrame(meter.rafId);
+  }
+  if (meter.source) {
+    try {
+      meter.source.disconnect();
+    } catch (error) {
+      // no-op
+    }
+  }
+  if (meter.audioContext) {
+    meter.audioContext.close().catch(() => {});
+  }
+  state.judgeOpen.levelMeter = null;
+  if (els.judgeOpenLevelMeterFill) {
+    els.judgeOpenLevelMeterFill.style.width = "0%";
+  }
+  if (els.judgeOpenLevelMeter) {
+    els.judgeOpenLevelMeter.style.display = "none";
+  }
+}
+
 export function updateConnectivityUI() {
   state.app.isOffline = !navigator.onLine;
   if (els.offlineBanner) {
@@ -873,12 +993,46 @@ export function closeDirectorProfileModal() {
   els.directorProfileModal.setAttribute("aria-hidden", "true");
 }
 
+export function openUserProfileModal() {
+  if (!els.userProfileModal) return;
+  if (els.userProfileNameInput) {
+    els.userProfileNameInput.value =
+      state.auth.userProfile?.displayName || state.auth.currentUser?.displayName || "";
+  }
+  if (els.userProfileStatus) {
+    els.userProfileStatus.textContent = "";
+  }
+  els.userProfileModal.classList.add("is-open");
+  els.userProfileModal.setAttribute("aria-hidden", "false");
+}
+
+export function closeUserProfileModal() {
+  if (!els.userProfileModal) return;
+  els.userProfileModal.classList.remove("is-open");
+  els.userProfileModal.setAttribute("aria-hidden", "true");
+}
+
 export function updateAuthUI() {
   if (state.auth.currentUser) {
     const label = state.auth.currentUser.email ? state.auth.currentUser.email : "Signed in";
     els.signOutBtn.disabled = false;
     if (els.accountSummary) {
       els.accountSummary.textContent = `Signed in as ${label}`;
+    }
+    if (els.authIdentityBanner) {
+      const displayName =
+        state.auth.userProfile?.displayName ||
+        state.auth.currentUser?.displayName ||
+        "Signed in";
+      const email = state.auth.userProfile?.email || state.auth.currentUser?.email || "";
+      if (els.authIdentityName) {
+        els.authIdentityName.textContent = displayName || "Signed in";
+      }
+      if (els.authIdentityEmail) {
+        els.authIdentityEmail.textContent = email;
+        els.authIdentityEmail.style.display = email ? "block" : "none";
+      }
+      els.authIdentityBanner.classList.remove("is-hidden");
     }
     if (els.headerAuthActions && els.signOutBtn.parentElement !== els.headerAuthActions) {
       els.headerAuthActions.appendChild(els.signOutBtn);
@@ -890,6 +1044,9 @@ export function updateAuthUI() {
     els.signOutBtn.disabled = true;
     if (els.accountSummary) {
       els.accountSummary.textContent = "Signed out";
+    }
+    if (els.authIdentityBanner) {
+      els.authIdentityBanner.classList.add("is-hidden");
     }
     if (els.modalAuthActions && els.signOutBtn.parentElement !== els.modalAuthActions) {
       els.modalAuthActions.appendChild(els.signOutBtn);
@@ -924,10 +1081,19 @@ export function bindAuthHandlers() {
       event.preventDefault();
       setRoleHint("");
       try {
+        setAuthFormDisabled(true);
+        if (els.emailSignInBtn) {
+          setSavingState(els.emailSignInBtn, true, "Signing in...");
+        }
         await signIn(els.emailInput?.value, els.passwordInput?.value);
       } catch (error) {
         console.error("Email sign-in failed", error);
         setRoleHint("Sign-in failed. Check email/password or reset your password.");
+      } finally {
+        if (els.emailSignInBtn) {
+          setSavingState(els.emailSignInBtn, false);
+        }
+        setAuthFormDisabled(false);
       }
     });
   }
@@ -1094,13 +1260,16 @@ function updateTabUI(tabName, role) {
     return;
   }
   els.tabButtons.forEach((button) => {
+    const allowed = isTabAllowed(button.dataset.tab, role);
     const isSelected = button.dataset.tab === tabName;
     button.setAttribute("aria-selected", isSelected ? "true" : "false");
-    button.disabled = !isTabAllowed(button.dataset.tab, role);
+    button.disabled = !allowed;
+    button.hidden = role === "admin" ? false : !allowed;
     button.tabIndex = isSelected ? 0 : -1;
   });
   const showAdmin = tabName === "admin";
   const showJudge = tabName === "judge";
+  const showJudgeOpen = tabName === "judge-open";
   const showDirector = tabName === "director";
   if (els.adminCard) {
     els.adminCard.hidden = !showAdmin;
@@ -1110,9 +1279,20 @@ function updateTabUI(tabName, role) {
     els.judgeCard.hidden = !showJudge;
     els.judgeCard.style.display = showJudge ? "grid" : "none";
   }
+  if (els.judgeOpenCard) {
+    els.judgeOpenCard.hidden = !showJudgeOpen;
+    els.judgeOpenCard.style.display = showJudgeOpen ? "grid" : "none";
+  }
   if (els.directorCard) {
     els.directorCard.hidden = !showDirector;
     els.directorCard.style.display = showDirector ? "grid" : "none";
+  }
+  if (showJudgeOpen) {
+    updateOpenEmptyState();
+    updateOpenSubmitState();
+    if (!els.judgeOpenCaptionForm?.children?.length) {
+      renderOpenCaptionForm();
+    }
   }
   if (els.eventDetailPage && !els.eventDetailPage.classList.contains("is-hidden")) {
     hideEventDetail();
@@ -1159,6 +1339,11 @@ export function handleHashChange() {
     return;
   }
   if (action.type === "tab") {
+    if (!state.auth.currentUser && action.tab === "judge-open") {
+      window.location.hash = "";
+      hideEventDetail();
+      return;
+    }
     const role = state.auth.userProfile?.role || null;
     if (role && !isTabAllowed(action.tab, role)) {
       const fallback = getDefaultTabForRole(role);
@@ -1185,12 +1370,18 @@ export function updateRoleUI() {
   if (!state.auth.currentUser) {
     document.body.classList.add("auth-locked");
     document.body.classList.remove("director-only");
+    setMainInteractionDisabled(true);
+    if (els.roleTabBar) {
+      els.roleTabBar.classList.add("is-hidden");
+    }
     if (els.adminCard) els.adminCard.style.display = "none";
     if (els.judgeCard) els.judgeCard.style.display = "none";
+    if (els.judgeOpenCard) els.judgeOpenCard.style.display = "none";
     if (els.directorCard) els.directorCard.style.display = "none";
     els.tabButtons.forEach((button) => {
       button.setAttribute("aria-selected", "false");
       button.disabled = true;
+      button.hidden = false;
     });
     setRoleHint("Sign in with your provisioned account.");
     setProvisioningNotice("");
@@ -1207,12 +1398,18 @@ export function updateRoleUI() {
   if (!state.auth.userProfile) {
     document.body.classList.add("auth-locked");
     document.body.classList.remove("director-only");
+    setMainInteractionDisabled(true);
+    if (els.roleTabBar) {
+      els.roleTabBar.classList.add("is-hidden");
+    }
     if (els.adminCard) els.adminCard.style.display = "none";
     if (els.judgeCard) els.judgeCard.style.display = "none";
+    if (els.judgeOpenCard) els.judgeOpenCard.style.display = "none";
     if (els.directorCard) els.directorCard.style.display = "none";
     els.tabButtons.forEach((button) => {
       button.setAttribute("aria-selected", "false");
       button.disabled = true;
+      button.hidden = false;
     });
     setRoleHint("Account not provisioned. Contact the chair/admin to be added.");
     setProvisioningNotice(
@@ -1223,20 +1420,26 @@ export function updateRoleUI() {
   }
 
   document.body.classList.remove("auth-locked");
-  if (state.auth.userProfile.role === "director") {
+  const effectiveRole = getEffectiveRole(state.auth.userProfile);
+  setMainInteractionDisabled(false);
+  if (els.roleTabBar) {
+    els.roleTabBar.classList.remove("is-hidden");
+  }
+  updateRoleTabBar(effectiveRole);
+  if (effectiveRole === "director") {
     document.body.classList.add("director-only");
   } else {
     document.body.classList.remove("director-only");
   }
-  setRoleHint(`Role: ${state.auth.userProfile.role || "unknown"}`);
+  setRoleHint(`Role: ${effectiveRole || "unknown"}`);
   setProvisioningNotice("");
   els.tabButtons.forEach((button) => {
-    const allowed = isTabAllowed(button.dataset.tab, state.auth.userProfile.role);
+    const allowed = isTabAllowed(button.dataset.tab, effectiveRole);
     button.style.display = allowed ? "inline-flex" : "none";
   });
-  const defaultTab = getDefaultTabForRole(state.auth.userProfile.role);
+  const defaultTab = getDefaultTabForRole(effectiveRole);
   setTab(defaultTab, { force: true });
-  if (state.auth.userProfile.role === "director") {
+  if (effectiveRole === "director") {
     const name =
       state.auth.userProfile.displayName ||
       state.auth.currentUser?.displayName ||
@@ -1258,11 +1461,15 @@ export function stopWatchers() {
   if (state.subscriptions.assignments) state.subscriptions.assignments();
   if (state.subscriptions.judgeSubmission) state.subscriptions.judgeSubmission();
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
+  if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
   if (state.subscriptions.directorSchool) state.subscriptions.directorSchool();
   if (state.subscriptions.directorEnsembles) state.subscriptions.directorEnsembles();
   if (state.subscriptions.directorEntry) state.subscriptions.directorEntry();
   if (state.subscriptions.judges) state.subscriptions.judges();
   if (state.subscriptions.scheduleEnsembles) state.subscriptions.scheduleEnsembles();
+  if (state.subscriptions.openPackets) state.subscriptions.openPackets();
+  if (state.subscriptions.openSessions) state.subscriptions.openSessions();
+  if (state.subscriptions.openPacketsAdmin) state.subscriptions.openPacketsAdmin();
   state.subscriptions.events = null;
   state.subscriptions.activeEvent = null;
   state.subscriptions.roster = null;
@@ -1270,11 +1477,15 @@ export function stopWatchers() {
   state.subscriptions.assignments = null;
   state.subscriptions.judgeSubmission = null;
   state.subscriptions.directorPackets = null;
+  state.subscriptions.directorOpenPackets = null;
   state.subscriptions.directorSchool = null;
   state.subscriptions.directorEnsembles = null;
   state.subscriptions.directorEntry = null;
   state.subscriptions.judges = null;
   state.subscriptions.scheduleEnsembles = null;
+  state.subscriptions.openPackets = null;
+  state.subscriptions.openSessions = null;
+  state.subscriptions.openPacketsAdmin = null;
 }
 
 export function startWatchers() {
@@ -1313,6 +1524,12 @@ export function startWatchers() {
   });
   watchSchools(() => {
     refreshSchoolDropdowns();
+    if (state.auth.userProfile?.role === "judge" || state.auth.userProfile?.roles?.judge) {
+      fetchOpenEnsembleIndex(state.admin.schoolsList).then((items) => {
+        state.judgeOpen.existingEnsembles = items;
+        renderOpenExistingOptions(items);
+      });
+    }
   });
 
   if (isDirectorManager()) {
@@ -1332,14 +1549,20 @@ export function startWatchers() {
       });
     });
   }
-  if (state.auth.userProfile?.role === "judge") {
+  if (isJudgeRole(state.auth.userProfile)) {
     watchReadyEntries(() => {
       renderRosterList();
     });
+    state.subscriptions.openPackets = watchOpenPackets((packets) => {
+      renderOpenPacketOptions(packets || []);
+    });
   }
-  if (state.auth.userProfile?.role === "admin") {
+  if (getEffectiveRole(state.auth.userProfile) === "admin") {
     watchJudges((judges) => {
       renderJudgeOptions(judges);
+    });
+    state.subscriptions.openPacketsAdmin = watchOpenPacketsAdmin((packets) => {
+      renderAdminOpenPackets(packets || []);
     });
   }
 }
@@ -1507,6 +1730,572 @@ export function setJudgePositionDisplay(message) {
 export function setJudgeAssignmentDetail(message) {
   if (!els.judgeAssignmentDetail) return;
   els.judgeAssignmentDetail.textContent = message || "";
+}
+
+export function setOpenPacketHint(message) {
+  if (!els.judgeOpenPacketHint) return;
+  els.judgeOpenPacketHint.textContent = message || "";
+}
+
+export function updateOpenEmptyState() {
+  if (!els.judgeOpenEmpty) return;
+  const show = !state.judgeOpen.currentPacketId;
+  els.judgeOpenEmpty.style.display = show ? "block" : "none";
+  if (els.judgeOpenStatusBadge) {
+    const packet = state.judgeOpen.currentPacket || {};
+    els.judgeOpenStatusBadge.textContent = packet.status || "Draft";
+  }
+  if (show) {
+    hideOpenDetailView();
+  }
+}
+
+export function renderOpenPacketOptions(packets) {
+  if (!els.judgeOpenPacketSelect) return;
+  els.judgeOpenPacketSelect.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = packets.length ? "Select a packet" : "No packets yet";
+  els.judgeOpenPacketSelect.appendChild(placeholder);
+  packets.forEach((packet) => {
+    const option = document.createElement("option");
+    option.value = packet.id;
+    option.textContent = packet.display || packet.id;
+    els.judgeOpenPacketSelect.appendChild(option);
+  });
+  renderOpenPacketCards(packets);
+}
+
+function formatPacketUpdatedAt(packet) {
+  const raw = packet.updatedAt?.toMillis ? packet.updatedAt.toMillis() : null;
+  if (!raw) return "Updated recently";
+  return new Date(raw).toLocaleString();
+}
+
+function computePacketProgress(packet) {
+  if (!packet) return 0;
+  if (["submitted", "locked", "released"].includes(packet.status)) return 100;
+  const hasTranscript = Boolean(packet.transcriptFull || packet.transcript);
+  const hasCaptions = packet.captions && Object.keys(packet.captions).length > 0;
+  if (hasTranscript && hasCaptions) return 75;
+  if (packet.segmentCount || packet.audioSessionCount) return 40;
+  return 10;
+}
+
+function renderOpenPacketCards(packets) {
+  if (!els.judgeOpenPacketList) return;
+  els.judgeOpenPacketList.innerHTML = "";
+  packets.forEach((packet) => {
+    const card = document.createElement("div");
+    card.className = "packet-card";
+    card.dataset.packetId = packet.id;
+    const progress = computePacketProgress(packet);
+    const statusRaw = packet.status || "draft";
+    const status = statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1);
+    card.innerHTML = `
+      <div class="packet-card-header">
+        <div class="packet-card-title">${packet.schoolName || "Unknown school"} • ${packet.ensembleName || "Unknown ensemble"}</div>
+        <span class="status-badge">${status}</span>
+      </div>
+      <div class="packet-card-meta">${formatPacketUpdatedAt(packet)}</div>
+      <div class="progress-bar"><span style="width: ${progress}%"></span></div>
+    `;
+    card.addEventListener("click", () => {
+      if (els.judgeOpenPacketSelect) {
+        els.judgeOpenPacketSelect.value = packet.id;
+      }
+      openJudgeOpenPacket(packet.id);
+    });
+    els.judgeOpenPacketList.appendChild(card);
+  });
+}
+
+function updateOpenHeader() {
+  if (!els.judgeOpenHeaderTitle || !els.judgeOpenHeaderSub) return;
+  const packet = state.judgeOpen.currentPacket || {};
+  const school = packet.schoolName || "School";
+  const ensemble = packet.ensembleName || "Ensemble";
+  els.judgeOpenHeaderTitle.textContent = `${school} • ${ensemble}`;
+  els.judgeOpenHeaderSub.textContent = packet.status || "Draft";
+}
+
+function updateRoleTabBar(role) {
+  if (!els.roleTabBar) return;
+  const groups = els.roleTabGroups || [];
+  groups.forEach((group) => {
+    const show = group.dataset.role === role;
+    group.style.display = show ? "contents" : "none";
+    if (show) {
+      const buttons = group.querySelectorAll("button");
+      buttons.forEach((btn, index) => {
+        btn.setAttribute("aria-selected", index === 0 ? "true" : "false");
+      });
+    }
+  });
+}
+
+function scrollToSection(target) {
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function showOpenDetailView() {
+  if (els.judgeOpenDetailView) {
+    els.judgeOpenDetailView.classList.add("is-open");
+  }
+}
+
+function hideOpenDetailView() {
+  if (els.judgeOpenDetailView) {
+    els.judgeOpenDetailView.classList.remove("is-open");
+  }
+}
+
+function syncOpenFormTypeSegmented() {
+  if (!els.judgeOpenFormTypeSegmented) return;
+  const buttons = els.judgeOpenFormTypeSegmented.querySelectorAll("[data-form]");
+  buttons.forEach((button) => {
+    const isActive = button.dataset.form === (state.judgeOpen.formType || "stage");
+    button.classList.toggle("is-active", isActive);
+  });
+}
+
+async function openJudgeOpenPacket(packetId) {
+  if (!packetId) return;
+  const result = await selectOpenPacket(packetId, { onSessions: renderOpenSegments });
+  if (result?.ok) {
+    state.judgeOpen.tapePlaylistIndex = 0;
+    if (els.judgeOpenSchoolNameInput) {
+      els.judgeOpenSchoolNameInput.value = result.packet.schoolName || "";
+    }
+    if (els.judgeOpenEnsembleNameInput) {
+      els.judgeOpenEnsembleNameInput.value = result.packet.ensembleName || "";
+    }
+    if (els.judgeOpenFormTypeSelect) {
+      els.judgeOpenFormTypeSelect.value = result.packet.formType || "stage";
+    }
+    syncOpenFormTypeSegmented();
+    if (els.judgeOpenExistingSelect) {
+      if (result.packet.ensembleId) {
+        els.judgeOpenExistingSelect.value = `${result.packet.schoolId}:${result.packet.ensembleId}`;
+      } else {
+        els.judgeOpenExistingSelect.value = "";
+      }
+    }
+    if (els.judgeOpenTranscriptInput) {
+      els.judgeOpenTranscriptInput.value =
+        result.packet.transcriptFull || result.packet.transcript || "";
+    }
+    renderOpenCaptionForm();
+    updateOpenHeader();
+    updateOpenEmptyState();
+    updateOpenSubmitState();
+    showOpenDetailView();
+    await saveOpenPrefsToServer({
+      lastJudgeOpenPacketId: packetId,
+      lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
+    });
+    if (state.auth.userProfile) {
+      state.auth.userProfile.preferences = {
+        ...(state.auth.userProfile.preferences || {}),
+        lastJudgeOpenPacketId: packetId,
+        lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
+      };
+    }
+  }
+}
+
+export function renderOpenExistingOptions(items) {
+  if (!els.judgeOpenExistingSelect) return;
+  els.judgeOpenExistingSelect.innerHTML = "";
+  const sorted = [...items].sort((a, b) => {
+    const school = (a.schoolName || "").localeCompare(b.schoolName || "");
+    if (school !== 0) return school;
+    return (a.ensembleName || "").localeCompare(b.ensembleName || "");
+  });
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = items.length ? "Select existing ensemble" : "No ensembles available";
+  els.judgeOpenExistingSelect.appendChild(placeholder);
+  sorted.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = `${item.schoolId}:${item.ensembleId}`;
+    option.textContent = `${item.schoolName} — ${item.ensembleName}`;
+    option.dataset.schoolId = item.schoolId;
+    option.dataset.schoolName = item.schoolName;
+    option.dataset.ensembleId = item.ensembleId;
+    option.dataset.ensembleName = item.ensembleName;
+    els.judgeOpenExistingSelect.appendChild(option);
+  });
+  if (state.judgeOpen.selectedExisting?.ensembleId) {
+    els.judgeOpenExistingSelect.value = `${state.judgeOpen.selectedExisting.schoolId}:${state.judgeOpen.selectedExisting.ensembleId}`;
+  }
+}
+
+export function renderOpenCaptionForm() {
+  if (!els.judgeOpenCaptionForm) return;
+  els.judgeOpenCaptionForm.innerHTML = "";
+  const template = getOpenCaptionTemplate();
+  template.forEach(({ key, label }) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "caption-card";
+    wrapper.dataset.key = key;
+    wrapper.innerHTML = `
+      <div class="caption-title">${label}</div>
+      <div class="caption-segments" data-grade-group>
+        <button type="button" data-grade="A">A</button>
+        <button type="button" data-grade="B">B</button>
+        <button type="button" data-grade="C">C</button>
+        <button type="button" data-grade="D">D</button>
+        <button type="button" data-grade="F">F</button>
+      </div>
+      <div class="caption-modifiers" data-modifier-group>
+        <button type="button" data-modifier="+">+</button>
+        <button type="button" data-modifier="-">-</button>
+      </div>
+      <textarea rows="2" data-comment></textarea>
+    `;
+    els.judgeOpenCaptionForm.appendChild(wrapper);
+  });
+  applyOpenCaptionState();
+}
+
+function areOpenCaptionsComplete() {
+  const template = getOpenCaptionTemplate();
+  return template.every(({ key }) => {
+    const grade = state.judgeOpen.captions[key]?.gradeLetter;
+    return Boolean(grade);
+  });
+}
+
+export function applyOpenCaptionState() {
+  const template = getOpenCaptionTemplate();
+  template.forEach(({ key }) => {
+    const wrapper = els.judgeOpenCaptionForm?.querySelector(`[data-key="${key}"]`);
+    if (!wrapper) return;
+    const caption = state.judgeOpen.captions[key] || {};
+    const comment = wrapper.querySelector("[data-comment]");
+    const gradeButtons = wrapper.querySelectorAll("[data-grade]");
+    gradeButtons.forEach((btn) => {
+      const active = btn.dataset.grade === caption.gradeLetter;
+      btn.classList.toggle("is-active", active);
+    });
+    const modifierButtons = wrapper.querySelectorAll("[data-modifier]");
+    modifierButtons.forEach((btn) => {
+      const active = btn.dataset.modifier === caption.gradeModifier;
+      btn.classList.toggle("is-active", active);
+    });
+    if (comment) comment.value = caption.comment || "";
+  });
+  const complete = areOpenCaptionsComplete();
+  const total = calculateCaptionTotal(state.judgeOpen.captions);
+  const rating = complete ? computeFinalRating(total) : { label: "N/A", value: null };
+  if (els.judgeOpenCaptionTotal) {
+    els.judgeOpenCaptionTotal.textContent = complete ? String(total) : "Incomplete";
+  }
+  if (els.judgeOpenFinalRating) {
+    els.judgeOpenFinalRating.textContent = rating.label;
+  }
+}
+
+export function renderOpenSegments(sessions) {
+  if (!els.judgeOpenSegmentsList) return;
+  els.judgeOpenSegmentsList.innerHTML = "";
+  const ordered = [...sessions].sort((a, b) => {
+    const aTime = a.startedAt?.toMillis
+      ? a.startedAt.toMillis()
+      : a.createdAt?.toMillis
+        ? a.createdAt.toMillis()
+        : 0;
+    const bTime = b.startedAt?.toMillis
+      ? b.startedAt.toMillis()
+      : b.createdAt?.toMillis
+        ? b.createdAt.toMillis()
+        : 0;
+    if (aTime && bTime) return aTime - bTime;
+    return 0;
+  });
+  if (els.judgeOpenSegmentsDetails) {
+    const hint = els.judgeOpenSegmentsDetails.querySelector(".readiness-hint");
+    if (hint) hint.textContent = `${ordered.length} segments`;
+  }
+  if (els.judgeOpenSegmentsSummary) {
+    els.judgeOpenSegmentsSummary.textContent = `Segments (${ordered.length})`;
+  }
+  ordered.forEach((session, index) => {
+    const item = document.createElement("li");
+    item.className = "list-item";
+    const status = session.status || "recording";
+    const meta = document.createElement("div");
+    meta.className = "stack";
+    const title = document.createElement("strong");
+    title.textContent = `Segment ${index + 1}`;
+    const hint = document.createElement("div");
+    hint.className = "note";
+    const duration = formatDuration(Number(session.durationSec || 0));
+    const transcriptStatus = session.transcriptStatus || "idle";
+    const startedAtLabel = session.startedAt ? formatPerformanceAt(session.startedAt) : "";
+    const startedText = startedAtLabel ? ` • ${startedAtLabel}` : "";
+    hint.textContent = `${status} • ${duration}${startedText} • transcript ${transcriptStatus}${
+      session.needsUpload ? " • needs upload" : ""
+    }`;
+    meta.appendChild(title);
+    meta.appendChild(hint);
+    item.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    if (session.needsUpload) {
+      const retryBtn = document.createElement("button");
+      retryBtn.className = "ghost";
+      retryBtn.textContent = "Retry Upload";
+      retryBtn.addEventListener("click", async () => {
+        const result = await retryOpenSessionUploads(session.id);
+        if (!result?.ok) {
+          setOpenPacketHint(result?.message || "Retry failed.");
+        } else {
+          setOpenPacketHint("Retry completed.");
+        }
+      });
+      actions.appendChild(retryBtn);
+    }
+    const retryTranscriptBtn = document.createElement("button");
+    retryTranscriptBtn.className = "ghost";
+    retryTranscriptBtn.textContent = "Retry Transcription";
+    retryTranscriptBtn.addEventListener("click", async () => {
+      const result = await transcribeOpenSegment({ sessionId: session.id });
+      if (!result?.ok) {
+        setOpenPacketHint(result?.message || "Segment transcription failed.");
+      } else {
+        setOpenPacketHint("Segment transcription complete.");
+      }
+    });
+    actions.appendChild(retryTranscriptBtn);
+    item.appendChild(actions);
+
+    if (session.masterAudioUrl) {
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.src = session.masterAudioUrl;
+      audio.className = "audio";
+      item.appendChild(audio);
+    }
+
+    els.judgeOpenSegmentsList.appendChild(item);
+  });
+  updateTapePlayback(ordered);
+}
+
+export function updateOpenSubmitState() {
+  const packet = state.judgeOpen.currentPacket || {};
+  const editable = isOpenPacketEditable(packet);
+  const complete = areOpenCaptionsComplete();
+  const transcriptReady = Boolean(state.judgeOpen.transcriptText?.trim());
+  const pendingUploads = state.judgeOpen.pendingUploads > 0;
+  const recordingActive = state.judgeOpen.mediaRecorder?.state === "recording";
+  const canSubmit =
+    editable && complete && transcriptReady && !pendingUploads && !recordingActive;
+  if (els.judgeOpenSubmitBtn) {
+    els.judgeOpenSubmitBtn.disabled = !canSubmit;
+  }
+  if (els.judgeOpenTranscriptInput) {
+    els.judgeOpenTranscriptInput.disabled = !editable;
+  }
+  if (els.judgeOpenDraftBtn) {
+    els.judgeOpenDraftBtn.disabled = !editable;
+  }
+  if (els.judgeOpenTranscribeBtn) {
+    els.judgeOpenTranscribeBtn.disabled = !editable;
+  }
+  if (els.judgeOpenRecordBtn) {
+    els.judgeOpenRecordBtn.disabled = !editable;
+  }
+  if (els.judgeOpenStopBtn) {
+    els.judgeOpenStopBtn.disabled = !editable;
+  }
+}
+
+export async function restoreOpenPacketFromPrefs() {
+  if (state.judgeOpen.restoreAttempted) return;
+  state.judgeOpen.restoreAttempted = true;
+  if (!isJudgeRole(state.auth.userProfile)) return;
+  const local = loadOpenPrefs();
+  const prefs = state.auth.userProfile?.preferences || {};
+  const defaultFormType = prefs.judgeOpenDefaultFormType || local.defaultFormType || "stage";
+  const lastFormType = prefs.lastJudgeOpenFormType || local.lastFormType || defaultFormType;
+  state.judgeOpen.formType = lastFormType || "stage";
+  if (els.judgeOpenFormTypeSelect) {
+    els.judgeOpenFormTypeSelect.value = state.judgeOpen.formType;
+  }
+  syncOpenFormTypeSegmented();
+  renderOpenCaptionForm();
+
+  const lastPacketId = prefs.lastJudgeOpenPacketId || local.lastPacketId;
+  if (!lastPacketId) {
+    updateOpenEmptyState();
+    updateOpenSubmitState();
+    return;
+  }
+  const result = await selectOpenPacket(lastPacketId, { onSessions: renderOpenSegments });
+  if (result?.ok) {
+    if (els.judgeOpenPacketSelect) {
+      els.judgeOpenPacketSelect.value = lastPacketId;
+    }
+    if (els.judgeOpenSchoolNameInput) {
+      els.judgeOpenSchoolNameInput.value = result.packet.schoolName || "";
+    }
+    if (els.judgeOpenEnsembleNameInput) {
+      els.judgeOpenEnsembleNameInput.value = result.packet.ensembleName || "";
+    }
+    if (els.judgeOpenExistingSelect) {
+      els.judgeOpenExistingSelect.value = result.packet.ensembleId
+        ? `${result.packet.schoolId}:${result.packet.ensembleId}`
+        : "";
+    }
+    if (els.judgeOpenTranscriptInput) {
+      els.judgeOpenTranscriptInput.value =
+        result.packet.transcriptFull || result.packet.transcript || "";
+    }
+    renderOpenCaptionForm();
+    updateOpenHeader();
+    showOpenDetailView();
+    updateOpenEmptyState();
+    updateOpenSubmitState();
+    return;
+  }
+  setOpenPacketHint("Last packet not found.");
+  updateOpenEmptyState();
+  updateOpenSubmitState();
+}
+
+function formatDuration(totalSec) {
+  if (!Number.isFinite(totalSec)) return "0:00";
+  const seconds = Math.max(0, Math.floor(totalSec || 0));
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hrs > 0) {
+    return `${hrs}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function buildTapePlaylist(sessions) {
+  return sessions
+    .filter((session) => session.masterAudioUrl)
+    .map((session) => ({
+      id: session.id,
+      url: session.masterAudioUrl,
+      durationSec: Number(session.durationSec || 0),
+    }));
+}
+
+function updateTapePlayback(sessions) {
+  if (!els.judgeOpenTapePlayback) return;
+  const playlist = buildTapePlaylist(sessions);
+  state.judgeOpen.tapePlaylist = playlist;
+  const totalDuration = sessions.reduce(
+    (sum, item) => {
+      const value = Number(item.durationSec);
+      return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+    },
+    0
+  );
+  const safeDuration = Number.isFinite(totalDuration) ? totalDuration : 0;
+  state.judgeOpen.tapeDurationSec = safeDuration;
+  if (els.judgeOpenTapeDuration) {
+    els.judgeOpenTapeDuration.textContent = formatDuration(safeDuration);
+  }
+  const hasAudio = playlist.length > 0;
+  if (els.judgeOpenTapeEmpty) {
+    els.judgeOpenTapeEmpty.style.display = hasAudio ? "none" : "block";
+  }
+  if (els.judgeOpenTapePlayback) {
+    els.judgeOpenTapePlayback.style.display = hasAudio ? "block" : "none";
+  }
+  if (els.judgeOpenTapeDurationRow) {
+    els.judgeOpenTapeDurationRow.style.display = safeDuration > 0 ? "block" : "none";
+  }
+  if (!hasAudio) {
+    els.judgeOpenTapePlayback.removeAttribute("src");
+    return;
+  }
+  const current = state.judgeOpen.tapePlaylistIndex || 0;
+  const bounded = current < playlist.length ? current : 0;
+  state.judgeOpen.tapePlaylistIndex = bounded;
+  if (els.judgeOpenTapePlayback.src !== playlist[bounded].url) {
+    els.judgeOpenTapePlayback.src = playlist[bounded].url;
+  }
+}
+
+export function renderAdminOpenPackets(packets) {
+  if (!els.adminOpenPacketsList) return;
+  els.adminOpenPacketsList.innerHTML = "";
+  if (!packets.length) {
+    if (els.adminOpenPacketsHint) {
+      els.adminOpenPacketsHint.textContent = "No open packets yet.";
+    }
+    return;
+  }
+  if (els.adminOpenPacketsHint) {
+    els.adminOpenPacketsHint.textContent = "";
+  }
+  packets.forEach((packet) => {
+    const item = document.createElement("li");
+    item.className = "list-item";
+    const meta = document.createElement("div");
+    meta.className = "stack";
+    const title = document.createElement("strong");
+    const school = packet.schoolName || packet.schoolId || "Unknown school";
+    const ensemble = packet.ensembleName || packet.ensembleId || "Unknown ensemble";
+    title.textContent = `${school} • ${ensemble}`;
+    const detail = document.createElement("div");
+    detail.className = "note";
+    detail.textContent = `Status: ${packet.status || "draft"}`;
+    meta.appendChild(title);
+    meta.appendChild(detail);
+    item.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const lockBtn = document.createElement("button");
+    const isLocked = Boolean(packet.locked);
+    lockBtn.textContent = isLocked ? "Unlock" : "Lock";
+    lockBtn.className = "ghost";
+    lockBtn.addEventListener("click", async () => {
+      if (isLocked) {
+        await unlockOpenPacket({ packetId: packet.id });
+      } else {
+        await lockOpenPacket({ packetId: packet.id });
+      }
+    });
+    actions.appendChild(lockBtn);
+
+    const releaseBtn = document.createElement("button");
+    releaseBtn.className = "ghost";
+    releaseBtn.textContent = packet.status === "released" ? "Released" : "Release";
+    releaseBtn.disabled = packet.status === "released";
+    releaseBtn.addEventListener("click", async () => {
+      if (packet.status === "released") return;
+      await releaseOpenPacket({ packetId: packet.id });
+    });
+    actions.appendChild(releaseBtn);
+
+    const linkBtn = document.createElement("button");
+    linkBtn.className = "ghost";
+    linkBtn.textContent = "Link Ensemble";
+    linkBtn.addEventListener("click", async () => {
+      const schoolId = window.prompt("School ID to link:");
+      if (!schoolId) return;
+      const ensembleId = window.prompt("Ensemble ID to link:");
+      if (!ensembleId) return;
+      await linkOpenPacketToEnsemble({ packetId: packet.id, schoolId, ensembleId });
+    });
+    actions.appendChild(linkBtn);
+
+    item.appendChild(actions);
+    els.adminOpenPacketsList.appendChild(item);
+  });
 }
 
 export function setStageJudgeSelectValues({
@@ -2207,6 +2996,7 @@ export function renderDirectorChecklist(entry, completionState) {
 
   const total = items.length;
   const done = items.filter((item) => Boolean(s[item.key])).length;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   renderStatusSummary({
     rootId: "directorChecklistPanel",
     title: done === total ? "Ready to submit" : "Not ready yet",
@@ -2215,6 +3005,16 @@ export function renderDirectorChecklist(entry, completionState) {
     pillText: done === total ? "Complete" : "Draft",
     hintText: done === total ? "" : `${total - done} missing`,
   });
+
+  if (els.directorSummaryStatus) {
+    els.directorSummaryStatus.textContent = done === total ? "Ready" : "Draft";
+  }
+  if (els.directorSummaryCompletion) {
+    els.directorSummaryCompletion.textContent = `${pct}%`;
+  }
+  if (els.directorSummaryProgressBar) {
+    els.directorSummaryProgressBar.style.width = `${pct}%`;
+  }
 
   renderChecklist(els.directorChecklist, items, s);
 }
@@ -2905,6 +3705,64 @@ export function renderDirectorPackets(groups) {
     const wrapper = document.createElement("div");
     wrapper.className = "packet";
 
+    if (group.type === "open") {
+      const header = document.createElement("div");
+      header.className = "packet-header";
+      const ensembleRow = document.createElement("div");
+      const ensembleLabel = document.createElement("strong");
+      ensembleLabel.textContent = "Open Packet";
+      ensembleRow.appendChild(ensembleLabel);
+      const schoolRow = document.createElement("div");
+      schoolRow.className = "note";
+      schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
+      const ensembleNameRow = document.createElement("div");
+      ensembleNameRow.className = "note";
+      ensembleNameRow.textContent = `Ensemble: ${group.ensembleName || group.ensembleId || "Unknown"}`;
+      const ratingRow = document.createElement("div");
+      ratingRow.className = "note";
+      ratingRow.textContent = `Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
+      header.appendChild(ensembleRow);
+      header.appendChild(schoolRow);
+      header.appendChild(ensembleNameRow);
+      header.appendChild(ratingRow);
+
+      const grid = document.createElement("div");
+      grid.className = "packet-grid";
+      const transcriptCard = document.createElement("div");
+      transcriptCard.className = "packet-card";
+      const transcriptBadge = document.createElement("div");
+      transcriptBadge.className = "badge";
+      transcriptBadge.textContent = "Transcript";
+      const transcriptText = document.createElement("div");
+      transcriptText.className = "note";
+      transcriptText.textContent = group.transcript
+        ? group.transcript
+        : "Transcript not available.";
+      transcriptCard.appendChild(transcriptBadge);
+      transcriptCard.appendChild(transcriptText);
+      grid.appendChild(transcriptCard);
+
+      if (group.latestAudioUrl) {
+        const audioCard = document.createElement("div");
+        audioCard.className = "packet-card";
+        const audioBadge = document.createElement("div");
+        audioBadge.className = "badge";
+        audioBadge.textContent = "Audio";
+        const audio = document.createElement("audio");
+        audio.controls = true;
+        audio.src = group.latestAudioUrl;
+        audio.className = "audio";
+        audioCard.appendChild(audioBadge);
+        audioCard.appendChild(audio);
+        grid.appendChild(audioCard);
+      }
+
+      wrapper.appendChild(header);
+      wrapper.appendChild(grid);
+      els.directorPackets.appendChild(wrapper);
+      continue;
+    }
+
     const header = document.createElement("div");
     header.className = "packet-header";
     const directorName = group.directorName || "Unknown";
@@ -3007,6 +3865,8 @@ export function renderDirectorEnsembles(ensembles) {
 
 let adminHandlersBound = false;
 let judgeHandlersBound = false;
+let judgeOpenHandlersBound = false;
+let tapePlaybackBound = false;
 let directorHandlersBound = false;
 let appHandlersBound = false;
 
@@ -3406,6 +4266,486 @@ export function bindJudgeHandlers() {
   }
 }
 
+export function bindJudgeOpenHandlers() {
+  if (judgeOpenHandlersBound) return;
+  judgeOpenHandlersBound = true;
+
+  if (els.judgeOpenPacketSelect) {
+    els.judgeOpenPacketSelect.addEventListener("change", async () => {
+      const packetId = els.judgeOpenPacketSelect.value || "";
+      await openJudgeOpenPacket(packetId);
+    });
+  }
+
+  if (els.judgeOpenBackBtn) {
+    els.judgeOpenBackBtn.addEventListener("click", () => {
+      hideOpenDetailView();
+    });
+  }
+
+  if (els.judgeOpenTapePlayback && !tapePlaybackBound) {
+    tapePlaybackBound = true;
+    els.judgeOpenTapePlayback.addEventListener("ended", () => {
+      const playlist = state.judgeOpen.tapePlaylist || [];
+      if (!playlist.length) return;
+      const nextIndex = (state.judgeOpen.tapePlaylistIndex || 0) + 1;
+      if (nextIndex >= playlist.length) {
+        state.judgeOpen.tapePlaylistIndex = 0;
+        return;
+      }
+      state.judgeOpen.tapePlaylistIndex = nextIndex;
+      els.judgeOpenTapePlayback.src = playlist[nextIndex].url;
+      els.judgeOpenTapePlayback.play();
+    });
+  }
+
+  if (els.judgeOpenNewPacketBtn) {
+    els.judgeOpenNewPacketBtn.addEventListener("click", async () => {
+      const payload = gatherOpenPacketMeta();
+      const result = await createOpenPacket({ ...payload, onSessions: renderOpenSegments });
+      if (!result?.ok) {
+        setOpenPacketHint(result?.message || "Unable to create packet.");
+        return;
+      }
+      state.judgeOpen.tapePlaylistIndex = 0;
+      if (els.judgeOpenPacketSelect && result.packetId) {
+        els.judgeOpenPacketSelect.value = result.packetId;
+      }
+      await saveOpenPrefsToServer({
+        lastJudgeOpenPacketId: result.packetId,
+        lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
+      });
+      if (state.auth.userProfile) {
+        state.auth.userProfile.preferences = {
+          ...(state.auth.userProfile.preferences || {}),
+          lastJudgeOpenPacketId: result.packetId,
+          lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
+        };
+      }
+      setOpenPacketHint("Draft packet created.");
+      renderOpenCaptionForm();
+      updateOpenHeader();
+      showOpenDetailView();
+      updateOpenEmptyState();
+      updateOpenSubmitState();
+    });
+  }
+
+  if (els.judgeOpenClearRecentBtn) {
+    els.judgeOpenClearRecentBtn.addEventListener("click", async () => {
+      saveOpenPrefs({ lastPacketId: "", lastFormType: "" });
+      await saveOpenPrefsToServer({
+        lastJudgeOpenPacketId: "",
+        lastJudgeOpenFormType: "",
+      });
+      if (state.auth.userProfile) {
+        state.auth.userProfile.preferences = {
+          ...(state.auth.userProfile.preferences || {}),
+          lastJudgeOpenPacketId: "",
+          lastJudgeOpenFormType: "",
+        };
+      }
+      state.judgeOpen.currentPacketId = null;
+      state.judgeOpen.currentPacket = null;
+      state.judgeOpen.selectedExisting = null;
+      if (els.judgeOpenPacketSelect) {
+        els.judgeOpenPacketSelect.value = "";
+      }
+      if (els.judgeOpenTranscriptInput) {
+        els.judgeOpenTranscriptInput.value = "";
+      }
+      state.judgeOpen.transcriptText = "";
+      if (els.judgeOpenSchoolNameInput) {
+        els.judgeOpenSchoolNameInput.value = "";
+      }
+      if (els.judgeOpenEnsembleNameInput) {
+        els.judgeOpenEnsembleNameInput.value = "";
+      }
+      state.judgeOpen.captions = {};
+      if (els.judgeOpenDraftStatus) {
+        els.judgeOpenDraftStatus.textContent = "";
+      }
+      updateOpenHeader();
+      hideOpenDetailView();
+      setOpenPacketHint("Recent packet cleared.");
+      renderOpenCaptionForm();
+      updateOpenEmptyState();
+      updateOpenSubmitState();
+    });
+  }
+
+  if (els.judgeOpenDefaultFormBtn) {
+    els.judgeOpenDefaultFormBtn.addEventListener("click", async () => {
+      const formType = els.judgeOpenFormTypeSelect?.value || "stage";
+      saveOpenPrefs({ defaultFormType: formType });
+      await saveOpenPrefsToServer({ judgeOpenDefaultFormType: formType });
+      if (state.auth.userProfile) {
+        state.auth.userProfile.preferences = {
+          ...(state.auth.userProfile.preferences || {}),
+          judgeOpenDefaultFormType: formType,
+        };
+      }
+      setOpenPacketHint("Default form saved.");
+    });
+  }
+
+  if (els.judgeOpenExistingSelect) {
+    els.judgeOpenExistingSelect.addEventListener("change", () => {
+      const option = els.judgeOpenExistingSelect.selectedOptions?.[0];
+      if (!option) return;
+      const schoolId = option.dataset.schoolId || "";
+      const ensembleId = option.dataset.ensembleId || "";
+      const schoolName = option.dataset.schoolName || "";
+      const ensembleName = option.dataset.ensembleName || "";
+      if (els.judgeOpenSchoolNameInput) {
+        els.judgeOpenSchoolNameInput.value = schoolName;
+      }
+      if (els.judgeOpenEnsembleNameInput) {
+        els.judgeOpenEnsembleNameInput.value = ensembleName;
+      }
+      state.judgeOpen.selectedExisting = {
+        schoolId,
+        schoolName,
+        ensembleId,
+        ensembleName,
+      };
+      markJudgeOpenDirty();
+      updateOpenHeader();
+      if (state.judgeOpen.currentPacketId) {
+        updateOpenPacketDraft({
+          schoolId,
+          ensembleId,
+          schoolName,
+          ensembleName,
+          ensembleSnapshot: buildOpenEnsembleSnapshot(),
+        });
+      }
+    });
+  }
+
+  if (els.judgeOpenFormTypeSelect) {
+    els.judgeOpenFormTypeSelect.addEventListener("change", () => {
+      state.judgeOpen.formType = els.judgeOpenFormTypeSelect.value || "stage";
+      saveOpenPrefs({ lastFormType: state.judgeOpen.formType });
+      renderOpenCaptionForm();
+      syncOpenFormTypeSegmented();
+      markJudgeOpenDirty();
+      if (state.judgeOpen.currentPacketId) {
+        updateOpenPacketDraft({ formType: state.judgeOpen.formType });
+      }
+    });
+  }
+
+  if (els.judgeOpenFormTypeSegmented) {
+    els.judgeOpenFormTypeSegmented.addEventListener("click", (event) => {
+      const button = event.target?.closest?.("[data-form]");
+      if (!button) return;
+      const formType = button.dataset.form || "stage";
+      state.judgeOpen.formType = formType;
+      if (els.judgeOpenFormTypeSelect) {
+        els.judgeOpenFormTypeSelect.value = formType;
+      }
+      saveOpenPrefs({ lastFormType: state.judgeOpen.formType });
+      renderOpenCaptionForm();
+      syncOpenFormTypeSegmented();
+      markJudgeOpenDirty();
+      if (state.judgeOpen.currentPacketId) {
+        updateOpenPacketDraft({ formType: state.judgeOpen.formType });
+      }
+    });
+  }
+
+  if (els.judgeOpenSchoolNameInput) {
+    els.judgeOpenSchoolNameInput.addEventListener("input", () => {
+      markJudgeOpenDirty();
+      state.judgeOpen.selectedExisting = null;
+      if (els.judgeOpenExistingSelect) {
+        els.judgeOpenExistingSelect.value = "";
+      }
+      if (state.judgeOpen.currentPacketId) {
+        updateOpenPacketDraft({
+          schoolName: els.judgeOpenSchoolNameInput.value || "",
+          schoolId: "",
+          ensembleId: "",
+          ensembleSnapshot: null,
+        });
+      }
+      updateOpenHeader();
+    });
+  }
+
+  if (els.judgeOpenEnsembleNameInput) {
+    els.judgeOpenEnsembleNameInput.addEventListener("input", () => {
+      markJudgeOpenDirty();
+      state.judgeOpen.selectedExisting = null;
+      if (els.judgeOpenExistingSelect) {
+        els.judgeOpenExistingSelect.value = "";
+      }
+      if (state.judgeOpen.currentPacketId) {
+        updateOpenPacketDraft({
+          ensembleName: els.judgeOpenEnsembleNameInput.value || "",
+          schoolId: "",
+          ensembleId: "",
+          ensembleSnapshot: null,
+        });
+      }
+      updateOpenHeader();
+    });
+  }
+
+  if (els.judgeOpenTranscriptInput) {
+    els.judgeOpenTranscriptInput.addEventListener("input", () => {
+      state.judgeOpen.transcriptText = els.judgeOpenTranscriptInput.value || "";
+      markJudgeOpenDirty();
+      updateOpenSubmitState();
+    });
+  }
+
+  if (els.judgeOpenDraftBtn) {
+    els.judgeOpenDraftBtn.addEventListener("click", async () => {
+      const transcript = state.judgeOpen.transcriptText || "";
+      if (!transcript.trim()) {
+        if (els.judgeOpenDraftStatus) {
+          els.judgeOpenDraftStatus.textContent = "Add a transcript before drafting captions.";
+        }
+        return;
+      }
+      if (!els.judgeOpenCaptionForm?.children?.length) {
+        renderOpenCaptionForm();
+      }
+      const overwrite = Boolean(els.judgeOpenOverwriteCaptionsToggle?.checked);
+      els.judgeOpenDraftBtn.dataset.loadingLabel = "Drafting...";
+      els.judgeOpenDraftBtn.dataset.spinner = "true";
+      await withLoading(els.judgeOpenDraftBtn, async () => {
+        if (els.judgeOpenDraftStatus) {
+          els.judgeOpenDraftStatus.textContent = "Drafting captions. Please wait...";
+        }
+        const result = await draftCaptionsFromTranscript({
+          transcript,
+          formType: state.judgeOpen.formType || "stage",
+        });
+        if (!result?.ok) {
+          if (els.judgeOpenDraftStatus) {
+            els.judgeOpenDraftStatus.textContent =
+              result?.message || "Unable to draft captions.";
+          }
+          return;
+        }
+        applyOpenCaptionDraft({ captions: result.captions, overwrite });
+        if (els.judgeOpenDraftStatus) {
+          els.judgeOpenDraftStatus.textContent = "Drafted captions.";
+        }
+      });
+    });
+  }
+
+  if (els.judgeOpenTranscribeBtn) {
+    els.judgeOpenTranscribeBtn.addEventListener("click", async () => {
+      if (els.judgeOpenTranscribeBtn.disabled) return;
+      els.judgeOpenTranscribeBtn.dataset.loadingLabel = "Transcribing...";
+      els.judgeOpenTranscribeBtn.dataset.spinner = "true";
+      await withLoading(els.judgeOpenTranscribeBtn, async () => {
+        const result = await transcribeOpenTape();
+        if (!result?.ok) {
+          setOpenPacketHint(result?.message || "Transcription failed.");
+          return;
+        }
+        if (els.judgeOpenTranscriptInput) {
+          els.judgeOpenTranscriptInput.value = result.transcript || "";
+        }
+        state.judgeOpen.transcriptText = result.transcript || "";
+        updateOpenSubmitState();
+        setOpenPacketHint("Transcription complete.");
+      });
+    });
+  }
+
+  if (els.judgeOpenRecordBtn) {
+    els.judgeOpenRecordBtn.addEventListener("click", async () => {
+      els.judgeOpenRecordBtn.dataset.loadingLabel = "Starting...";
+      els.judgeOpenRecordBtn.dataset.spinner = "true";
+      await withLoading(els.judgeOpenRecordBtn, async () => {
+        const result = await startOpenRecording({
+          getPacketMeta: gatherOpenPacketMeta,
+          onSessions: renderOpenSegments,
+          onStatus: updateOpenRecordingStatus,
+        });
+        if (!result?.ok) {
+          setOpenPacketHint(result?.message || "Unable to start recording.");
+          return;
+        }
+      });
+      updateOpenRecordingStatus();
+    });
+  }
+
+  if (els.judgeOpenStopBtn) {
+    els.judgeOpenStopBtn.addEventListener("click", () => {
+      els.judgeOpenStopBtn.dataset.loadingLabel = "Stopping...";
+      els.judgeOpenStopBtn.dataset.spinner = "true";
+      withLoading(els.judgeOpenStopBtn, async () => {
+        stopOpenRecording();
+      }).finally(() => {
+        updateOpenRecordingStatus();
+      });
+    });
+  }
+
+  if (els.judgeOpenCaptionForm) {
+    els.judgeOpenCaptionForm.addEventListener("click", (event) => {
+      const gradeBtn = event.target?.closest?.("[data-grade]");
+      const modifierBtn = event.target?.closest?.("[data-modifier]");
+      const wrapper = event.target?.closest?.("[data-key]");
+      if (!wrapper) return;
+      const key = wrapper.dataset.key;
+      const current = state.judgeOpen.captions[key] || {};
+      if (gradeBtn) {
+        const nextGrade = gradeBtn.dataset.grade || "";
+        state.judgeOpen.captions[key] = {
+          ...current,
+          gradeLetter: nextGrade,
+        };
+        markJudgeOpenDirty();
+        applyOpenCaptionState();
+        updateOpenSubmitState();
+      }
+      if (modifierBtn) {
+        const nextModifier = modifierBtn.dataset.modifier || "";
+        state.judgeOpen.captions[key] = {
+          ...current,
+          gradeModifier: current.gradeModifier === nextModifier ? "" : nextModifier,
+        };
+        markJudgeOpenDirty();
+        applyOpenCaptionState();
+        updateOpenSubmitState();
+      }
+    });
+    els.judgeOpenCaptionForm.addEventListener("input", (event) => {
+      const wrapper = event.target?.closest?.("[data-key]");
+      if (!wrapper) return;
+      if (!event.target?.matches("[data-comment]")) return;
+      const key = wrapper.dataset.key;
+      const current = state.judgeOpen.captions[key] || {};
+      state.judgeOpen.captions[key] = {
+        ...current,
+        comment: event.target.value || "",
+      };
+      markJudgeOpenDirty();
+      applyOpenCaptionState();
+      updateOpenSubmitState();
+    });
+  }
+
+  if (els.judgeOpenSubmitBtn) {
+    els.judgeOpenSubmitBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const result = await submitOpenPacket();
+      if (!result?.ok) {
+        setOpenPacketHint(result?.message || "Unable to submit packet.");
+        return;
+      }
+      setOpenPacketHint("Submitted and locked.");
+      const refreshed = await selectOpenPacket(state.judgeOpen.currentPacketId, {
+        onSessions: renderOpenSegments,
+      });
+      if (refreshed?.ok) {
+        renderOpenCaptionForm();
+        updateOpenHeader();
+        showOpenDetailView();
+        updateOpenSubmitState();
+      }
+    });
+  }
+}
+
+function gatherOpenPacketMeta() {
+  const existing = state.judgeOpen.selectedExisting || {};
+  return {
+    schoolName: els.judgeOpenSchoolNameInput?.value?.trim() || "",
+    ensembleName: els.judgeOpenEnsembleNameInput?.value?.trim() || "",
+    schoolId: existing.schoolId || "",
+    ensembleId: existing.ensembleId || "",
+    ensembleSnapshot: buildOpenEnsembleSnapshot(),
+    formType: els.judgeOpenFormTypeSelect?.value || "stage",
+  };
+}
+
+function buildOpenEnsembleSnapshot() {
+  const schoolId = state.judgeOpen.selectedExisting?.schoolId || "";
+  const schoolName = state.judgeOpen.selectedExisting?.schoolName || "";
+  const ensembleId = state.judgeOpen.selectedExisting?.ensembleId || "";
+  const ensembleName = state.judgeOpen.selectedExisting?.ensembleName || "";
+  if (!schoolId || !ensembleId) return null;
+  return {
+    schoolId,
+    schoolName,
+    ensembleId,
+    ensembleName,
+  };
+}
+
+function applyOpenCaptionDraft({ captions = {}, overwrite = false } = {}) {
+  const template = getOpenCaptionTemplate();
+  template.forEach(({ key }) => {
+    const text = String(captions[key] || "").trim();
+    if (!text) return;
+    const existing = state.judgeOpen.captions[key]?.comment || "";
+    if (!overwrite && existing) return;
+    if (!state.judgeOpen.captions[key]) {
+      state.judgeOpen.captions[key] = {
+        gradeLetter: "",
+        gradeModifier: "",
+        comment: "",
+      };
+    }
+    state.judgeOpen.captions[key].comment = text;
+  });
+  applyOpenCaptionState();
+  markJudgeOpenDirty();
+}
+
+function updateOpenRecordingStatus() {
+  if (!els.judgeOpenRecordingStatus) return;
+  const recorder = state.judgeOpen.mediaRecorder;
+  if (recorder && recorder.state === "recording") {
+    els.judgeOpenRecordingStatus.textContent = "Recording...";
+    els.judgeOpenRecordingStatus.classList.add("recording-active");
+    if (els.judgeOpenRecordDot) {
+      els.judgeOpenRecordDot.classList.add("is-active");
+    }
+    if (els.judgeOpenRecordLabel) {
+      els.judgeOpenRecordLabel.textContent = "Recording...";
+    }
+    if (els.judgeOpenRecordBtn) {
+      els.judgeOpenRecordBtn.classList.add("is-recording");
+    }
+    if (els.judgeOpenRecordBtn) els.judgeOpenRecordBtn.disabled = true;
+    if (els.judgeOpenStopBtn) els.judgeOpenStopBtn.disabled = false;
+    startOpenLevelMeter(recorder.stream);
+    updateOpenSubmitState();
+    return;
+  }
+  els.judgeOpenRecordingStatus.classList.remove("recording-active");
+  if (els.judgeOpenRecordDot) {
+    els.judgeOpenRecordDot.classList.remove("is-active");
+  }
+  if (els.judgeOpenRecordLabel) {
+    els.judgeOpenRecordLabel.textContent = "Record Append";
+  }
+  if (els.judgeOpenRecordBtn) {
+    els.judgeOpenRecordBtn.classList.remove("is-recording");
+  }
+  stopOpenLevelMeter();
+  if (state.judgeOpen.pendingUploads > 0) {
+    els.judgeOpenRecordingStatus.textContent = "Saving chunks...";
+  } else {
+    els.judgeOpenRecordingStatus.textContent = "Recording saved.";
+  }
+  if (els.judgeOpenRecordBtn) els.judgeOpenRecordBtn.disabled = false;
+  if (els.judgeOpenStopBtn) els.judgeOpenStopBtn.disabled = true;
+  updateOpenSubmitState();
+}
+
 export function bindDirectorHandlers() {
   if (directorHandlersBound) return;
   directorHandlersBound = true;
@@ -3760,6 +5100,113 @@ export function bindAppHandlers() {
       showSessionExpiredModal();
     });
   }
+
+  const openProfile = () => {
+    if (!state.auth.currentUser) return;
+    openUserProfileModal();
+  };
+  if (els.adminProfileToggleBtn) {
+    els.adminProfileToggleBtn.addEventListener("click", openProfile);
+  }
+  if (els.judgeProfileToggleBtn) {
+    els.judgeProfileToggleBtn.addEventListener("click", openProfile);
+  }
+  if (els.judgeOpenProfileToggleBtn) {
+    els.judgeOpenProfileToggleBtn.addEventListener("click", openProfile);
+  }
+  if (els.userProfileClose) {
+    els.userProfileClose.addEventListener("click", closeUserProfileModal);
+  }
+  if (els.userProfileCancelBtn) {
+    els.userProfileCancelBtn.addEventListener("click", closeUserProfileModal);
+  }
+  if (els.userProfileBackdrop) {
+    els.userProfileBackdrop.addEventListener("click", closeUserProfileModal);
+  }
+  if (els.userProfileForm) {
+    els.userProfileForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!state.auth.currentUser) return;
+      const name = els.userProfileNameInput?.value.trim() || "";
+      if (els.userProfileStatus) {
+        els.userProfileStatus.textContent = "Saving...";
+      }
+      try {
+        await saveUserDisplayName(name);
+        updateAuthUI();
+        if (els.userProfileStatus) {
+          els.userProfileStatus.textContent = "Saved.";
+        }
+        closeUserProfileModal();
+      } catch (error) {
+        console.error("Profile save failed", error);
+        if (els.userProfileStatus) {
+          els.userProfileStatus.textContent = "Unable to save profile.";
+        }
+      }
+    });
+  }
+
+  if (els.roleTabButtons?.length) {
+    els.roleTabButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const action = button.dataset.action || "";
+        const role = getEffectiveRole(state.auth.userProfile);
+        if (!role) return;
+        els.roleTabButtons.forEach((btn) => {
+          btn.setAttribute("aria-selected", btn === button ? "true" : "false");
+        });
+        switch (action) {
+          case "admin-home":
+            setTab("admin", { force: true });
+            scrollToSection(els.adminReadinessPanel);
+            break;
+          case "admin-events":
+            setTab("admin", { force: true });
+            scrollToSection(els.adminEventsSection || els.adminScheduleSection);
+            break;
+          case "admin-schools":
+            setTab("admin", { force: true });
+            scrollToSection(els.adminSchoolsSection);
+            break;
+          case "admin-settings":
+            setTab("admin", { force: true });
+            scrollToSection(els.adminSettingsSection);
+            break;
+          case "judge-judging":
+            setTab("judge-open", { force: true });
+            if (state.judgeOpen.currentPacketId) {
+              showOpenDetailView();
+            } else {
+              hideOpenDetailView();
+              scrollToSection(els.judgeOpenListView);
+            }
+            break;
+          case "judge-schedule":
+            setTab("judge-open", { force: true });
+            hideOpenDetailView();
+            scrollToSection(els.judgeOpenListView);
+            break;
+          case "judge-profile":
+            openUserProfileModal();
+            break;
+          case "director-schedule":
+            setTab("director", { force: true });
+            scrollToSection(els.directorEventMeta);
+            break;
+          case "director-ensemble":
+            setTab("director", { force: true });
+            scrollToSection(els.directorEnsemblesSection);
+            break;
+          case "director-profile":
+            openDirectorProfileModal();
+            break;
+          default:
+            if (role === "admin") setTab("admin", { force: true });
+            if (role === "judge") setTab("judge-open", { force: true });
+            if (role === "director") setTab("director", { force: true });
+        }
+      });
+    });
+  }
 }
-
-

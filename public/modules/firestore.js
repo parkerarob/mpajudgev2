@@ -15,6 +15,7 @@ import {
   writeBatch,
   Timestamp,
   deleteDoc,
+  increment,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { db } from "../firebase.js";
 import { COLLECTIONS, JUDGE_POSITIONS } from "../state.js";
@@ -37,6 +38,7 @@ export {
   writeBatch,
   Timestamp,
   deleteDoc,
+  increment,
 };
 
 export async function fetchEnsembleGrade(eventId, ensembleId) {

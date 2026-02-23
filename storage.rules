@@ -43,12 +43,27 @@ service firebase.storage {
       ).data;
     }
 
+    function packetDoc(packetId) {
+      return firestore.get(
+        /databases/(default)/documents/packets/$(packetId)
+      ).data;
+    }
+
     match /audio/{judgeUid}/{submissionId}/{fileName} {
       allow read: if isAdmin()
         || (isJudge() && request.auth.uid == judgeUid)
         || (isDirectorForSchool(submissionDoc(submissionId).schoolId)
           && submissionDoc(submissionId).status == "released");
 
+      allow write: if isAdmin()
+        || (isJudge() && request.auth.uid == judgeUid);
+    }
+
+    match /packet_audio/{judgeUid}/{packetId}/{sessionId}/{fileName} {
+      allow read: if isAdmin()
+        || (isJudge() && request.auth.uid == judgeUid)
+        || (isDirectorForSchool(packetDoc(packetId).schoolId)
+          && packetDoc(packetId).status == "released");
       allow write: if isAdmin()
         || (isJudge() && request.auth.uid == judgeUid);
     }

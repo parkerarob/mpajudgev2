@@ -1,14 +1,15 @@
 import { state } from "../state.js";
 import { hasDirectorUnsavedChanges } from "./director.js";
 import { hasJudgeUnsavedChanges } from "./judge.js";
+import { hasJudgeOpenUnsavedChanges } from "./judge-open.js";
 
 export function hasUnsavedChanges() {
-  return hasDirectorUnsavedChanges() || hasJudgeUnsavedChanges();
+  return hasDirectorUnsavedChanges() || hasJudgeUnsavedChanges() || hasJudgeOpenUnsavedChanges();
 }
 
 export function getDefaultTabForRole(role) {
   if (role === "admin") return "admin";
-  if (role === "judge") return "judge";
+  if (role === "judge") return "judge-open";
   if (role === "director") return "director";
   return null;
 }
@@ -16,6 +17,9 @@ export function getDefaultTabForRole(role) {
 export function isTabAllowed(tab, role) {
   if (!role) return false;
   if (role === "admin") return true;
+  if (role === "judge") {
+    return tab === "judge-open";
+  }
   return tab === role;
 }
 
@@ -42,6 +46,7 @@ export function resolveHash(hash) {
   }
   if (value === "#director") return { type: "tab", tab: "director" };
   if (value === "#judge") return { type: "tab", tab: "judge" };
+  if (value === "#judge-open") return { type: "tab", tab: "judge-open" };
   if (value === "#admin") return { type: "tab", tab: "admin" };
   return { type: "none" };
 }

@@ -6,7 +6,7 @@
     <title>MPA Judge</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body class="ios-app">
     <header class="app-header">
       <div class="header-brand">
         <img src="/ncba-logo.png" alt="North Carolina Bandmasters Association logo" class="site-logo" />
@@ -20,7 +20,12 @@
         <div class="note" id="authSuccess" hidden></div>
         <div class="row">
           <button type="button" id="signInBtn" class="btn--lg">Sign In / Create Account</button>
-          <div id="headerAuthActions"></div>
+          <div id="headerAuthActions" class="auth-actions">
+            <div class="auth-identity is-hidden" id="authIdentityBanner">
+              <div class="auth-identity-name" id="authIdentityName">Signed in</div>
+              <div class="auth-identity-email" id="authIdentityEmail"></div>
+            </div>
+          </div>
         </div>
       </div>
     </header>
@@ -30,12 +35,15 @@
         Offline: submissions are disabled until you reconnect.
       </div>
       <div class="notice notice--info" id="provisioningNotice" hidden role="status" aria-live="polite"></div>
-      <nav class="tabs" role="tablist" aria-label="Role views">
+      <nav class="tabs desktop-only" role="tablist" aria-label="Role views">
         <button class="tab" type="button" id="adminTab" role="tab" aria-controls="adminCard" data-tab="admin" aria-selected="false">
           Admin
         </button>
         <button class="tab" type="button" id="judgeTab" role="tab" aria-controls="judgeCard" data-tab="judge" aria-selected="false">
           Judge
+        </button>
+        <button class="tab" type="button" id="judgeOpenTab" role="tab" aria-controls="judgeOpenCard" data-tab="judge-open" aria-selected="false">
+          Open Judge
         </button>
         <button class="tab" type="button" id="directorTab" role="tab" aria-controls="directorCard" data-tab="director" aria-selected="false">
           Director
@@ -44,15 +52,22 @@
       <div class="hint" id="tabLockHint"></div>
 
       <section class="card" id="adminCard" role="tabpanel" aria-labelledby="adminTab">
-        <div class="tab-header">
+        <div class="ios-nav mobile-only">
+          <div class="ios-subtitle">Admin</div>
+          <h2 class="ios-title">Home</h2>
+          <div class="ios-subtitle">Event setup and readiness.</div>
+        </div>
+        <div class="tab-header desktop-only">
           <div>
             <h2>Admin Tools</h2>
             <div class="tab-subtitle">Set up events, assignments, and schedules.</div>
           </div>
           <div class="tab-header-actions">
             <span class="badge" id="adminStatusBadge">No active event</span>
+            <button type="button" class="ghost" id="adminProfileToggleBtn">Update Profile</button>
           </div>
         </div>
+        <div class="ios-screen">
         <div class="empty" id="adminEmpty">No active event.</div>
         <div class="stack">
           <div class="panel" id="adminReadinessPanel">
@@ -83,7 +98,7 @@
             </details>
           </div>
 
-          <div class="panel">
+          <div class="panel" id="adminEventsSection">
             <h3>Event Setup</h3>
             <div class="stack">
               <div>
@@ -145,7 +160,7 @@
             </div>
           </div>
 
-          <div class="panel">
+          <div class="panel" id="adminScheduleSection">
             <h3>Event Management</h3>
             <div class="stack">
               <div>
@@ -160,7 +175,14 @@
             </div>
           </div>
 
-          <div class="panel">
+          <div class="panel" id="adminOpenPacketsSection">
+            <h3>Open Packets</h3>
+            <p class="hint">Manage open judge packets (no schedule required).</p>
+            <div class="note" id="adminOpenPacketsHint"></div>
+            <ul id="adminOpenPacketsList" class="list"></ul>
+          </div>
+
+          <div class="panel" id="adminSchoolsSection">
             <h3>Directory</h3>
             <div class="stack">
               <div>
@@ -187,7 +209,7 @@
             </div>
           </div>
 
-          <div class="panel">
+          <div class="panel" id="adminSettingsSection">
             <h3>Users</h3>
             <div class="stack">
               <div>
@@ -227,10 +249,16 @@
             </div>
           </div>
         </div>
+        </div>
       </section>
 
       <section class="card" id="judgeCard" role="tabpanel" aria-labelledby="judgeTab">
-        <div class="tab-header">
+        <div class="ios-nav mobile-only">
+          <div class="ios-subtitle">Judge</div>
+          <h2 class="ios-title">Judging</h2>
+          <div class="ios-subtitle">Live event assignments.</div>
+        </div>
+        <div class="tab-header desktop-only">
           <div>
             <h2>Judge Console</h2>
             <div class="tab-subtitle">Record, transcribe, score, and submit.</div>
@@ -238,8 +266,10 @@
           <div class="tab-header-actions">
             <span class="badge" id="judgeStatusBadge">No assignment</span>
             <span class="badge is-hidden" id="judgeTestBadge">TEST MODE</span>
+            <button type="button" class="ghost" id="judgeProfileToggleBtn">Update Profile</button>
           </div>
         </div>
+        <div class="ios-screen">
         <div class="empty" id="judgeEmpty">No active event or assignment.</div>
         <div class="stack">
           <div>
@@ -381,22 +411,188 @@
             </div>
           </div>
         </div>
+        </div>
+      </section>
+
+      <section class="card judge-open-card" id="judgeOpenCard" role="tabpanel" aria-labelledby="judgeOpenTab">
+        <div class="ios-nav mobile-only">
+          <div class="ios-subtitle">Open Judge</div>
+          <h2 class="ios-title">Judging</h2>
+          <div class="ios-subtitle">Record, transcribe, and submit.</div>
+        </div>
+        <div class="tab-header desktop-only">
+          <div>
+            <h2>Open Judge Sheet</h2>
+            <div class="tab-subtitle">Record, transcribe, and submit without a schedule.</div>
+          </div>
+          <div class="tab-header-actions">
+            <span class="badge" id="judgeOpenStatusBadge">Draft</span>
+            <button type="button" class="ghost" id="judgeOpenProfileToggleBtn">Update Profile</button>
+          </div>
+        </div>
+        <div class="ios-screen">
+          <div class="judge-open-layout">
+            <div class="judge-open-list" id="judgeOpenListView">
+              <div class="group">
+                <div class="cell">
+                  <div class="label">My Packets</div>
+                  <div class="row">
+                    <button type="button" id="judgeOpenNewPacketBtn" class="btn--secondary">Start New Tape</button>
+                    <button type="button" id="judgeOpenClearRecentBtn" class="ghost">Clear Recent</button>
+                  </div>
+                </div>
+                <div class="cell">
+                  <div class="note" id="judgeOpenPacketHint"></div>
+                </div>
+                <select id="judgeOpenPacketSelect" class="is-hidden"></select>
+                <div class="packet-card-list" id="judgeOpenPacketList"></div>
+              </div>
+              <div class="empty" id="judgeOpenEmpty">Create or select a packet to begin.</div>
+            </div>
+
+            <div class="judge-open-detail" id="judgeOpenDetailView">
+              <div class="detail-header">
+              <button type="button" class="ghost" id="judgeOpenBackBtn">Back</button>
+              <div class="detail-title">
+                <div class="detail-title-main" id="judgeOpenHeaderTitle">School • Ensemble</div>
+                <div class="detail-title-sub" id="judgeOpenHeaderSub">Draft</div>
+              </div>
+            </div>
+
+            <div class="group">
+              <div class="step-heading">
+                <span class="badge">Step 1</span>
+                <strong>Identify Ensemble</strong>
+              </div>
+              <label>
+                Select existing ensemble (prefills School/Ensemble)
+                <select id="judgeOpenExistingSelect"></select>
+              </label>
+              <div class="hint">
+                Optional: choosing an existing ensemble links this packet and pre-fills fields. Manual entry is allowed.
+              </div>
+              <div class="row">
+                <label class="grow">
+                  School
+                  <input type="text" id="judgeOpenSchoolNameInput" placeholder="School name" />
+                </label>
+                <label class="grow">
+                  Ensemble
+                  <input type="text" id="judgeOpenEnsembleNameInput" placeholder="Ensemble name" />
+                </label>
+              </div>
+              <select id="judgeOpenFormTypeSelect" class="is-hidden">
+                <option value="stage">Stage</option>
+                <option value="sight">Sight Reading</option>
+              </select>
+              <div class="segmented-control" id="judgeOpenFormTypeSegmented">
+                <button type="button" class="segment" data-form="stage">Stage</button>
+                <button type="button" class="segment" data-form="sight">Sight Reading</button>
+                <button type="button" id="judgeOpenDefaultFormBtn" class="ghost segment-ghost">Set as default</button>
+              </div>
+            </div>
+
+            <div class="group">
+              <div class="step-heading">
+                <span class="badge">Step 2</span>
+                <strong>Record Tape</strong>
+              </div>
+              <div class="recording-control">
+                <button type="button" id="judgeOpenRecordBtn" class="record-btn">
+                  <span class="record-dot" id="judgeOpenRecordDot" aria-hidden="true"></span>
+                <span data-button-label id="judgeOpenRecordLabel">Record Append</span>
+                </button>
+                <button type="button" id="judgeOpenStopBtn" class="btn--secondary" disabled>Stop</button>
+                <div class="recording-meta">
+                  <span id="judgeOpenRecordingStatus" class="hint"></span>
+                  <div class="level-meter" id="judgeOpenLevelMeter" aria-hidden="true">
+                    <div class="level-meter-fill" id="judgeOpenLevelMeterFill"></div>
+                  </div>
+                  <div class="note" id="judgeOpenTapeDurationRow">
+                    Tape Duration: <span id="judgeOpenTapeDuration">0:00</span>
+                  </div>
+                </div>
+              </div>
+              <div class="empty" id="judgeOpenTapeEmpty">No audio yet.</div>
+              <audio id="judgeOpenTapePlayback" controls class="audio"></audio>
+              <details class="accordion-card readiness-details" id="judgeOpenSegmentsDetails">
+                <summary>
+                  <span id="judgeOpenSegmentsSummary">Segments (0)</span>
+                  <span class="muted readiness-hint"></span>
+                </summary>
+                <ul id="judgeOpenSegmentsList" class="list list--compact"></ul>
+              </details>
+            </div>
+
+            <details class="group transcript-panel" id="judgeOpenTranscriptPanel" open>
+              <summary class="step-heading">
+                <span class="badge">Step 3</span>
+                <strong>Transcript</strong>
+              </summary>
+              <textarea id="judgeOpenTranscriptInput" rows="6" aria-label="Transcript"></textarea>
+              <div class="row">
+                <button type="button" id="judgeOpenTranscribeBtn" class="ghost btn--secondary">
+                  Transcribe Tape
+                </button>
+              </div>
+            </details>
+
+            <div class="group">
+              <div class="step-heading">
+                <span class="badge">Step 4</span>
+                <strong>Captions</strong>
+              </div>
+              <div class="stack">
+                <div class="row">
+                  <button type="button" id="judgeOpenDraftBtn" class="btn--secondary">
+                    Draft Captions from Transcript
+                  </button>
+                  <label class="row">
+                    <input type="checkbox" id="judgeOpenOverwriteCaptionsToggle" />
+                    Overwrite existing captions
+                  </label>
+                </div>
+                <div class="hint" id="judgeOpenDraftStatus"></div>
+              </div>
+              <div id="judgeOpenCaptionForm" class="stack"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sticky-bottom" id="judgeOpenStickyBar">
+          <div class="sticky-meta">
+            <div>Total: <span id="judgeOpenCaptionTotal">0</span></div>
+            <div>Rating: <span id="judgeOpenFinalRating">N/A</span></div>
+          </div>
+          <button type="button" id="judgeOpenSubmitBtn" class="btn--lg btn-primary">Submit</button>
+        </div>
       </section>
 
       <section class="card" id="directorCard" role="tabpanel" aria-labelledby="directorTab">
-        <div class="tab-header">
+        <div class="ios-nav mobile-only">
+          <div class="ios-subtitle">Director</div>
+          <h2 class="ios-title">My Ensemble</h2>
+          <div class="ios-subtitle">Entry Progress Center</div>
+        </div>
+        <div class="tab-header desktop-only">
           <div>
-            <h2>Director Dashboard</h2>
+            <h2>Entry Progress Center</h2>
             <div class="tab-subtitle">Complete your entry and review released packets.</div>
           </div>
           <div class="tab-header-actions">
             <span class="badge" id="directorEntryStatusBadge">Draft</span>
           </div>
         </div>
-        <div class="panel director-summary" id="directorSummary">
+        <div class="ios-screen">
+        <div class="panel director-summary card" id="directorSummary">
           <div class="director-summary-main">
             <div class="director-summary-name" id="directorSummaryName">Director</div>
             <div class="note" id="directorSummaryEmail"></div>
+          </div>
+          <div class="director-summary-progress">
+            <div class="note">Status: <span id="directorSummaryStatus">Draft</span></div>
+            <div class="note">Completion: <span id="directorSummaryCompletion">0%</span></div>
+            <div class="progress-bar"><span id="directorSummaryProgressBar"></span></div>
           </div>
           <div class="director-summary-school">
             <div class="director-summary-school-name" id="directorSummarySchool">No school attached</div>
@@ -415,7 +611,7 @@
           </div>
         </div>
         <div class="stack" id="directorMainStack">
-          <div class="panel" id="directorEnsemblesSection">
+          <div class="panel group" id="directorEnsemblesSection">
             <h3>Ensembles</h3>
             <div class="actions">
               <button type="button" id="directorShowEnsembleFormBtn" class="btn--secondary">
@@ -441,7 +637,7 @@
             <ul id="directorEnsembleList" class="list ensembles-list"></ul>
           </div>
 
-          <div class="panel">
+          <div class="panel group">
             <h3>Upcoming Event</h3>
             <div class="event-meta" id="directorEventMeta">
               <div class="event-meta-name" id="directorEventName">No event selected.</div>
@@ -461,7 +657,7 @@
             </div>
           </div>
 
-          <div class="panel" id="directorEntryPanel">
+          <div class="panel card group" id="directorEntryPanel">
             <h3>Event Entry</h3>
             <div class="row">
               <div class="note">Status: <span id="directorEntryStatus">Draft</span></div>
@@ -624,7 +820,7 @@
                 </div>
               </details>
 
-              <div class="actions">
+              <div class="actions director-sticky">
                 <button type="button" id="directorEntryReadyBtn">Mark as Ready</button>
                 <button type="button" class="ghost is-hidden" id="directorEntryUndoReadyBtn">
                   Mark as Draft
@@ -633,7 +829,7 @@
             </form>
           </div>
 
-          <details class="panel accordion-card">
+          <details class="panel accordion-card group">
             <summary>
               <div>
                 <strong>Results Packet</strong>
@@ -644,6 +840,7 @@
               <div id="directorPackets" class="stack"></div>
             </div>
           </details>
+        </div>
         </div>
       </section>
 
@@ -678,7 +875,7 @@
                 <input type="password" id="passwordInput" required />
               </label>
               <div class="row">
-                <button type="submit">Email Sign In</button>
+                <button type="submit" id="emailSignInBtn">Sign In</button>
                 <button type="button" id="anonymousBtn" class="ghost">
                   Anonymous Sign In
                 </button>
@@ -774,7 +971,46 @@
         </div>
       </div>
 
+      <div class="modal" id="userProfileModal" aria-hidden="true">
+        <div class="modal-backdrop" id="userProfileBackdrop"></div>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Profile">
+          <div class="modal-header">
+            <h2>Profile</h2>
+            <button type="button" class="ghost" id="userProfileClose">Close</button>
+          </div>
+          <form id="userProfileForm" class="stack">
+            <label>
+              Display Name
+              <input type="text" id="userProfileNameInput" />
+            </label>
+            <div class="note" id="userProfileStatus"></div>
+            <div class="row">
+              <button type="submit" id="userProfileSaveBtn">Save</button>
+              <button type="button" class="ghost" id="userProfileCancelBtn">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
     <script src="/shared/grade1-lookup.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>
+      <nav class="tabbar mobile-only" id="roleTabBar" aria-label="Role navigation">
+        <div class="tabbar-group" data-role="admin">
+          <button type="button" data-action="admin-home" aria-selected="true">Home</button>
+          <button type="button" data-action="admin-events" aria-selected="false">Events</button>
+          <button type="button" data-action="admin-schools" aria-selected="false">Schools</button>
+          <button type="button" data-action="admin-settings" aria-selected="false">Settings</button>
+        </div>
+        <div class="tabbar-group" data-role="judge">
+          <button type="button" data-action="judge-judging" aria-selected="true">Judging</button>
+          <button type="button" data-action="judge-schedule" aria-selected="false">Schedule</button>
+          <button type="button" data-action="judge-profile" aria-selected="false">Profile</button>
+        </div>
+        <div class="tabbar-group" data-role="director">
+          <button type="button" data-action="director-schedule" aria-selected="true">Schedule</button>
+          <button type="button" data-action="director-ensemble" aria-selected="false">My Ensemble</button>
+          <button type="button" data-action="director-profile" aria-selected="false">Profile</button>
+        </div>
+      </nav>

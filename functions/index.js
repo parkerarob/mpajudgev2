@@ -21,6 +21,13 @@ const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const OPENAI_TIMEOUT_MS = 30 * 1000;
 const MAX_TRANSCRIPT_CHARS = 12000;
+const GRADE_VALUES = {
+  A: 1,
+  B: 2,
+  C: 3,
+  D: 4,
+  F: 5,
+};
 
 async function fetchWithTimeout(url, options, timeoutMs = OPENAI_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -30,6 +37,103 @@ async function fetchWithTimeout(url, options, timeoutMs = OPENAI_TIMEOUT_MS) {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function transcribeAudioBuffer(buffer, contentType, apiKey) {
+  const form = new FormData();
+  form.append("model", "gpt-4o-mini-transcribe");
+  form.append("file", new Blob([buffer], {type: contentType}), "audio.webm");
+  const response = await fetchWithTimeout("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: form,
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    logger.error("transcribeAudioBuffer error", {errorText});
+    throw new HttpsError("internal", "Transcription failed.");
+  }
+  const dataJson = await response.json();
+  return String(dataJson.text || "").trim();
+}
+
+async function transcribePacketSegmentInternal({packetRef, packet, sessionId, apiKey}) {
+  if (!apiKey) {
+    throw new HttpsError("failed-precondition", "OpenAI API key not configured.");
+  }
+  const sessionRef = packetRef.collection("sessions").doc(sessionId);
+  const sessionSnap = await sessionRef.get();
+  if (!sessionSnap.exists) {
+    throw new HttpsError("not-found", "Session not found.");
+  }
+  const session = sessionSnap.data();
+  await sessionRef.set({
+    transcriptStatus: "running",
+    transcriptError: "",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+
+  let objectPath = session.masterAudioPath || getStoragePathFromUrl(session.masterAudioUrl);
+  if (!objectPath && packet.createdByJudgeUid) {
+    objectPath = `packet_audio/${packet.createdByJudgeUid}/${packetRef.id}/${sessionId}/master.webm`;
+  }
+
+  const bucket = admin.storage().bucket();
+  let transcript = "";
+
+  if (objectPath) {
+    const file = bucket.file(objectPath);
+    const [exists] = await file.exists();
+    if (exists) {
+      const [metadata] = await file.getMetadata();
+      const size = Number(metadata.size || 0);
+      if (size <= MAX_AUDIO_BYTES) {
+        const [buffer] = await file.download();
+        const contentType = metadata.contentType || "audio/webm";
+        transcript = await transcribeAudioBuffer(buffer, contentType, apiKey);
+      }
+    }
+  }
+
+  if (!transcript) {
+    const prefix = `packet_audio/${packet.createdByJudgeUid}/${packetRef.id}/${sessionId}/chunk_`;
+    const [files] = await bucket.getFiles({prefix});
+    if (!files.length) {
+      throw new HttpsError("not-found", "Audio file not found.");
+    }
+    const sorted = files
+        .map((file) => {
+          const match = file.name.match(/chunk_(\\d+)\\.webm$/);
+          return {
+            file,
+            index: match ? Number(match[1]) : Number.MAX_SAFE_INTEGER,
+          };
+        })
+        .sort((a, b) => a.index - b.index);
+    const parts = [];
+    for (const item of sorted) {
+      if (!item.file || item.index === Number.MAX_SAFE_INTEGER) continue;
+      const [buffer] = await item.file.download();
+      const [metadata] = await item.file.getMetadata();
+      const contentType = metadata.contentType || "audio/webm";
+      const text = await transcribeAudioBuffer(buffer, contentType, apiKey);
+      if (text) parts.push(text);
+      if (parts.join(" ").length >= MAX_TRANSCRIPT_CHARS) break;
+    }
+    transcript = parts.join(" ").trim();
+  }
+
+  transcript = transcript.slice(0, MAX_TRANSCRIPT_CHARS);
+  await sessionRef.set({
+    transcript,
+    transcriptStatus: "complete",
+    transcriptError: "",
+    transcriptUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {transcript};
 }
 
 function fallbackCaption() {
@@ -204,6 +308,35 @@ function isSubmissionReady(submission) {
   if (typeof submission.captionScoreTotal !== "number") return false;
   if (typeof submission.computedFinalRatingJudge !== "number") return false;
   return true;
+}
+
+function calculateCaptionTotal(captions = {}) {
+  return Object.values(captions).reduce((sum, caption) => {
+    const letter = caption?.gradeLetter || "";
+    const score = GRADE_VALUES[letter] || 0;
+    return sum + score;
+  }, 0);
+}
+
+function computeFinalRatingFromTotal(total) {
+  if (total >= 7 && total <= 10) return {label: "I", value: 1};
+  if (total >= 11 && total <= 17) return {label: "II", value: 2};
+  if (total >= 18 && total <= 24) return {label: "III", value: 3};
+  if (total >= 25 && total <= 31) return {label: "IV", value: 4};
+  if (total >= 32 && total <= 35) return {label: "V", value: 5};
+  return {label: "N/A", value: null};
+}
+
+async function writePacketAudit(packetRef, {action, fromStatus, toStatus, actor}) {
+  const auditRef = packetRef.collection("audit").doc();
+  await auditRef.set({
+    action,
+    fromStatus: fromStatus || null,
+    toStatus: toStatus || null,
+    actorUid: actor?.uid || null,
+    actorRole: actor?.role || null,
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+  });
 }
 
 exports.parseTranscript = onCall(
@@ -480,6 +613,442 @@ exports.transcribeSubmissionAudio = onCall(
       });
 
       return {transcript};
+    },
+);
+
+exports.createOpenPacket = onCall(async (request) => {
+  await assertRole(request, ["judge", "admin"]);
+  const data = request.data || {};
+  const schoolName = String(data.schoolName || "").trim();
+  const ensembleName = String(data.ensembleName || "").trim();
+  const formType = data.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
+  const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc();
+  const payload = {
+    [FIELDS.packets.status]: "draft",
+    [FIELDS.packets.locked]: false,
+    [FIELDS.packets.createdByJudgeUid]: request.auth.uid,
+    [FIELDS.packets.createdByJudgeName]: data.createdByJudgeName || "",
+    [FIELDS.packets.createdByJudgeEmail]: data.createdByJudgeEmail || "",
+    [FIELDS.packets.schoolName]: schoolName,
+    [FIELDS.packets.ensembleName]: ensembleName,
+    [FIELDS.packets.schoolId]: data.schoolId || "",
+    [FIELDS.packets.ensembleId]: data.ensembleId || "",
+    [FIELDS.packets.ensembleSnapshot]: data.ensembleSnapshot || null,
+    [FIELDS.packets.formType]: formType,
+    [FIELDS.packets.transcript]: "",
+    [FIELDS.packets.transcriptFull]: "",
+    [FIELDS.packets.captions]: {},
+    [FIELDS.packets.captionScoreTotal]: null,
+    [FIELDS.packets.computedFinalRatingJudge]: null,
+    [FIELDS.packets.computedFinalRatingLabel]: "N/A",
+    [FIELDS.packets.audioSessionCount]: 0,
+    [FIELDS.packets.activeSessionId]: null,
+    [FIELDS.packets.segmentCount]: 0,
+    [FIELDS.packets.tapeDurationSec]: 0,
+    [FIELDS.packets.createdAt]: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  await packetRef.set(payload);
+  await writePacketAudit(packetRef, {
+    action: "create",
+    fromStatus: null,
+    toStatus: "draft",
+    actor: {uid: request.auth.uid, role: "judge"},
+  });
+  return {packetId: packetRef.id};
+});
+
+exports.setUserPrefs = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const prefs = data.preferences || {};
+  const next = {};
+  const formType = prefs.judgeOpenDefaultFormType;
+  if (formType) {
+    if (![FORM_TYPES.stage, FORM_TYPES.sight].includes(formType)) {
+      throw new HttpsError("invalid-argument", "Invalid form type.");
+    }
+    next.judgeOpenDefaultFormType = formType;
+  }
+  if (typeof prefs.lastJudgeOpenPacketId === "string") {
+    next.lastJudgeOpenPacketId = prefs.lastJudgeOpenPacketId;
+  }
+  if (typeof prefs.lastJudgeOpenFormType === "string") {
+    next.lastJudgeOpenFormType = prefs.lastJudgeOpenFormType;
+  }
+  await admin.firestore().collection(COLLECTIONS.users).doc(request.auth.uid).set({
+    preferences: next,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true};
+});
+
+exports.submitOpenPacket = onCall(async (request) => {
+  await assertRole(request, ["judge", "admin"]);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) {
+    throw new HttpsError("invalid-argument", "packetId required.");
+  }
+  const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const packet = packetSnap.data();
+  const userSnap = await admin
+      .firestore()
+      .collection(COLLECTIONS.users)
+      .doc(request.auth.uid)
+      .get();
+  const userRole = userSnap.exists ? userSnap.data().role : null;
+  const isAdmin = userRole === "admin";
+  const isOwner = packet.createdByJudgeUid === request.auth.uid;
+  if (!isAdmin && !isOwner) {
+    throw new HttpsError("permission-denied", "Not authorized.");
+  }
+  if (!isAdmin && packet.locked === true) {
+    throw new HttpsError("failed-precondition", "Packet is locked.");
+  }
+  const currentStatus = packet.status || "draft";
+  if (!["draft", "reopened"].includes(currentStatus)) {
+    throw new HttpsError("failed-precondition", "Packet cannot be submitted.");
+  }
+  const captions = data.captions || {};
+  const captionScoreTotal = calculateCaptionTotal(captions);
+  const rating = computeFinalRatingFromTotal(captionScoreTotal);
+
+  const payload = {
+    [FIELDS.packets.status]: "submitted",
+    [FIELDS.packets.locked]: true,
+    [FIELDS.packets.transcript]: String(data.transcript || ""),
+    [FIELDS.packets.transcriptFull]: String(data.transcriptFull || data.transcript || ""),
+    [FIELDS.packets.captions]: captions,
+    [FIELDS.packets.captionScoreTotal]: captionScoreTotal,
+    [FIELDS.packets.computedFinalRatingJudge]: rating.value,
+    [FIELDS.packets.computedFinalRatingLabel]: rating.label,
+    [FIELDS.packets.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  await packetRef.set(payload, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "submit",
+    fromStatus: currentStatus,
+    toStatus: "submitted",
+    actor: {uid: request.auth.uid, role: userRole || "judge"},
+  });
+  return {packetId, status: "submitted"};
+});
+
+exports.lockPacket = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
+  const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
+  const packet = packetSnap.data();
+  await packetRef.set({
+    [FIELDS.packets.locked]: true,
+    [FIELDS.packets.status]: "locked",
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "lock",
+    fromStatus: packet.status || null,
+    toStatus: "locked",
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {packetId, status: "locked"};
+});
+
+exports.unlockPacket = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
+  const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
+  const packet = packetSnap.data();
+  await packetRef.set({
+    [FIELDS.packets.locked]: false,
+    [FIELDS.packets.status]: "reopened",
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "unlock",
+    fromStatus: packet.status || null,
+    toStatus: "reopened",
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {packetId, status: "reopened"};
+});
+
+exports.releaseOpenPacket = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
+  const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
+  const packet = packetSnap.data();
+  await packetRef.set({
+    [FIELDS.packets.status]: "released",
+    [FIELDS.packets.releasedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "release",
+    fromStatus: packet.status || null,
+    toStatus: "released",
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {packetId, status: "released"};
+});
+
+exports.linkOpenPacketToEnsemble = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  const schoolId = data.schoolId;
+  const ensembleId = data.ensembleId;
+  if (!packetId || !schoolId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "packetId, schoolId, ensembleId required.");
+  }
+  const db = admin.firestore();
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const schoolRef = db.collection(COLLECTIONS.schools).doc(schoolId);
+  const schoolSnap = await schoolRef.get();
+  if (!schoolSnap.exists) {
+    throw new HttpsError("not-found", "School not found.");
+  }
+  const ensembleRef = schoolRef.collection("ensembles").doc(ensembleId);
+  const ensembleSnap = await ensembleRef.get();
+  if (!ensembleSnap.exists) {
+    throw new HttpsError("not-found", "Ensemble not found.");
+  }
+  const schoolName = schoolSnap.data()?.name || schoolId;
+  const ensembleName = ensembleSnap.data()?.name || ensembleId;
+  const ensembleSnapshot = {
+    schoolId,
+    schoolName,
+    ensembleId,
+    ensembleName,
+  };
+  await packetRef.set({
+    [FIELDS.packets.schoolId]: schoolId,
+    [FIELDS.packets.ensembleId]: ensembleId,
+    [FIELDS.packets.schoolName]: schoolName,
+    [FIELDS.packets.ensembleName]: ensembleName,
+    [FIELDS.packets.ensembleSnapshot]: ensembleSnapshot,
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "link",
+    fromStatus: packetSnap.data()?.status || null,
+    toStatus: packetSnap.data()?.status || null,
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {ok: true};
+});
+
+exports.transcribePacketSession = onCall(
+    {secrets: [OPENAI_API_KEY]},
+    async (request) => {
+      if (!request.auth || !request.auth.uid) {
+        throw new HttpsError("unauthenticated", "Authentication required.");
+      }
+      await checkRateLimit(request.auth.uid, "transcribePacketSession", 10, 60);
+
+      const data = request.data || {};
+      const packetId = data.packetId;
+      const sessionId = data.sessionId;
+      if (!packetId || !sessionId) {
+        throw new HttpsError("invalid-argument", "packetId and sessionId required.");
+      }
+
+      const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+      const packetSnap = await packetRef.get();
+      if (!packetSnap.exists) {
+        throw new HttpsError("not-found", "Packet not found.");
+      }
+      const packet = packetSnap.data();
+
+      const userSnap = await admin
+          .firestore()
+          .collection(COLLECTIONS.users)
+          .doc(request.auth.uid)
+          .get();
+      const userRole = userSnap.exists ? userSnap.data().role : null;
+      const isAdmin = userRole === "admin";
+      const isOwner = packet.createdByJudgeUid === request.auth.uid;
+      if (!isAdmin && !isOwner) {
+        throw new HttpsError(
+            "permission-denied",
+            "Only the owning judge or an admin can transcribe.",
+        );
+      }
+      if (!isAdmin && packet.locked === true) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Packet is locked. Admin must unlock before transcription.",
+        );
+      }
+
+      const result = await transcribePacketSegmentInternal({
+        packetRef,
+        packet,
+        sessionId,
+        apiKey: OPENAI_API_KEY.value(),
+      });
+      await packetRef.set({
+        [FIELDS.packets.transcript]: result.transcript,
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      return {transcript: result.transcript};
+    },
+);
+
+exports.transcribePacketSegment = onCall(
+    {secrets: [OPENAI_API_KEY]},
+    async (request) => {
+      if (!request.auth || !request.auth.uid) {
+        throw new HttpsError("unauthenticated", "Authentication required.");
+      }
+      await checkRateLimit(request.auth.uid, "transcribePacketSegment", 10, 60);
+      const data = request.data || {};
+      const packetId = data.packetId;
+      const sessionId = data.sessionId;
+      if (!packetId || !sessionId) {
+        throw new HttpsError("invalid-argument", "packetId and sessionId required.");
+      }
+      const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+      const packetSnap = await packetRef.get();
+      if (!packetSnap.exists) {
+        throw new HttpsError("not-found", "Packet not found.");
+      }
+      const packet = packetSnap.data();
+      const userSnap = await admin
+          .firestore()
+          .collection(COLLECTIONS.users)
+          .doc(request.auth.uid)
+          .get();
+      const userRole = userSnap.exists ? userSnap.data().role : null;
+      const isAdmin = userRole === "admin";
+      const isOwner = packet.createdByJudgeUid === request.auth.uid;
+      if (!isAdmin && !isOwner) {
+        throw new HttpsError("permission-denied", "Not authorized.");
+      }
+      if (!isAdmin && packet.locked === true) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Packet is locked. Admin must unlock before transcription.",
+        );
+      }
+      const result = await transcribePacketSegmentInternal({
+        packetRef,
+        packet,
+        sessionId,
+        apiKey: OPENAI_API_KEY.value(),
+      });
+      return {transcript: result.transcript};
+    },
+);
+
+exports.transcribePacketTape = onCall(
+    {secrets: [OPENAI_API_KEY]},
+    async (request) => {
+      if (!request.auth || !request.auth.uid) {
+        throw new HttpsError("unauthenticated", "Authentication required.");
+      }
+      await checkRateLimit(request.auth.uid, "transcribePacketTape", 6, 60);
+      const data = request.data || {};
+      const packetId = data.packetId;
+      if (!packetId) {
+        throw new HttpsError("invalid-argument", "packetId required.");
+      }
+      const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+      const packetSnap = await packetRef.get();
+      if (!packetSnap.exists) {
+        throw new HttpsError("not-found", "Packet not found.");
+      }
+      const packet = packetSnap.data();
+      const userSnap = await admin
+          .firestore()
+          .collection(COLLECTIONS.users)
+          .doc(request.auth.uid)
+          .get();
+      const userRole = userSnap.exists ? userSnap.data().role : null;
+      const isAdmin = userRole === "admin";
+      const isOwner = packet.createdByJudgeUid === request.auth.uid;
+      if (!isAdmin && !isOwner) {
+        throw new HttpsError("permission-denied", "Not authorized.");
+      }
+      if (!isAdmin && packet.locked === true) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Packet is locked. Admin must unlock before transcription.",
+        );
+      }
+      const sessionsSnap = await packetRef.collection("sessions").orderBy("startedAt", "asc").get();
+      if (sessionsSnap.empty) {
+        throw new HttpsError("failed-precondition", "No segments to transcribe.");
+      }
+
+      await packetRef.set({
+        [FIELDS.packets.transcriptStatus]: "running",
+        [FIELDS.packets.transcriptError]: "",
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+      const mergedParts = [];
+      let failedCount = 0;
+      for (const docSnap of sessionsSnap.docs) {
+        const sessionId = docSnap.id;
+        const session = docSnap.data();
+        if (session.transcriptStatus === "complete") {
+          if (session.transcript) mergedParts.push(session.transcript);
+          continue;
+        }
+        try {
+          const result = await transcribePacketSegmentInternal({
+            packetRef,
+            packet,
+            sessionId,
+            apiKey: OPENAI_API_KEY.value(),
+          });
+          if (result.transcript) mergedParts.push(result.transcript);
+        } catch (error) {
+          failedCount += 1;
+          await packetRef.collection("sessions").doc(sessionId).set({
+            transcriptStatus: "failed",
+            transcriptError: String(error?.message || "Transcription failed."),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, {merge: true});
+        }
+      }
+
+      const transcriptFull = mergedParts.join(" ").trim().slice(0, MAX_TRANSCRIPT_CHARS);
+      const transcriptStatus = failedCount > 0 ?
+        (mergedParts.length ? "partial" : "failed") :
+        "complete";
+      await packetRef.set({
+        [FIELDS.packets.transcriptFull]: transcriptFull,
+        [FIELDS.packets.transcript]: transcriptFull,
+        [FIELDS.packets.transcriptStatus]: transcriptStatus,
+        [FIELDS.packets.transcriptError]: failedCount > 0 ? "One or more segments failed." : "",
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      return {transcriptFull, transcriptStatus};
     },
 );
 

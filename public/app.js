@@ -8,6 +8,7 @@ import {
   resetTestState,
   setTestMode,
 } from "./modules/judge.js";
+import { resetJudgeOpenState, stopOpenRecording } from "./modules/judge-open.js";
 import { startAutosaveLoop } from "./modules/autosave.js";
 import {
   bindAuthHandlers,
@@ -15,6 +16,7 @@ import {
   bindAppHandlers,
   bindDirectorHandlers,
   bindJudgeHandlers,
+  bindJudgeOpenHandlers,
   closeAuthModal,
   handleHashChange,
   hideSessionExpiredModal,
@@ -30,7 +32,9 @@ import {
   setTestModeUI,
   showSessionExpiredModal,
   startWatchers,
+  stopOpenLevelMeter,
   stopWatchers,
+  restoreOpenPacketFromPrefs,
   updateRoleUI,
   updateAuthUI,
   updateConnectivityUI,
@@ -42,6 +46,7 @@ import { hasUnsavedChanges } from "./modules/navigation.js";
 bindAuthHandlers();
 bindAdminHandlers();
 bindJudgeHandlers();
+bindJudgeOpenHandlers();
 bindDirectorHandlers();
 bindAppHandlers();
 startAutosaveLoop();
@@ -68,11 +73,18 @@ watchSchools(() => {
 });
 handleHashChange();
 
+if (window.location.pathname.includes("/judge-open") && window.location.hash !== "#judge-open") {
+  window.location.hash = "#judge-open";
+}
+
 onAuthStateChanged(auth, async (user) => {
   state.auth.currentUser = user;
   updateAuthUI();
 
   if (!user) {
+    stopOpenRecording();
+    stopOpenLevelMeter();
+    setMainInteractionDisabled(true);
     const working = hasUnsavedChanges();
     if (working) {
       state.auth.sessionExpiredLocked = true;
@@ -85,6 +97,7 @@ onAuthStateChanged(auth, async (user) => {
     state.auth.userProfile = null;
     updateRoleUI();
     resetJudgeState();
+    resetJudgeOpenState();
     stopWatchers();
     setTestMode(false);
     setTestModeUI(false);
@@ -102,6 +115,9 @@ onAuthStateChanged(auth, async (user) => {
     setAuthView("signIn");
     closeAuthModal();
     window.location.hash = "";
+    if (window.location.pathname.includes("/judge-open")) {
+      window.history.replaceState(null, "", "/");
+    }
     handleHashChange();
     return;
   }
@@ -109,22 +125,44 @@ onAuthStateChanged(auth, async (user) => {
   const userRef = doc(db, COLLECTIONS.users, user.uid);
   const snap = await getDoc(userRef);
   state.auth.userProfile = snap.exists() ? snap.data() : null;
+  updateAuthUI();
   if (state.auth.sessionExpiredLocked) {
     state.auth.sessionExpiredLocked = false;
     hideSessionExpiredModal();
     setMainInteractionDisabled(false);
   }
   updateRoleUI();
+  setMainInteractionDisabled(false);
   if (state.auth.userProfile) {
-    if (state.auth.userProfile.role === "admin") {
+    const roles = state.auth.userProfile.roles || {};
+    const role = state.auth.userProfile.role
+      || (roles.admin ? "admin" : roles.director ? "director" : roles.judge ? "judge" : null);
+    const preferJudgeOpen = roles.judge === true;
+    const path = window.location.pathname || "";
+    const isLegacyJudgePath = path.endsWith("/judge") || path.endsWith("/judge/");
+    if (isLegacyJudgePath && role !== "admin") {
+      window.history.replaceState(null, "", "/judge-open#judge-open");
+    }
+    if (preferJudgeOpen) {
+      setTab("judge-open");
+      if (window.location.hash !== "#judge-open") {
+        window.location.hash = "#judge-open";
+      }
+    } else if (role === "admin") {
       setTab("admin");
-    } else if (state.auth.userProfile.role === "judge") {
-      setTab("judge");
-    } else if (state.auth.userProfile.role === "director") {
+    } else if (role === "judge") {
+      setTab("judge-open");
+      if (window.location.hash !== "#judge-open") {
+        window.location.hash = "#judge-open";
+      }
+    } else if (role === "director") {
       setTab("director");
     }
     startWatchers();
     renderDirectorProfile();
+    if (preferJudgeOpen || role === "judge") {
+      restoreOpenPacketFromPrefs();
+    }
   } else {
     stopWatchers();
     resetJudgeState();

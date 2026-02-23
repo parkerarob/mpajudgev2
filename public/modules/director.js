@@ -876,6 +876,7 @@ export async function uploadDirectorProfileCard(file) {
 
 export function watchDirectorPackets(callback) {
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
+  if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
   if (!state.auth.userProfile || !isDirectorManager()) {
     callback?.({ groups: [], hint: "" });
     return;
@@ -891,43 +892,80 @@ export function watchDirectorPackets(callback) {
     where(FIELDS.submissions.status, "==", STATUSES.released)
   );
 
+  const packetsQuery = query(
+    collection(db, COLLECTIONS.packets),
+    where(FIELDS.packets.schoolId, "==", state.auth.userProfile.schoolId),
+    where(FIELDS.packets.status, "==", STATUSES.released)
+  );
+
+  const merged = { submissions: [], packets: [] };
+
   state.subscriptions.directorPackets = onSnapshot(submissionsQuery, async (snapshot) => {
-    const grouped = {};
-    snapshot.docs.forEach((docSnap) => {
-      const data = docSnap.data();
-      const key = `${data.eventId}_${data.ensembleId}`;
-      if (!grouped[key]) {
-        grouped[key] = {
-          eventId: data.eventId,
-          ensembleId: data.ensembleId,
-          schoolId: data.schoolId,
-          submissions: {},
-        };
-      }
-      grouped[key].submissions[data.judgePosition] = {
-        id: docSnap.id,
-        ...data,
-      };
-    });
-
-    const groups = await Promise.all(
-      Object.values(grouped).map(async (group) => {
-        const [grade, directorName] = await Promise.all([
-          fetchEnsembleGrade(group.eventId, group.ensembleId),
-          getDirectorNameForSchool(group.schoolId),
-        ]);
-        const summary = computePacketSummary(grade, group.submissions);
-        return {
-          ...group,
-          directorName,
-          grade,
-          overall: summary.overall,
-        };
-      })
-    );
-
+    merged.submissions = snapshot.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    }));
+    const groups = await buildDirectorPacketGroups(merged);
     callback?.({ groups, hint: "" });
   });
+
+  state.subscriptions.directorOpenPackets = onSnapshot(packetsQuery, async (snapshot) => {
+    merged.packets = snapshot.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    }));
+    const groups = await buildDirectorPacketGroups(merged);
+    callback?.({ groups, hint: "" });
+  });
+}
+
+async function buildDirectorPacketGroups(merged) {
+  const grouped = {};
+  merged.submissions.forEach((data) => {
+    const key = `${data.eventId}_${data.ensembleId}`;
+    if (!grouped[key]) {
+      grouped[key] = {
+        type: "scheduled",
+        eventId: data.eventId,
+        ensembleId: data.ensembleId,
+        schoolId: data.schoolId,
+        submissions: {},
+      };
+    }
+    grouped[key].submissions[data.judgePosition] = data;
+  });
+
+  const scheduledGroups = await Promise.all(
+    Object.values(grouped).map(async (group) => {
+      const [grade, directorName] = await Promise.all([
+        fetchEnsembleGrade(group.eventId, group.ensembleId),
+        getDirectorNameForSchool(group.schoolId),
+      ]);
+      const summary = computePacketSummary(grade, group.submissions);
+      return {
+        ...group,
+        directorName,
+        grade,
+        overall: summary.overall,
+      };
+    })
+  );
+
+  const openGroups = merged.packets.map((packet) => ({
+    type: "open",
+    packetId: packet.id,
+    schoolId: packet.schoolId || "",
+    schoolName: packet.schoolName || "",
+    ensembleId: packet.ensembleId || "",
+    ensembleName: packet.ensembleName || "",
+    transcript: packet.transcriptFull || packet.transcript || "",
+    captionScoreTotal: packet.captionScoreTotal,
+    computedFinalRatingLabel: packet.computedFinalRatingLabel || "N/A",
+    latestAudioUrl: packet.latestAudioUrl || "",
+    releasedAt: packet.releasedAt || null,
+  }));
+
+  return [...openGroups, ...scheduledGroups];
 }
 
 export function watchDirectorSchool(callback) {

@@ -301,3 +301,38 @@ export async function lockSubmission({ eventId, ensembleId, judgePosition }) {
   const lockSubmissionFn = httpsCallable(functions, "lockSubmission");
   return lockSubmissionFn({ eventId, ensembleId, judgePosition });
 }
+
+export function watchOpenPacketsAdmin(callback) {
+  if (state.subscriptions.openPacketsAdmin) state.subscriptions.openPacketsAdmin();
+  const packetsQuery = query(
+    collection(db, COLLECTIONS.packets),
+    orderBy(FIELDS.packets.updatedAt, "desc")
+  );
+  state.subscriptions.openPacketsAdmin = onSnapshot(packetsQuery, (snapshot) => {
+    const packets = snapshot.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    }));
+    callback?.(packets);
+  });
+}
+
+export async function lockOpenPacket({ packetId }) {
+  const lockFn = httpsCallable(functions, "lockPacket");
+  return lockFn({ packetId });
+}
+
+export async function unlockOpenPacket({ packetId }) {
+  const unlockFn = httpsCallable(functions, "unlockPacket");
+  return unlockFn({ packetId });
+}
+
+export async function releaseOpenPacket({ packetId }) {
+  const releaseFn = httpsCallable(functions, "releaseOpenPacket");
+  return releaseFn({ packetId });
+}
+
+export async function linkOpenPacketToEnsemble({ packetId, schoolId, ensembleId }) {
+  const linkFn = httpsCallable(functions, "linkOpenPacketToEnsemble");
+  return linkFn({ packetId, schoolId, ensembleId });
+}

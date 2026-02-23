@@ -119,6 +119,7 @@ service cloud.firestore {
 
       match /ensembles/{ensembleId} {
         allow read: if isAdmin()
+          || isJudge()
           || (isDirector() && userSchoolId() == schoolId);
         allow create, update, delete: if isAdmin()
           || (isDirector() && userSchoolId() == schoolId);
@@ -197,6 +198,45 @@ service cloud.firestore {
           && request.resource.data.status == resource.data.status);
 
       allow delete: if isAdmin();
+    }
+
+    match /packets/{packetId} {
+      allow read: if isAdmin()
+        || (isJudge() && (resource == null || resource.data.createdByJudgeUid == request.auth.uid))
+        || (resource != null
+          && isDirectorForSchool(resource.data.schoolId)
+          && resource.data.status == "released");
+
+      allow create: if isJudge()
+        && request.resource.data.createdByJudgeUid == request.auth.uid
+        && request.resource.data.status == "draft"
+        && request.resource.data.locked == false;
+
+      allow update: if isAdmin()
+        || (isJudge()
+          && resource.data.createdByJudgeUid == request.auth.uid
+          && resource.data.locked == false
+          && request.resource.data.locked == resource.data.locked
+          && request.resource.data.status == resource.data.status);
+
+      allow delete: if isAdmin();
+
+      match /sessions/{sessionId} {
+        allow read: if isAdmin()
+          || (isJudge()
+            && get(/databases/$(database)/documents/packets/$(packetId)).data.createdByJudgeUid == request.auth.uid)
+          || (isDirectorForSchool(get(/databases/$(database)/documents/packets/$(packetId)).data.schoolId)
+            && get(/databases/$(database)/documents/packets/$(packetId)).data.status == "released");
+        allow create, update: if isJudge()
+          && get(/databases/$(database)/documents/packets/$(packetId)).data.createdByJudgeUid == request.auth.uid
+          && get(/databases/$(database)/documents/packets/$(packetId)).data.locked == false;
+        allow delete: if isAdmin();
+      }
+
+      match /audit/{auditId} {
+        allow read: if isAdmin();
+        allow create, update, delete: if false;
+      }
     }
 
     match /rateLimits/{docId} {

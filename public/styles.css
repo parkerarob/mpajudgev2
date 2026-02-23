@@ -379,6 +379,22 @@ button.is-loading .button-spinner {
   gap: 8px;
 }
 
+.event-meta {
+  display: grid;
+  gap: 2px;
+}
+
+.event-meta-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.event-meta-detail {
+  font-size: 13px;
+  color: var(--muted);
+}
+
 body.auth-locked .tabs,
 body.auth-locked .card,
 body.auth-locked .notice {

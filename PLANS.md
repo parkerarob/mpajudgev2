@@ -1,43 +1,155 @@
-# PLANS.md — Phase 1 implementation plan
+# PLANS.md — Phase 1 Product Plan
 
-Checkpoint 0: Baseline
-- Confirm Firebase project builds/deploys.
-- Document current collections and UI entry points.
+Phase 1 defines a complete, deterministic event adjudication cycle.
 
-Checkpoint 1: Data model refactor
-- Add active event concept (events.isActive).
-- Replace schedule structure with stage-time roster under events/{eventId}/schedule.
-- Add per-event judge assignments positions doc.
+The goal is not just feature completion — it is a stable, enforceable adjudication workflow.
 
-Checkpoint 2: Submission refactor
-- Deterministic submission IDs.
-- No server record until Submit.
-- Locked-by-default after submit; unlock flow.
+---
 
-Checkpoint 3: Forms and scoring
-- Stage + Sight form templates (7 captions each).
-- Compute captionScoreTotal and computedFinalRatingJudge (I–V).
-- Update parseTranscript to be template-aware.
+# System Overview
 
-Checkpoint 4: Packet views
-- Admin packet view + verification checklist.
-- Director packet view (released only).
-- Compute overall rating dynamically.
+An event moves through five states:
 
-Checkpoint 5: Atomic chair actions (Cloud Functions)
-- releasePacket / unreleasePacket (atomic batch writes).
-- unlockSubmission / lockSubmission.
+1. Event created
+2. Judges assigned
+3. Judges submit
+4. Packet verified complete
+5. Packet released to director
 
-Checkpoint 6: Security rules
-- Firestore + Storage rules align with roles and release gating.
+All transitions must be deterministic and secure.
 
-Checkpoint 7: Test Mode
-- Test Ensemble, no Firestore writes, uses transcription + AI drafting.
-- Allow switching stage/sight only in test.
+---
 
-Definition of done
-- Admin can run an event end-to-end with dummy data.
-- Directors only see released packets.
-- Judges cannot submit wrong form type/position.
+# Phase 1 Milestones
+
+---
+
+## Milestone 1 — Event Foundation
+
+- Enforce single active event.
+- Schedule stored under:
+  `events/{eventId}/schedule`
+- Judges assigned per-event with fixed position.
+- Active event clearly surfaced in UI.
+
+### Definition of Done
+
+- Judges cannot act outside active event.
+- No ambiguity in assignment.
+- Schedule is the authoritative roster.
+
+---
+
+## Milestone 2 — Deterministic Submissions
+
+- Submission ID format:
+  `{eventId}_{ensembleId}_{judgePosition}`
+- No Firestore record until Submit.
+- Submission locked immediately after submit.
+- Unlock flow handled via Cloud Function.
+
+### Definition of Done
+
 - No duplicate submissions possible.
-- Release/unrelease is atomic.
+- Locked state enforced in security rules.
+- Client cannot override locked submission.
+
+---
+
+## Milestone 3 — Scoring Engine
+
+- 7 captions per form (stage and sight).
+- Caption numeric conversion ignores ±.
+- `captionScoreTotal` computed client-side and validated server-side.
+- Judge rating computed deterministically from total.
+
+### Definition of Done
+
+- No invalid totals possible.
+- Judge cannot submit incomplete captions.
+- Rating ranges strictly enforced.
+
+---
+
+## Milestone 4 — Packet Completion Logic
+
+- Determine required positions by grade.
+- Validate packet completeness.
+- Compute overall rating dynamically.
+- Admin packet verification checklist.
+
+### Definition of Done
+
+- Incomplete packet cannot be released.
+- Grade I correctly omits sight.
+- Overall rating calculation matches NCBA rules.
+
+---
+
+## Milestone 5 — Atomic Chair Actions
+
+Cloud Functions must implement:
+
+- `releasePacket`
+- `unreleasePacket`
+- `lockSubmission`
+- `unlockSubmission`
+
+All packet-level changes must:
+
+- Use batch writes or transactions.
+- Never leave partial state.
+- Validate completeness before release.
+
+### Definition of Done
+
+- Release/unrelease always atomic.
+- Directors only see fully released packets.
+- No partial release states possible.
+
+---
+
+## Milestone 6 — Security Rules
+
+- Role-based access control.
+- Judges limited to their assigned position.
+- Directors read-only on released packets.
+- Admin full access.
+- Test Mode isolated from production data.
+
+### Definition of Done
+
+- No client-side bypass possible.
+- Rules mirror product logic exactly.
+- Role leakage impossible.
+
+---
+
+## Milestone 7 — Test Mode
+
+- No Firestore writes.
+- Allows switching stage/sight.
+- Uses transcription + AI caption drafting.
+- Fully isolated from live mode.
+
+### Definition of Done
+
+- No test data pollutes production data.
+- Live constraints remain enforced.
+- Judge experience mirrors live flow without persistence.
+
+---
+
+# Definition of Phase 1 Complete
+
+The system supports:
+
+- One full event lifecycle.
+- Deterministic scoring.
+- Atomic release.
+- Secure role isolation.
+- Mobile-usable judge flow.
+- Zero duplicate submissions.
+- Zero partial state transitions.
+
+The system should not require manual database corrections.

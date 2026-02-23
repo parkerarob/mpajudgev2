@@ -6,6 +6,17 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function hasEmailAuth() {
+      return isSignedIn() && request.auth.token.email is string;
+    }
+
+    function isDirectorOnlyRoles(roles) {
+      return roles is map
+        && roles.director == true
+        && (roles.admin == false || !("admin" in roles))
+        && (roles.judge == false || !("judge" in roles));
+    }
+
     function userData() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
@@ -38,8 +49,7 @@ service cloud.firestore {
     }
 
     function isActiveEvent(eventId) {
-      return get(/databases/$(database)/documents/events/$(eventId))
-        .data.isActive == true;
+      return get(/databases/$(database)/documents/events/$(eventId)).data.isActive == true;
     }
 
     function schoolExists(schoolId) {
@@ -54,6 +64,7 @@ service cloud.firestore {
       allow read: if isAdmin() || request.auth.uid == userId;
       allow create: if isAdmin()
         || (request.auth.uid == userId
+          && hasEmailAuth()
           && request.resource.data.role == "director"
           && request.resource.data.keys().hasOnly([
             "role",
@@ -68,30 +79,37 @@ service cloud.firestore {
             "createdAt",
             "updatedAt"
           ])
-          && request.resource.data.roles is map
-          && request.resource.data.roles.director == true
-          && request.resource.data.email is string
-          && (request.resource.data.schoolId == null
-            || (request.resource.data.schoolId is string
-              && exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)))));
+          && request.resource.data.email == request.auth.token.email
+          && isDirectorOnlyRoles(request.resource.data.roles)
+          && request.resource.data.schoolId is string
+          && exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)));
       allow update: if isAdmin()
         || (request.auth.uid == userId
           && isDirector()
+          && hasEmailAuth()
+          && request.resource.data.email == resource.data.email
           && request.resource.data.role == resource.data.role
-          && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly([
-              "schoolId",
-              "updatedAt",
-              "displayName",
-              "nafmeMembershipNumber",
-              "nafmeMembershipExp",
-              "nafmeCardImageUrl",
-              "nafmeCardImagePath"
-            ])
-          && (request.resource.data.roles == resource.data.roles
-            || (resource.data.roles == null && request.resource.data.roles is map))
-          && (request.resource.data.schoolId == null
-            || exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId))));
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "schoolId",
+            "updatedAt",
+            "displayName",
+            "nafmeMembershipNumber",
+            "nafmeMembershipExp",
+            "nafmeCardImageUrl",
+            "nafmeCardImagePath",
+            "roles"
+          ])
+          && (
+            request.resource.data.roles == resource.data.roles
+            || (resource.data.roles == null
+              && isDirectorOnlyRoles(request.resource.data.roles))
+          )
+          && (
+            request.resource.data.schoolId == resource.data.schoolId
+            || (resource.data.schoolId == null
+              && request.resource.data.schoolId is string
+              && exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)))
+          ));
       allow delete: if isAdmin();
     }
 

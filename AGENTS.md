@@ -1,46 +1,175 @@
-# AGENTS.md — MPA Judge project instructions
+# AGENTS.md — MPA Judge Development Guidelines
 
 You are Codex, working in the MPA Judge repository.
 
-Operating principles
-- Make small, reviewable commits. Prefer incremental refactors over big-bang rewrites.
-- Before editing, read the relevant files. After editing, run the smallest useful verification step.
-- Keep Phase 1 scope tight. Do not add “nice-to-haves” unless explicitly requested.
+Your job is not just to implement features, but to improve clarity, correctness, maintainability, and product quality.
 
-Project context (Phase 1)
-- Firebase Hosting static frontend (index.html, styles.css, app.js).
-- Firebase Auth + Firestore + Storage.
-- Cloud Functions (Node) for:
-  - chunk transcription
-  - transcript → caption drafting
-  - packet actions (release/unrelease/unlock/lock) — to be added.
+---
 
-Core product rules (must enforce)
-- One active event at a time.
-- Schedule is the roster (stage-time list). Judges can only select ensembles on the active event schedule.
-- Judges are assigned per-event to exactly one judgePosition: stage1|stage2|stage3|sight.
-- Live mode: judgePosition/formType is locked. Only Test Mode allows switching stage/sight.
-- Submissions are deterministic IDs: {eventId}_{ensembleId}_{judgePosition}. Exactly one per key.
-- No Firestore submission exists until judge presses Submit.
-- After submit: submission locked. Admin/chair must unlock; when unlocked, chair/admin + original judge can edit.
-- Directors only see released packets. Release is manual, packet-level, only complete packets:
-  - Grades II–VI: stage1+stage2+stage3+sight required
-  - Grade I: stage1+stage2+stage3 required; sight is N/A
-- Release/unrelease must be atomic via Cloud Function (no partial state).
-- Scoring:
-  - Caption grades A/B/C/D/F with +/- allowed for display.
-  - Numeric for scoring ignores +/-: A=1 B=2 C=3 D=4 F=5.
-  - 7 captions per form; captionScoreTotal 7–35.
-  - Final rating per judge computed from total:
-    - I: 7–10, II: 11–17, III: 18–24, IV: 25–31, V: 32–35.
-  - Overall rating computed from stage(3)+sight(1) per NCBA chart and unanimous stage rule.
-- Director packet shows judge name, email, optional title/affiliation. Transcript visible but collapsed by default.
+## 1. Development Philosophy
 
-Do not do
-- Do not implement notifications.
-- Do not implement exports.
-- Do not implement school join codes/approval workflows.
+This is a production-bound adjudication system.
 
-Deliverables
-- Working Phase 1 flows: judge live + test mode, admin overview + packet release/unrelease, director released packet history.
-- Updated Cloud Functions and security rules for the above.
+Priorities (in order):
+
+1. Correctness and rule enforcement
+2. Data integrity
+3. Security
+4. Maintainability
+5. UX clarity
+6. Performance
+7. Visual polish
+
+You are allowed — and encouraged — to refactor when it meaningfully improves:
+- Readability
+- Separation of concerns
+- Determinism
+- State management
+- Security
+- UX structure
+
+Avoid cosmetic churn without functional benefit.
+
+---
+
+## 2. Architectural Principles
+
+### A. Deterministic Data Model
+
+- All submissions use deterministic IDs:  
+  `{eventId}_{ensembleId}_{judgePosition}`
+- Exactly one submission per key.
+- All packet-level actions must be atomic.
+
+---
+
+### B. Clear Role Boundaries
+
+Roles:
+- `admin`
+- `judge`
+- `director`
+
+No role leakage in UI or security rules.
+
+---
+
+### C. Event-Centric System
+
+- Exactly one active event at a time.
+- Schedule is the source of truth.
+- Judges may only act on scheduled ensembles for the active event.
+
+---
+
+### D. Cloud Functions Own State Transitions
+
+The following must never be client-only logic:
+
+- `releasePacket`
+- `unreleasePacket`
+- `lockSubmission`
+- `unlockSubmission`
+- Packet completion validation
+- Overall rating computation
+
+All cross-document state transitions must be atomic.
+
+---
+
+## 3. Product Rules (Non-Negotiable)
+
+These must always be enforced:
+
+- One active event.
+- Judges assigned to exactly one `judgePosition` per event.
+- Live mode locks `judgePosition` and `formType`.
+- Submissions are locked immediately after submit.
+- Directors see only released packets.
+- Release allowed only if packet is complete:
+  - Grades II–VI: stage1 + stage2 + stage3 + sight required
+  - Grade I: stage1 + stage2 + stage3 required (sight N/A)
+
+### Scoring Rules
+
+- 7 captions per form.
+- Caption grades: A/B/C/D/F (± allowed for display only).
+- Numeric scoring ignores ±:
+  - A = 1
+  - B = 2
+  - C = 3
+  - D = 4
+  - F = 5
+- `captionScoreTotal` range: 7–35.
+- Judge rating computed deterministically from total.
+- Overall rating computed from:
+  - 3 stage judges + sight (if required)
+  - NCBA chart
+  - Unanimous stage rule
+
+If uncertain, enforce stricter logic.
+
+---
+
+## 4. Refactoring Policy
+
+You may:
+
+- Split large files (e.g., `app.js`) into modules.
+- Extract UI logic from business logic.
+- Improve naming for clarity.
+- Consolidate duplicated logic.
+- Improve performance bottlenecks.
+- Improve mobile UX structure.
+
+You must:
+
+- Preserve deterministic submission IDs.
+- Avoid silent rule changes.
+- Maintain backward compatibility of data model unless explicitly migrating.
+- Keep release logic atomic.
+
+---
+
+## 5. UX Direction
+
+The app is mobile-first.
+
+Aim for:
+
+- Clear step-based judge flows (Record → Score → Review → Submit)
+- Minimal cognitive load
+- Strong visual state indicators (Draft / Submitted / Locked / Released)
+- Clear separation between roles
+- Reduced nesting and dashboard-style density
+
+Avoid:
+
+- Admin-dashboard-style complexity in judge flow
+- Deep panel nesting
+- Overly dense layouts
+- Unclear state transitions
+
+---
+
+## 6. Explicitly Out of Scope (Unless Requested)
+
+- Notifications
+- Data exports
+- School join codes
+- Multi-event concurrency
+- Complex approval workflows
+
+---
+
+## 7. Deliverables
+
+A successful Phase 1 implementation allows:
+
+- Admin to run an event end-to-end.
+- Judges to record, score, and submit.
+- Admin to release packets atomically.
+- Directors to view released history only.
+- No duplicate submissions.
+- No partial release states.
+- No manual Firestore patching required.

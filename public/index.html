@@ -415,35 +415,6 @@
           </div>
         </div>
         <div class="stack" id="directorMainStack">
-          <div class="panel" id="directorChecklistPanel">
-            <div class="readiness-header">
-              <h3>Entry Readiness</h3>
-              <span class="pill" id="directorReadinessPill">Draft</span>
-            </div>
-
-            <div class="readiness-summary">
-              <div class="readiness-main">
-                <div class="readiness-title" id="directorReadinessTitle"></div>
-                <div class="readiness-meta" id="directorReadinessMeta"></div>
-              </div>
-
-              <div class="readiness-actions" id="directorReadinessActions"></div>
-            </div>
-
-            <div class="progress" aria-hidden="true">
-              <div class="progress-bar" id="directorReadinessBar" style="width: 0%"></div>
-            </div>
-
-            <details class="accordion-card readiness-details" id="directorReadinessDetails">
-              <summary>
-                <span>View details</span>
-                <span class="muted readiness-hint" id="directorReadinessDetailsHint"> </span>
-              </summary>
-              <ul id="directorChecklist" class="list list--compact"></ul>
-            </details>
-          </div>
-
-          <div class="panel">
           <div class="panel" id="directorEnsemblesSection">
             <h3>Ensembles</h3>
             <div class="actions">
@@ -472,23 +443,21 @@
 
           <div class="panel">
             <h3>Upcoming Event</h3>
-            <div class="note" id="directorEventMeta">No event selected.</div>
-            <div class="actions">
-              <button type="button" class="ghost" id="directorChangeEventBtn">
-                Change Event
-              </button>
+            <div class="event-meta" id="directorEventMeta">
+              <div class="event-meta-name" id="directorEventName">No event selected.</div>
+              <div class="event-meta-detail note" id="directorEventDetail"></div>
             </div>
             <div id="directorEventPicker" class="stack is-hidden">
               <label>
                 Select Event
                 <select id="directorEventSelect"></select>
               </label>
-              <div class="actions">
-                <button type="button" id="directorSetEventBtn">Set Event</button>
-              </div>
             </div>
             <div class="actions">
               <button type="button" id="directorScheduleBtn">View Event Schedule</button>
+              <button type="button" class="ghost" id="directorChangeEventBtn">
+                Change Event
+              </button>
             </div>
           </div>
 

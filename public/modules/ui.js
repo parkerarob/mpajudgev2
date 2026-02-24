@@ -49,6 +49,7 @@ import {
   handleDeleteEnsemble,
   isDirectorManager,
   hasDirectorUnsavedChanges,
+  getMpaRepertoireForGrade,
   loadDirectorEntry,
   markDirectorDirty,
   markEntryDraft,
@@ -126,6 +127,7 @@ import {
   getSchoolNameById,
   derivePerformanceGrade,
   levelToRoman,
+  romanToLevel,
   normalizeCaptions,
 } from "./utils.js";
 
@@ -2581,16 +2583,14 @@ export function updateRepertoirePreview(wrapper, key) {
   if (!wrapper || !state.director.entryDraft) return;
   const preview = wrapper.querySelector(`[data-preview-key="${key}"]`);
   if (!preview) return;
-  const level = state.director.entryDraft.repertoire?.[key]?.gradeLevel;
-  const roman = level ? levelToRoman(level) : "";
-  const title = state.director.entryDraft.repertoire?.[key]?.titleText || "";
-  if (roman && title) {
-    preview.textContent = `Preview: ${roman} ${title}`;
-  } else if (title) {
-    preview.textContent = `Preview: ${title}`;
-  } else {
-    preview.textContent = "";
-  }
+  const grade = state.director.entryDraft.repertoire?.[key]?.grade || "";
+  const title = state.director.entryDraft.repertoire?.[key]?.title || "";
+  const composer = state.director.entryDraft.repertoire?.[key]?.composer || "";
+  const parts = [];
+  if (grade) parts.push(grade);
+  if (title) parts.push(title);
+  if (composer) parts.push(`- ${composer}`);
+  preview.textContent = parts.length ? `Selected: ${parts.join(" ")}` : "";
 }
 
 export function renderRepertoireFields() {
@@ -2605,108 +2605,239 @@ export function renderRepertoireFields() {
     wrapper.className = "stack";
     if (!repertoire[piece.key]) {
       repertoire[piece.key] = {
-        titleText: "",
-        composerArrangerText: "",
-        workId: null,
-        catalogSource: null,
+        pieceId: null,
+        grade: "",
+        title: "",
+        composer: "",
       };
-      if (piece.key !== "march") {
-        repertoire[piece.key].gradeLevel = null;
-      }
     }
     const pieceData = repertoire[piece.key];
-    let gradeSelect = null;
-    let titleInput = null;
-    if (piece.key !== "march") {
-      const row = document.createElement("div");
-      row.className = "repertoire-row";
-
-      const gradeLabel = document.createElement("label");
-      gradeLabel.textContent = "Grade";
-      const gradeSelectEl = document.createElement("select");
-      gradeLabel.appendChild(gradeSelectEl);
-      gradeSelect = gradeSelectEl;
-      const baseOption = document.createElement("option");
-      baseOption.value = "";
-      baseOption.textContent = "Grade";
-      gradeSelect.appendChild(baseOption);
-      ["I", "II", "III", "IV", "V", "VI"].forEach((roman, index) => {
-        const option = document.createElement("option");
-        option.value = String(index + 1);
-        option.textContent = roman;
-        gradeSelect.appendChild(option);
-      });
-      const currentLevel = pieceData?.gradeLevel;
-      gradeSelect.value = currentLevel ? String(currentLevel) : "";
-      gradeSelect.addEventListener("change", () => {
-        const level = gradeSelect.value ? Number(gradeSelect.value) : null;
-        pieceData.gradeLevel = level;
-        applyDirectorDirty("repertoire");
-        updateRepertoirePreview(wrapper, piece.key);
-        const derived = derivePerformanceGrade(
-          state.director.entryDraft.repertoire?.selection1?.gradeLevel,
-          state.director.entryDraft.repertoire?.selection2?.gradeLevel
-        );
-        if (derived.ok) {
-          state.director.entryDraft.performanceGrade = derived.value;
-          if (els.directorPerformanceGradeInput) {
-            els.directorPerformanceGradeInput.value = derived.value;
-          }
-          setPerformanceGradeError("");
-        }
-      });
-
+    if (piece.key === "march") {
       const titleLabel = document.createElement("label");
       titleLabel.textContent = `${piece.label} Title`;
-      const titleInputEl = document.createElement("input");
-      titleInputEl.type = "text";
-      titleLabel.appendChild(titleInputEl);
-      titleInput = titleInputEl;
-      titleInput.value = pieceData?.titleText || "";
-      titleInput.addEventListener("input", () => {
-        pieceData.titleText = titleInput.value.trim();
-        applyDirectorDirty("repertoire");
-        updateRepertoirePreview(wrapper, piece.key);
-      });
-
-      row.appendChild(gradeLabel);
-      row.appendChild(titleLabel);
-      wrapper.appendChild(row);
-    } else {
-      const titleLabel = document.createElement("label");
-      titleLabel.textContent = `${piece.label} Title`;
-      const titleInputEl = document.createElement("input");
-      titleInputEl.type = "text";
-      titleLabel.appendChild(titleInputEl);
-      titleInput = titleInputEl;
-      titleInput.value = pieceData?.titleText || "";
-      titleInput.addEventListener("input", () => {
-        pieceData.titleText = titleInput.value.trim();
-        applyDirectorDirty("repertoire");
-      });
+      const titleInput = document.createElement("input");
+      titleInput.type = "text";
+      titleInput.placeholder = "Enter march title...";
+      titleInput.value = pieceData?.title || "";
+      titleLabel.appendChild(titleInput);
       wrapper.appendChild(titleLabel);
-    }
 
-    const composerLabel = document.createElement("label");
-    composerLabel.textContent = `${piece.label} Composer/Arranger`;
-    const composerInputEl = document.createElement("input");
-    composerInputEl.type = "text";
-    composerLabel.appendChild(composerInputEl);
-    const composerInput = composerInputEl;
-    composerInput.value = pieceData?.composerArrangerText || "";
-    composerInput.addEventListener("input", () => {
-      pieceData.composerArrangerText = composerInput.value.trim();
-      applyDirectorDirty("repertoire");
-    });
+      const composerLabel = document.createElement("label");
+      composerLabel.textContent = `${piece.label} Composer/Arranger`;
+      const composerInput = document.createElement("input");
+      composerInput.type = "text";
+      composerInput.value = pieceData?.composer || "";
+      composerLabel.appendChild(composerInput);
+      wrapper.appendChild(composerLabel);
 
-    wrapper.appendChild(composerLabel);
-    if (piece.key !== "march") {
+      titleInput.addEventListener("input", () => {
+        pieceData.title = titleInput.value.trim();
+        applyDirectorDirty("repertoire");
+        updateRepertoirePreview(wrapper, piece.key);
+      });
+      composerInput.addEventListener("input", () => {
+        pieceData.composer = composerInput.value.trim();
+        applyDirectorDirty("repertoire");
+        updateRepertoirePreview(wrapper, piece.key);
+      });
+
       const preview = document.createElement("div");
       preview.className = "hint";
       preview.dataset.previewKey = piece.key;
       wrapper.appendChild(preview);
       updateRepertoirePreview(wrapper, piece.key);
+
+      els.repertoireFields.appendChild(wrapper);
+      return;
     }
+
+    const row = document.createElement("div");
+    row.className = "repertoire-row";
+
+    const gradeLabel = document.createElement("label");
+    gradeLabel.textContent = "Grade";
+    const gradeSelect = document.createElement("select");
+    gradeLabel.appendChild(gradeSelect);
+    const baseOption = document.createElement("option");
+    baseOption.value = "";
+    baseOption.textContent = "Grade";
+    gradeSelect.appendChild(baseOption);
+    ["I", "II", "III", "IV", "V", "VI"].forEach((roman) => {
+      const option = document.createElement("option");
+      option.value = roman;
+      option.textContent = roman;
+      gradeSelect.appendChild(option);
+    });
+    gradeSelect.value = pieceData?.grade || "";
+
+    const titleLabel = document.createElement("label");
+    titleLabel.textContent = `${piece.label} Title`;
+    const combo = document.createElement("div");
+    combo.className = "mpa-combobox";
+    const titleInput = document.createElement("input");
+    titleInput.type = "text";
+    titleInput.placeholder = "Start typing a title...";
+    titleInput.value = pieceData?.title || "";
+    const list = document.createElement("div");
+    list.className = "mpa-combobox-list";
+    list.hidden = true;
+    combo.appendChild(titleInput);
+    combo.appendChild(list);
+    titleLabel.appendChild(combo);
+
+    row.appendChild(gradeLabel);
+    row.appendChild(titleLabel);
+    wrapper.appendChild(row);
+
+    const composerRow = document.createElement("div");
+    composerRow.className = "row repertoire-composer-row";
+    const composerLabel = document.createElement("label");
+    composerLabel.textContent = `${piece.label} Composer/Arranger`;
+    const composerInput = document.createElement("input");
+    composerInput.type = "text";
+    composerInput.value = pieceData?.composer || "";
+    composerInput.readOnly = Boolean(pieceData?.pieceId);
+    composerLabel.appendChild(composerInput);
+    const composerEditBtn = document.createElement("button");
+    composerEditBtn.type = "button";
+    composerEditBtn.className = "ghost btn--sm";
+    composerEditBtn.textContent = "Edit";
+    composerEditBtn.addEventListener("click", () => {
+      composerInput.readOnly = !composerInput.readOnly;
+      composerEditBtn.textContent = composerInput.readOnly ? "Edit" : "Lock";
+      if (!composerInput.readOnly) {
+        composerInput.focus();
+      }
+    });
+    composerRow.appendChild(composerLabel);
+    composerRow.appendChild(composerEditBtn);
+    wrapper.appendChild(composerRow);
+
+    const preview = document.createElement("div");
+    preview.className = "hint";
+    preview.dataset.previewKey = piece.key;
+    wrapper.appendChild(preview);
+    updateRepertoirePreview(wrapper, piece.key);
+
+    const updatePerformanceGrade = () => {
+      const selection1Level = romanToLevel(
+        state.director.entryDraft.repertoire?.selection1?.grade
+      );
+      const selection2Level = romanToLevel(
+        state.director.entryDraft.repertoire?.selection2?.grade
+      );
+      const derived = derivePerformanceGrade(selection1Level, selection2Level);
+      if (derived.ok) {
+        state.director.entryDraft.performanceGrade = derived.value;
+        if (els.directorPerformanceGradeInput) {
+          els.directorPerformanceGradeInput.value = derived.value;
+        }
+        setPerformanceGradeError("");
+      }
+    };
+
+    const renderSuggestions = async () => {
+      list.innerHTML = "";
+      const grade = pieceData.grade;
+      if (!grade) {
+        const empty = document.createElement("div");
+        empty.className = "mpa-combobox-empty";
+        empty.textContent = "Select a grade to browse titles.";
+        list.appendChild(empty);
+        list.hidden = false;
+        return;
+      }
+      list.hidden = false;
+      const loading = document.createElement("div");
+      loading.className = "mpa-combobox-empty";
+      loading.textContent = "Loading titles...";
+      list.appendChild(loading);
+      const options = await getMpaRepertoireForGrade(grade);
+      const queryText = titleInput.value.trim().toLowerCase();
+      const filtered = options.filter((item) => {
+        const hay = item.titleLower || item.title.toLowerCase();
+        return !queryText || hay.includes(queryText);
+      });
+      const top = filtered.slice(0, 20);
+      list.innerHTML = "";
+      if (!top.length) {
+        const empty = document.createElement("div");
+        empty.className = "mpa-combobox-empty";
+        empty.textContent = "No matches found.";
+        list.appendChild(empty);
+        return;
+      }
+      top.forEach((item) => {
+        const option = document.createElement("button");
+        option.type = "button";
+        option.className = "mpa-combobox-option";
+        option.textContent = `${item.title}${item.composer ? ` - ${item.composer}` : ""}`;
+        option.addEventListener("click", () => {
+          pieceData.pieceId = item.id;
+          pieceData.grade = grade;
+          pieceData.title = item.title || "";
+          pieceData.composer = item.composer || "";
+          titleInput.value = pieceData.title;
+          composerInput.value = pieceData.composer;
+          composerInput.readOnly = true;
+          composerEditBtn.textContent = "Edit";
+          list.hidden = true;
+          applyDirectorDirty("repertoire");
+          updatePerformanceGrade();
+          updateRepertoirePreview(wrapper, piece.key);
+        });
+        list.appendChild(option);
+      });
+    };
+
+    gradeSelect.addEventListener("change", async () => {
+      const nextGrade = gradeSelect.value || "";
+      if (pieceData.grade !== nextGrade) {
+        pieceData.grade = nextGrade;
+        pieceData.pieceId = null;
+        pieceData.title = "";
+        pieceData.composer = "";
+        titleInput.value = "";
+        composerInput.value = "";
+        composerInput.readOnly = false;
+        composerEditBtn.textContent = "Edit";
+        list.hidden = true;
+        list.innerHTML = "";
+      }
+      applyDirectorDirty("repertoire");
+      updatePerformanceGrade();
+      updateRepertoirePreview(wrapper, piece.key);
+      if (nextGrade) {
+        await getMpaRepertoireForGrade(nextGrade);
+      }
+    });
+
+    titleInput.addEventListener("input", () => {
+      pieceData.title = titleInput.value.trim();
+      pieceData.pieceId = null;
+      composerInput.readOnly = false;
+      composerEditBtn.textContent = "Edit";
+      applyDirectorDirty("repertoire");
+      updateRepertoirePreview(wrapper, piece.key);
+      renderSuggestions();
+    });
+
+    titleInput.addEventListener("focus", () => {
+      renderSuggestions();
+    });
+
+    titleInput.addEventListener("blur", () => {
+      window.setTimeout(() => {
+        list.hidden = true;
+      }, 120);
+    });
+
+    composerInput.addEventListener("input", () => {
+      pieceData.composer = composerInput.value.trim();
+      applyDirectorDirty("repertoire");
+      updateRepertoirePreview(wrapper, piece.key);
+    });
+
     els.repertoireFields.appendChild(wrapper);
   });
 }

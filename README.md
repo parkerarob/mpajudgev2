@@ -63,6 +63,12 @@ Grade I lookup test:
 node functions/scripts/test-grade1-lookup.js
 ```
 
+MPA repertoire seed (from PDF):
+```bash
+npm --prefix functions install
+node functions/scripts/seed-mpa-repertoire.js --pdf "C:\\path\\NCBA_MPA_List 2025-2026 9.8.2025 (Website) - Verified - Concert Band MPA.pdf"
+```
+
 ## Deploy
 
 ```bash

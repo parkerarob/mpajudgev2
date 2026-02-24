@@ -28,7 +28,13 @@ import {
   state,
 } from "../state.js";
 import { db, functions, storage } from "../firebase.js";
-import { derivePerformanceGrade, ensureArrayLength, normalizeNumber } from "./utils.js";
+import {
+  derivePerformanceGrade,
+  ensureArrayLength,
+  normalizeGrade,
+  normalizeNumber,
+  romanToLevel,
+} from "./utils.js";
 import { computePacketSummary } from "./judge.js";
 
 export function isDirectorManager() {
@@ -53,6 +59,7 @@ export function hasDirectorUnsavedChanges() {
 
 export function buildDirectorAutosavePayload() {
   const repertoire = buildRepertoirePayload();
+  const mpaSelections = buildMpaSelectionsPayload(repertoire);
   const instrumentation = state.director.entryDraft?.instrumentation || {};
   const rule3c = state.director.entryDraft?.rule3c || {};
   const seating = state.director.entryDraft?.seating || {};
@@ -125,6 +132,7 @@ export function buildDirectorAutosavePayload() {
     performanceGrade: state.director.entryDraft?.performanceGrade || "",
     performanceGradeFlex: Boolean(state.director.entryDraft?.performanceGradeFlex),
     repertoire,
+    mpaSelections,
     instrumentation: normalizedInstrumentation,
     rule3c: normalizedRule3c,
     seating: normalizedSeating,
@@ -138,6 +146,12 @@ export function buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid 
     acc[item.key] = 0;
     return acc;
   }, {});
+  const defaultSelections = Array.from({ length: 2 }, () => ({
+    pieceId: null,
+    grade: "",
+    title: "",
+    composer: "",
+  }));
   return {
     eventId,
     schoolId,
@@ -146,26 +160,23 @@ export function buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid 
     status: "draft",
     performanceGrade: "",
     performanceGradeFlex: false,
+    mpaSelections: defaultSelections,
     repertoire: {
       march: {
-        titleText: "",
-        composerArrangerText: "",
-        workId: null,
-        catalogSource: null,
+        title: "",
+        composer: "",
       },
       selection1: {
-        gradeLevel: null,
-        titleText: "",
-        composerArrangerText: "",
-        workId: null,
-        catalogSource: null,
+        pieceId: null,
+        grade: "",
+        title: "",
+        composer: "",
       },
       selection2: {
-        gradeLevel: null,
-        titleText: "",
-        composerArrangerText: "",
-        workId: null,
-        catalogSource: null,
+        pieceId: null,
+        grade: "",
+        title: "",
+        composer: "",
       },
     },
     instrumentation: {
@@ -203,19 +214,39 @@ export function buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid 
 
 export function normalizeEntryData(data, defaults) {
   const base = { ...defaults, ...(data || {}) };
+  const mpaSelections = Array.isArray(data?.mpaSelections) ? data.mpaSelections : [];
+  base.mpaSelections = Array.from({ length: 2 }, (_, index) => ({
+    ...(defaults.mpaSelections?.[index] || {}),
+    ...(mpaSelections[index] || {}),
+  })).map((row) => ({
+    pieceId: row?.pieceId || null,
+    grade: normalizeGrade(row?.grade) || "",
+    title: row?.title || "",
+    composer: row?.composer || "",
+  }));
   base.repertoire = { ...defaults.repertoire, ...(data?.repertoire || {}) };
   REPERTOIRE_FIELDS.forEach((item) => {
+    const existing = data?.repertoire?.[item.key] || {};
+    const fallbackSelection =
+      item.key === "selection1"
+        ? base.mpaSelections[0]
+        : item.key === "selection2"
+          ? base.mpaSelections[1]
+          : null;
+    const normalizedGrade =
+      normalizeGrade(existing.grade) ||
+      (existing.gradeLevel != null ? normalizeGrade(existing.gradeLevel) : null);
     base.repertoire[item.key] = {
       ...(defaults.repertoire[item.key] || {}),
-      ...(data?.repertoire?.[item.key] || {}),
+      pieceId: existing.pieceId || existing.workId || fallbackSelection?.pieceId || null,
+      grade: normalizedGrade || fallbackSelection?.grade || "",
+      title: existing.title || existing.titleText || fallbackSelection?.title || "",
+      composer:
+        existing.composer ||
+        existing.composerArrangerText ||
+        fallbackSelection?.composer ||
+        "",
     };
-  });
-  ["selection1", "selection2"].forEach((key) => {
-    const gradeLevel =
-      data?.repertoire?.[key]?.gradeLevel ??
-      defaults.repertoire[key]?.gradeLevel ??
-      null;
-    base.repertoire[key].gradeLevel = gradeLevel;
   });
   base.instrumentation = {
     ...defaults.instrumentation,
@@ -374,30 +405,91 @@ export async function saveEntrySection(section, payload, successMessage) {
 
 export function buildRepertoirePayload() {
   const repertoire = state.director.entryDraft.repertoire || {};
+  if (!repertoire.march) {
+    repertoire.march = { title: "", composer: "" };
+  }
+  repertoire.march.title = repertoire.march?.title?.trim?.() || "";
+  repertoire.march.composer = repertoire.march?.composer?.trim?.() || "";
   ["selection1", "selection2"].forEach((key) => {
     if (!repertoire[key]) {
       repertoire[key] = {
-        gradeLevel: null,
-        titleText: "",
-        composerArrangerText: "",
-        workId: null,
-        catalogSource: null,
+        pieceId: null,
+        grade: "",
+        title: "",
+        composer: "",
       };
     }
-    const level = repertoire[key]?.gradeLevel
-      ? Number(repertoire[key].gradeLevel)
-      : null;
-    repertoire[key].gradeLevel = level;
+    const grade = normalizeGrade(repertoire[key]?.grade);
+    repertoire[key].grade = grade || "";
+    repertoire[key].title = repertoire[key]?.title?.trim?.() || "";
+    repertoire[key].composer = repertoire[key]?.composer?.trim?.() || "";
+    repertoire[key].pieceId = repertoire[key]?.pieceId || null;
   });
   return repertoire;
 }
 
+export function buildMpaSelectionsPayload(repertoire) {
+  const source = repertoire || {};
+  return ["selection1", "selection2"].map((key) => ({
+    pieceId: source[key]?.pieceId || null,
+    grade: source[key]?.grade || "",
+    title: source[key]?.title || "",
+    composer: source[key]?.composer || "",
+  }));
+}
+
+export async function getMpaRepertoireForGrade(grade) {
+  const normalized = normalizeGrade(grade);
+  if (!normalized) return [];
+  if (state.director.mpaCacheByGrade.has(normalized)) {
+    return state.director.mpaCacheByGrade.get(normalized);
+  }
+  if (state.director.mpaLoadingGrades.has(normalized)) {
+    return state.director.mpaLoadingGrades.get(normalized);
+  }
+  const loader = (async () => {
+    try {
+      const repertoireQuery = query(
+        collection(db, COLLECTIONS.mpaRepertoire),
+        where("grade", "==", normalized)
+      );
+      const snap = await getDocs(repertoireQuery);
+      const entries = snap.docs.map((docSnap) => {
+        const data = docSnap.data() || {};
+        return {
+          id: docSnap.id,
+          grade: data.grade || normalized,
+          title: data.title || "",
+          titleLower: data.titleLower || (data.title || "").toLowerCase(),
+          composer: data.composer || "",
+          composerLower: data.composerLower || (data.composer || "").toLowerCase(),
+          distributorPublisher: data.distributorPublisher || "",
+          specialInstructions: data.specialInstructions || "",
+        };
+      });
+      entries.sort((a, b) => a.titleLower.localeCompare(b.titleLower));
+      state.director.mpaCacheByGrade.set(normalized, entries);
+      return entries;
+    } catch (error) {
+      console.error("Failed to load MPA repertoire", error);
+      return [];
+    } finally {
+      state.director.mpaLoadingGrades.delete(normalized);
+    }
+  })();
+  state.director.mpaLoadingGrades.set(normalized, loader);
+  return loader;
+}
+
 export async function saveRepertoireSection() {
   if (!state.director.entryDraft) return;
-  const selection1Level = state.director.entryDraft.repertoire?.selection1?.gradeLevel;
-  const selection2Level = state.director.entryDraft.repertoire?.selection2?.gradeLevel;
-  const selection1Title = state.director.entryDraft.repertoire?.selection1?.titleText?.trim();
-  const selection2Title = state.director.entryDraft.repertoire?.selection2?.titleText?.trim();
+  const marchTitle = state.director.entryDraft.repertoire?.march?.title?.trim();
+  const selection1Grade = state.director.entryDraft.repertoire?.selection1?.grade;
+  const selection2Grade = state.director.entryDraft.repertoire?.selection2?.grade;
+  const selection1Title = state.director.entryDraft.repertoire?.selection1?.title?.trim();
+  const selection2Title = state.director.entryDraft.repertoire?.selection2?.title?.trim();
+  const selection1Level = romanToLevel(selection1Grade);
+  const selection2Level = romanToLevel(selection2Grade);
   const derived = derivePerformanceGrade(selection1Level, selection2Level);
   if (!derived.ok) {
     return {
@@ -411,17 +503,22 @@ export async function saveRepertoireSection() {
     const message = "Enter titles for Selection #1 and Selection #2.";
     return { ok: false, reason: "validation", message };
   }
-  const marchTitle = state.director.entryDraft.repertoire?.march?.titleText?.trim();
+  if (!selection1Grade || !selection2Grade) {
+    const message = "Select grades for Selection #1 and Selection #2.";
+    return { ok: false, reason: "validation", message };
+  }
   if (!marchTitle) {
     const message = "March title is required.";
     return { ok: false, reason: "validation", message };
   }
   const repertoire = buildRepertoirePayload();
+  const mpaSelections = buildMpaSelectionsPayload(repertoire);
   state.director.entryDraft.repertoire = repertoire;
+  state.director.entryDraft.mpaSelections = mpaSelections;
   state.director.entryDraft.performanceGrade = derived.value;
   const result = await saveEntrySection(
     "repertoire",
-    { repertoire, performanceGrade: derived.value },
+    { repertoire, mpaSelections, performanceGrade: derived.value },
     "Repertoire saved."
   );
   clearDirectorDirty("meta");
@@ -473,17 +570,17 @@ export async function saveRule3cSection() {
 
 export function computeDirectorCompletionState(entry) {
   const hasEnsemble = Boolean(state.director.selectedEnsembleId);
-  const marchTitle = entry?.repertoire?.march?.titleText?.trim();
-  const selection1Title = entry?.repertoire?.selection1?.titleText?.trim();
-  const selection2Title = entry?.repertoire?.selection2?.titleText?.trim();
-  const selection1Level = entry?.repertoire?.selection1?.gradeLevel;
-  const selection2Level = entry?.repertoire?.selection2?.gradeLevel;
+  const marchTitle = entry?.repertoire?.march?.title?.trim();
+  const selection1Title = entry?.repertoire?.selection1?.title?.trim();
+  const selection2Title = entry?.repertoire?.selection2?.title?.trim();
+  const selection1Grade = entry?.repertoire?.selection1?.grade;
+  const selection2Grade = entry?.repertoire?.selection2?.grade;
   const repertoireComplete =
     Boolean(marchTitle) &&
     Boolean(selection1Title) &&
     Boolean(selection2Title) &&
-    Boolean(selection1Level) &&
-    Boolean(selection2Level);
+    Boolean(selection1Grade) &&
+    Boolean(selection2Grade);
   const standardCounts = entry?.instrumentation?.standardCounts || {};
   const hasStandardCount = Object.values(standardCounts).some(
     (value) => Number(value) > 0
@@ -546,18 +643,19 @@ export function validateEntryReady(entry) {
   if (!state.director.ensemblesCache.length) {
     issues.push("Create at least one ensemble.");
   }
-  const marchTitle = entry.repertoire?.march?.titleText?.trim();
+  const marchTitle = entry.repertoire?.march?.title?.trim();
   if (!marchTitle) {
     issues.push("March title is required.");
   }
-  ["selection1", "selection2"].forEach((key) => {
-    const title = entry.repertoire?.[key]?.titleText?.trim();
-    const level = entry.repertoire?.[key]?.gradeLevel;
-    if (!level) {
-      issues.push(`Grade level is required for ${key === "selection1" ? "Selection #1" : "Selection #2"}.`);
+  ["selection1", "selection2"].forEach((key, index) => {
+    const title = entry.repertoire?.[key]?.title?.trim();
+    const grade = entry.repertoire?.[key]?.grade;
+    const label = `Selection #${index + 1}`;
+    if (!grade) {
+      issues.push(`Grade level is required for ${label}.`);
     }
     if (!title) {
-      issues.push(`Title is required for ${key === "selection1" ? "Selection #1" : "Selection #2"}.`);
+      issues.push(`Title is required for ${label}.`);
     }
   });
   if (
@@ -580,6 +678,9 @@ export function validateEntryReady(entry) {
 export async function markEntryReady() {
   if (!state.director.entryDraft || !state.director.entryRef) return;
   state.director.entryDraft.repertoire = buildRepertoirePayload();
+  state.director.entryDraft.mpaSelections = buildMpaSelectionsPayload(
+    state.director.entryDraft.repertoire
+  );
   const issues = validateEntryReady(state.director.entryDraft);
   if (issues.length) {
     const message = `Please complete the following before marking Ready:\n- ${issues.join("\n- ")}`;

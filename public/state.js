@@ -8,6 +8,7 @@ export const COLLECTIONS = {
   packets: "packets",
   ensembles: "ensembles",
   entries: "entries",
+  mpaRepertoire: "mpaRepertoire",
 };
 
 export const FIELDS = {
@@ -532,6 +533,8 @@ export const state = {
     entrySaveInFlight: false,
     ensemblesCache: [],
     nameCache: new Map(),
+    mpaCacheByGrade: new Map(),
+    mpaLoadingGrades: new Map(),
     dirtySections: new Set(),
     draftVersion: 0,
     autosaveInFlight: false,

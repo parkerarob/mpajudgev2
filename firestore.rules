@@ -172,6 +172,11 @@ service cloud.firestore {
       }
     }
 
+    match /mpaRepertoire/{pieceId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
     match /submissions/{submissionId} {
       allow read: if isAdmin()
         || (isJudge()

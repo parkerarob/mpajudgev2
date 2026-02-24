@@ -1109,22 +1109,29 @@ export function watchDirectorSchoolDirectors(callback) {
     where(FIELDS.users.role, "==", "director"),
     where(FIELDS.users.schoolId, "==", schoolId)
   );
-  state.subscriptions.directorSchoolDirectors = onSnapshot(directorQuery, (snapshot) => {
-    const directors = snapshot.docs.map((docSnap) => {
-      const data = docSnap.data() || {};
-      return {
-        id: docSnap.id,
-        displayName: data.displayName || "",
-        email: data.email || "",
-      };
-    });
-    directors.sort((a, b) => {
-      const aName = (a.displayName || a.email || "").toLowerCase();
-      const bName = (b.displayName || b.email || "").toLowerCase();
-      return aName.localeCompare(bName);
-    });
-    callback?.(directors);
-  });
+  state.subscriptions.directorSchoolDirectors = onSnapshot(
+    directorQuery,
+    (snapshot) => {
+      const directors = snapshot.docs.map((docSnap) => {
+        const data = docSnap.data() || {};
+        return {
+          id: docSnap.id,
+          displayName: data.displayName || "",
+          email: data.email || "",
+        };
+      });
+      directors.sort((a, b) => {
+        const aName = (a.displayName || a.email || "").toLowerCase();
+        const bName = (b.displayName || b.email || "").toLowerCase();
+        return aName.localeCompare(bName);
+      });
+      callback?.(directors);
+    },
+    (error) => {
+      console.error("watchDirectorSchoolDirectors failed", error);
+      callback?.([]);
+    }
+  );
 }
 
 export function watchDirectorEnsembles(callback) {

@@ -61,7 +61,14 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      allow read: if isAdmin() || request.auth.uid == userId;
+      allow read: if isAdmin()
+        || request.auth.uid == userId
+        || (isDirector()
+          && resource.data.schoolId == userSchoolId()
+          && (
+            resource.data.role == "director"
+            || resource.data.roles.director == true
+          ));
       allow create: if isAdmin()
         || (request.auth.uid == userId
           && hasEmailAuth()

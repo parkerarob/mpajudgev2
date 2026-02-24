@@ -1099,6 +1099,33 @@ export function updateAuthUI() {
     }
   } else {
     els.signOutBtn.disabled = true;
+    closeDirectorProfileModal();
+    closeUserProfileModal();
+    if (els.userProfileNameInput) {
+      els.userProfileNameInput.value = "";
+    }
+    if (els.userProfileStatus) {
+      els.userProfileStatus.textContent = "";
+    }
+    if (els.directorProfileNameInput) {
+      els.directorProfileNameInput.value = "";
+    }
+    if (els.directorProfileNafmeNumberInput) {
+      els.directorProfileNafmeNumberInput.value = "";
+    }
+    if (els.directorProfileNafmeExpInput) {
+      els.directorProfileNafmeExpInput.value = "";
+    }
+    if (els.directorProfileCardInput) {
+      els.directorProfileCardInput.value = "";
+    }
+    if (els.directorProfileCardStatus) {
+      els.directorProfileCardStatus.textContent = "";
+    }
+    if (els.directorProfileCardPreview) {
+      els.directorProfileCardPreview.src = "";
+      els.directorProfileCardPreview.classList.add("is-hidden");
+    }
     if (els.accountSummary) {
       els.accountSummary.textContent = "Signed out";
     }
@@ -1108,6 +1135,10 @@ export function updateAuthUI() {
     if (els.modalAuthActions && els.signOutBtn.parentElement !== els.modalAuthActions) {
       els.modalAuthActions.appendChild(els.signOutBtn);
     }
+    if (els.adminProfileToggleBtn) els.adminProfileToggleBtn.style.display = "none";
+    if (els.judgeProfileToggleBtn) els.judgeProfileToggleBtn.style.display = "none";
+    if (els.judgeOpenProfileToggleBtn) els.judgeOpenProfileToggleBtn.style.display = "none";
+    if (els.directorProfileToggleBtn) els.directorProfileToggleBtn.style.display = "none";
     if (els.signInBtn) {
       els.signInBtn.style.display = "inline-flex";
     }
@@ -1468,6 +1499,25 @@ export function updateRoleUI() {
   }
   if (els.tabLockHint) {
     els.tabLockHint.textContent = "";
+  }
+
+  if (state.auth.profileLoading) {
+    document.body.classList.add("auth-locked");
+    document.body.classList.remove("director-only");
+    setMainInteractionDisabled(true);
+    if (els.roleTabBar) {
+      els.roleTabBar.classList.add("is-hidden");
+    }
+    if (els.adminCard) els.adminCard.style.display = "none";
+    if (els.judgeCard) els.judgeCard.style.display = "none";
+    if (els.judgeOpenCard) els.judgeOpenCard.style.display = "none";
+    if (els.directorCard) els.directorCard.style.display = "none";
+    setRoleHint("Signing in...");
+    setProvisioningNotice("");
+    if (els.tabLockHint) {
+      els.tabLockHint.textContent = "Loading account access...";
+    }
+    return;
   }
 
   if (!state.auth.userProfile) {

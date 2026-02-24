@@ -84,6 +84,7 @@ if (window.location.pathname.includes("/judge-open") && window.location.hash !==
 
 onAuthStateChanged(auth, async (user) => {
   state.auth.currentUser = user;
+  state.auth.profileLoading = Boolean(user);
   updateAuthUI();
 
   if (!user) {
@@ -100,6 +101,7 @@ onAuthStateChanged(auth, async (user) => {
       return;
     }
     state.auth.userProfile = null;
+    state.auth.profileLoading = false;
     updateRoleUI();
     resetJudgeState();
     resetJudgeOpenState();
@@ -127,9 +129,12 @@ onAuthStateChanged(auth, async (user) => {
     return;
   }
 
+  closeAuthModal();
+
   const userRef = doc(db, COLLECTIONS.users, user.uid);
   const snap = await getDoc(userRef);
   state.auth.userProfile = snap.exists() ? snap.data() : null;
+  state.auth.profileLoading = false;
   updateAuthUI();
   if (state.auth.sessionExpiredLocked) {
     state.auth.sessionExpiredLocked = false;

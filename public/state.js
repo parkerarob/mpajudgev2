@@ -467,6 +467,7 @@ export const state = {
   auth: {
     currentUser: null,
     userProfile: null,
+    profileLoading: false,
     sessionExpiredLocked: false,
   },
   event: {

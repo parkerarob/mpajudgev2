@@ -111,7 +111,7 @@ onAuthStateChanged(auth, async (user) => {
     state.director.ensemblesCache = [];
     setDirectorEntryHint("");
     setDirectorSaveStatus("");
-    setDirectorEntryStatusLabel("Draft");
+    setDirectorEntryStatusLabel("Incomplete");
     setAuthView("signIn");
     closeAuthModal();
     window.location.hash = "";

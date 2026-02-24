@@ -25,6 +25,9 @@
               <div class="auth-identity-name" id="authIdentityName">Signed in</div>
               <div class="auth-identity-email" id="authIdentityEmail"></div>
             </div>
+            <div class="auth-action-row" id="headerAuthButtons">
+              <button type="button" class="ghost" id="directorProfileToggleBtn">Update Profile</button>
+            </div>
           </div>
         </div>
       </div>
@@ -569,55 +572,38 @@
       </section>
 
       <section class="card" id="directorCard" role="tabpanel" aria-labelledby="directorTab">
-        <div class="ios-nav mobile-only">
-          <div class="ios-subtitle">Director</div>
-          <h2 class="ios-title">My Ensemble</h2>
-          <div class="ios-subtitle">Entry Progress Center</div>
-        </div>
+        
         <div class="tab-header desktop-only">
           <div>
-            <h2>Entry Progress Center</h2>
-            <div class="tab-subtitle">Complete your entry and review released packets.</div>
+            <h2>Ensemble Registrations</h2>
+            <div class="tab-subtitle">Complete your Day of Forms and review Results Packets.</div>
           </div>
-          <div class="tab-header-actions">
-            <span class="badge" id="directorEntryStatusBadge">Draft</span>
-          </div>
+            <div class="tab-header-actions"></div>
         </div>
         <div class="ios-screen">
-        <div class="panel director-summary card" id="directorSummary">
-          <div class="director-summary-main">
-            <div class="director-summary-name" id="directorSummaryName">Director</div>
-            <div class="note" id="directorSummaryEmail"></div>
-          </div>
-          <div class="director-summary-progress">
-            <div class="note">Status: <span id="directorSummaryStatus">Draft</span></div>
-            <div class="note">Completion: <span id="directorSummaryCompletion">0%</span></div>
-            <div class="progress-bar"><span id="directorSummaryProgressBar"></span></div>
-          </div>
-          <div class="director-summary-school">
-            <div class="director-summary-school-name" id="directorSummarySchool">No school attached</div>
-            <div class="row" id="directorAttachControls">
-              <select id="directorAttachSelect"></select>
-              <button type="button" id="directorAttachBtn">Confirm School</button>
-            </div>
-            <div class="actions">
-              <div class="row" id="directorDetachControls">
-                <button type="button" id="directorDetachBtn" class="ghost">
-                  Change School
-                </button>
+          <div class="panel director-summary" id="directorSummary">
+            <div class="director-summary-school">
+              <div class="director-summary-school-row">
+                <div class="director-summary-school-name" id="directorSummarySchool">No school attached</div>
+                <div class="row" id="directorDetachControls">
+                  <button type="button" id="directorDetachBtn" class="ghost">
+                    Change School
+                  </button>
+                </div>
               </div>
-              <button type="button" class="ghost" id="directorProfileToggleBtn">Update Profile</button>
-            </div>
-          </div>
-        </div>
-        <div class="stack" id="directorMainStack">
-          <div class="panel group" id="directorEnsemblesSection">
-            <h3>Ensembles</h3>
-            <div class="actions">
+              <ul id="directorEnsembleList" class="list ensembles-list"></ul>
               <button type="button" id="directorShowEnsembleFormBtn" class="btn--secondary">
                 Create New Ensemble
               </button>
+              <div class="director-summary-directors" id="directorSchoolDirectors"></div>
+              <div class="row" id="directorAttachControls">
+                <select id="directorAttachSelect"></select>
+                <button type="button" id="directorAttachBtn">Confirm School</button>
+              </div>
             </div>
+        </div>
+        <div class="stack" id="directorMainStack">
+          <div class="stack" id="directorEnsemblesSection">
             <form id="directorEnsembleForm" class="stack is-hidden">
               <label>
                 Ensemble Name
@@ -631,46 +617,27 @@
                 </button>
               </div>
             </form>
-            <div class="note">
-              Active ensemble: <span id="directorActiveEnsembleName">None selected</span>
-            </div>
-            <ul id="directorEnsembleList" class="list ensembles-list"></ul>
           </div>
 
-          <div class="panel group">
-            <h3>Upcoming Event</h3>
-            <div class="event-meta" id="directorEventMeta">
-              <div class="event-meta-name" id="directorEventName">No event selected.</div>
-              <div class="event-meta-detail note" id="directorEventDetail"></div>
-            </div>
-            <div id="directorEventPicker" class="stack is-hidden">
-              <label>
-                Select Event
-                <select id="directorEventSelect"></select>
-              </label>
-            </div>
-            <div class="actions">
-              <button type="button" id="directorScheduleBtn">View Event Schedule</button>
-              <button type="button" class="ghost" id="directorChangeEventBtn">
-                Change Event
-              </button>
-            </div>
-          </div>
-
-          <div class="panel card group" id="directorEntryPanel">
+            <div class="panel group" id="directorEntryPanel">
             <h3>Event Entry</h3>
             <div class="row">
-              <div class="note">Status: <span id="directorEntryStatus">Draft</span></div>
+              <div class="note">Status: <span id="directorEntryStatus">Incomplete</span></div>
               <div class="note" id="directorSaveStatus"></div>
               <span class="autosave-indicator" id="directorAutosaveIndicator">Autosaved</span>
             </div>
             <div class="note" id="directorEntryHint">
               Select an ensemble and event to begin.
             </div>
+            <div class="active-ensemble-text is-hidden" id="directorActiveEnsemblePill">None selected</div>
             <form id="directorEntryForm" class="stack">
               <label>
                 Performance Grade (auto-derived from repertoire grades)
                 <input type="text" id="directorPerformanceGradeInput" placeholder="Auto-derived" readonly />
+              </label>
+              <label class="director-flex-row">
+                <input type="checkbox" id="directorPerformanceGradeFlex" />
+                Flex
               </label>
               <div class="error" id="performanceGradeError"></div>
               <details class="panel accordion-card" open>
@@ -797,10 +764,11 @@
                     <strong>Lunch Buy-In</strong>
                   </div>
                 </summary>
-                <div class="form-section">
-                  <div class="hint">
-                    Each lunch includes two slices of pizza, chips/snack, and bottled water.
-                  </div>
+                  <div class="form-section">
+                    <div class="hint">
+                      Each lunch includes two slices of pizza, chips/snack, and soda or bottled water.
+                      Cost per meal is $8.00.
+                    </div>
                   <label>
                     Pepperoni pizza lunch quantity
                     <input type="number" id="lunchPepperoniInput" min="0" value="0" />
@@ -809,27 +777,26 @@
                     Cheese pizza lunch quantity
                     <input type="number" id="lunchCheeseInput" min="0" value="0" />
                   </label>
-                  <label>
-                    Lunch notes (allergies or other info)
-                    <textarea id="lunchNotesInput" rows="3"></textarea>
-                  </label>
                 <div class="actions">
                   <button type="button" id="saveLunchBtn">Save Lunch</button>
+                  <div class="hint" id="lunchTotalCost">$0.00</div>
+                  <div class="hint">Make checks payable to Ashley High School Band Boosters.</div>
+                  <div class="hint">Payment accepted by check or cash (one lump-sum payment for total meals).</div>
                   <div class="hint" id="saveLunchStatus"></div>
                 </div>
                 </div>
-              </details>
+                </details>
 
-              <div class="actions director-sticky">
-                <button type="button" id="directorEntryReadyBtn">Mark as Ready</button>
-                <button type="button" class="ghost is-hidden" id="directorEntryUndoReadyBtn">
-                  Mark as Draft
-                </button>
+                <div class="actions entry-ready-actions">
+                  <button type="button" id="directorEntryReadyBtn" class="full-width-cta">
+                    Mark as Ready
+                  </button>
+                </div>
+
+                </form>
               </div>
-            </form>
-          </div>
 
-          <details class="panel accordion-card group">
+              <details class="panel accordion-card group">
             <summary>
               <div>
                 <strong>Results Packet</strong>
@@ -838,9 +805,9 @@
             <div class="form-section">
               <div class="empty" id="directorEmpty">No results released yet.</div>
               <div id="directorPackets" class="stack"></div>
-            </div>
-          </details>
-        </div>
+              </div>
+              </details>
+          </div>
         </div>
       </section>
 
@@ -996,21 +963,4 @@
     <script type="module" src="/app.js"></script>
   </body>
 </html>
-      <nav class="tabbar mobile-only" id="roleTabBar" aria-label="Role navigation">
-        <div class="tabbar-group" data-role="admin">
-          <button type="button" data-action="admin-home" aria-selected="true">Home</button>
-          <button type="button" data-action="admin-events" aria-selected="false">Events</button>
-          <button type="button" data-action="admin-schools" aria-selected="false">Schools</button>
-          <button type="button" data-action="admin-settings" aria-selected="false">Settings</button>
-        </div>
-        <div class="tabbar-group" data-role="judge">
-          <button type="button" data-action="judge-judging" aria-selected="true">Judging</button>
-          <button type="button" data-action="judge-schedule" aria-selected="false">Schedule</button>
-          <button type="button" data-action="judge-profile" aria-selected="false">Profile</button>
-        </div>
-        <div class="tabbar-group" data-role="director">
-          <button type="button" data-action="director-schedule" aria-selected="true">Schedule</button>
-          <button type="button" data-action="director-ensemble" aria-selected="false">My Ensemble</button>
-          <button type="button" data-action="director-profile" aria-selected="false">Profile</button>
-        </div>
-      </nav>
+      

@@ -123,6 +123,7 @@ export function buildDirectorAutosavePayload() {
   return {
     status: "draft",
     performanceGrade: state.director.entryDraft?.performanceGrade || "",
+    performanceGradeFlex: Boolean(state.director.entryDraft?.performanceGradeFlex),
     repertoire,
     instrumentation: normalizedInstrumentation,
     rule3c: normalizedRule3c,
@@ -144,6 +145,7 @@ export function buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid 
     createdByUid,
     status: "draft",
     performanceGrade: "",
+    performanceGradeFlex: false,
     repertoire: {
       march: {
         titleText: "",
@@ -640,7 +642,7 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
     state.director.entryRef = null;
     onClear?.({
       hint: "Select an ensemble and event to begin.",
-      status: "Draft",
+      status: "Incomplete",
       readyStatus: "disabled",
     });
     return;
@@ -667,12 +669,12 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
       state.director.entryDraft = defaults;
       state.director.entryExists = false;
       state.director.dirtySections.clear();
-      onUpdate?.({
-        entry: state.director.entryDraft,
-        status: "Draft",
-        readyStatus: "draft",
-        completionState: computeDirectorCompletionState(state.director.entryDraft),
-      });
+    onUpdate?.({
+      entry: state.director.entryDraft,
+      status: "Incomplete",
+      readyStatus: "draft",
+      completionState: computeDirectorCompletionState(state.director.entryDraft),
+    });
       return;
     }
     state.director.entryExists = true;
@@ -681,7 +683,7 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
     state.director.dirtySections.clear();
     onUpdate?.({
       entry: state.director.entryDraft,
-      status: state.director.entryDraft.status === "ready" ? "Ready" : "Draft",
+      status: state.director.entryDraft.status === "ready" ? "Ready" : "Incomplete",
       readyStatus: state.director.entryDraft.status === "ready" ? "ready" : "draft",
       performanceGrade: state.director.entryDraft.performanceGrade || "",
       updatedAt,
@@ -979,6 +981,39 @@ export function watchDirectorSchool(callback) {
   state.subscriptions.directorSchool = onSnapshot(schoolRef, (snapshot) => {
     const name = snapshot.exists() ? snapshot.data().name || snapshot.id : "Unknown school";
     callback?.(name);
+  });
+}
+
+export function watchDirectorSchoolDirectors(callback) {
+  if (state.subscriptions.directorSchoolDirectors) {
+    state.subscriptions.directorSchoolDirectors();
+  }
+  if (!state.auth.userProfile || !isDirectorManager()) return;
+  const schoolId = state.auth.userProfile.schoolId;
+  if (!schoolId) {
+    callback?.([]);
+    return;
+  }
+  const directorQuery = query(
+    collection(db, COLLECTIONS.users),
+    where(FIELDS.users.role, "==", "director"),
+    where(FIELDS.users.schoolId, "==", schoolId)
+  );
+  state.subscriptions.directorSchoolDirectors = onSnapshot(directorQuery, (snapshot) => {
+    const directors = snapshot.docs.map((docSnap) => {
+      const data = docSnap.data() || {};
+      return {
+        id: docSnap.id,
+        displayName: data.displayName || "",
+        email: data.email || "",
+      };
+    });
+    directors.sort((a, b) => {
+      const aName = (a.displayName || a.email || "").toLowerCase();
+      const bName = (b.displayName || b.email || "").toLowerCase();
+      return aName.localeCompare(bName);
+    });
+    callback?.(directors);
   });
 }
 

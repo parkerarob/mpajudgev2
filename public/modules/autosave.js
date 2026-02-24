@@ -143,7 +143,6 @@ export async function autosaveOpenPacketDraft() {
 export function startAutosaveLoop() {
   if (state.app.autosaveIntervalId) return;
   state.app.autosaveIntervalId = window.setInterval(() => {
-    autosaveDirectorEntry();
     autosaveJudgeDraft();
     autosaveOpenPacketDraft();
   }, 15000);

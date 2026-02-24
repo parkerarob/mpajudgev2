@@ -66,6 +66,7 @@ import {
   watchDirectorEnsembles,
   watchDirectorPackets,
   watchDirectorSchool,
+  watchDirectorSchoolDirectors,
 } from "./director.js";
 import {
   calculateCaptionTotal,
@@ -166,6 +167,15 @@ function applyDirectorDirty(section) {
   const completion = markDirectorDirty(section);
   renderDirectorChecklist(state.director.entryDraft, completion);
   updateDirectorReadyControlsFromState(completion);
+}
+
+function updateLunchTotalCost() {
+  if (!els.lunchTotalCost || !state.director.entryDraft) return;
+  const pepperoni = Number(state.director.entryDraft.lunchOrder?.pepperoniQty || 0);
+  const cheese = Number(state.director.entryDraft.lunchOrder?.cheeseQty || 0);
+  const totalMeals = Math.max(pepperoni + cheese, 0);
+  const total = totalMeals * 8;
+  els.lunchTotalCost.textContent = `Total: $${total.toFixed(2)}`;
 }
 
 function applyJudgeDirty() {
@@ -419,7 +429,7 @@ function applyDirectorEntryUpdate({
   if (entry) {
     renderDirectorEntryForm(entry);
   }
-  setDirectorEntryStatusLabel(status || "Draft");
+    setDirectorEntryStatusLabel(status || "Incomplete");
   setDirectorPerformanceGradeValue(performanceGrade || entry?.performanceGrade || "");
   setPerformanceGradeError("");
   renderDirectorChecklist(entry, completionState);
@@ -434,7 +444,7 @@ function applyDirectorEntryUpdate({
 function applyDirectorEntryClear({ hint, status, readyStatus } = {}) {
   clearDirectorEntryPanels();
   setDirectorEntryHint(hint || "");
-  setDirectorEntryStatusLabel(status || "Draft");
+    setDirectorEntryStatusLabel(status || "Incomplete");
   setDirectorReadyControls({ status: readyStatus || "disabled" });
   setDirectorPerformanceGradeValue("");
   setPerformanceGradeError("");
@@ -467,7 +477,7 @@ function applyDirectorSaveResult(section, result) {
     showDirectorSectionStatus(section, result.message);
     messageShown = Boolean(result.message);
     if (result.statusChangedToDraft) {
-      setDirectorEntryStatusLabel("Draft");
+      setDirectorEntryStatusLabel("Incomplete");
     }
   } else if (result.reason === "validation") {
     showDirectorSectionStatus(section, result.message, "error");
@@ -540,6 +550,35 @@ export function setDirectorSchoolName(name) {
   if (els.directorSummarySchool) {
     els.directorSummarySchool.textContent = name || "";
   }
+}
+
+export function renderDirectorSchoolDirectors(directors = []) {
+  if (!els.directorSchoolDirectors) return;
+  els.directorSchoolDirectors.innerHTML = "";
+  if (!directors.length) {
+    els.directorSchoolDirectors.style.display = "grid";
+    const empty = document.createElement("div");
+    empty.className = "note";
+    empty.textContent = "No director profiles attached.";
+    els.directorSchoolDirectors.appendChild(empty);
+    return;
+  }
+  els.directorSchoolDirectors.style.display = "grid";
+  directors.forEach((director) => {
+    const row = document.createElement("div");
+    row.className = "director-school-director";
+    const name = document.createElement("div");
+    name.className = "director-school-director-name";
+    name.textContent = director.displayName || "Director";
+    row.appendChild(name);
+    if (director.email) {
+      const email = document.createElement("div");
+      email.className = "director-school-director-email";
+      email.textContent = director.email;
+      row.appendChild(email);
+    }
+    els.directorSchoolDirectors.appendChild(row);
+  });
 }
 
 export function setDirectorSummaryName(name) {
@@ -641,19 +680,21 @@ export function showStatusMessage(targetEl, message, type = "info") {
 
 export function setDirectorEntryStatusLabel(status) {
   if (els.directorEntryStatus) {
-    els.directorEntryStatus.textContent = status || "Draft";
+    els.directorEntryStatus.textContent = status || "Incomplete";
+    els.directorEntryStatus.classList.toggle("status--ready", status === "Ready");
+    els.directorEntryStatus.classList.toggle("status--incomplete", status !== "Ready");
   }
   if (els.directorEntryStatusBadge) {
-    els.directorEntryStatusBadge.textContent = status || "Draft";
+    els.directorEntryStatusBadge.textContent = status || "Incomplete";
   }
 }
 
 export function setDirectorReadyControls({ status } = {}) {
-  if (!els.directorEntryReadyBtn && !els.directorEntryUndoReadyBtn) return;
+  if (!els.directorEntryReadyBtn) return;
   if (els.directorEntryReadyBtn) {
     if (status === "ready") {
-      els.directorEntryReadyBtn.textContent = "Ready";
-      els.directorEntryReadyBtn.disabled = true;
+      els.directorEntryReadyBtn.textContent = "Mark as Incomplete";
+      els.directorEntryReadyBtn.disabled = false;
     } else if (status === "disabled") {
       els.directorEntryReadyBtn.textContent = "Mark as Ready";
       els.directorEntryReadyBtn.disabled = true;
@@ -662,18 +703,19 @@ export function setDirectorReadyControls({ status } = {}) {
       els.directorEntryReadyBtn.disabled = false;
     }
   }
-  if (els.directorEntryUndoReadyBtn) {
-    if (status === "ready") {
-      els.directorEntryUndoReadyBtn.classList.remove("is-hidden");
-    } else {
-      els.directorEntryUndoReadyBtn.classList.add("is-hidden");
-    }
-  }
 }
 
 export function setDirectorPerformanceGradeValue(value) {
   if (!els.directorPerformanceGradeInput) return;
-  els.directorPerformanceGradeInput.value = value || "";
+  const base = value || "";
+  const flex = Boolean(state.director.entryDraft?.performanceGradeFlex);
+  const display = base && flex ? `${base}-Flex` : base;
+  els.directorPerformanceGradeInput.value = display;
+  if (display) {
+    els.directorPerformanceGradeInput.size = Math.max(display.length, 4);
+  } else {
+    els.directorPerformanceGradeInput.size = 4;
+  }
 }
 
 export function clearDirectorEntryPanels() {
@@ -775,6 +817,9 @@ export function openAuthModal() {
     if (els.modalAuthActions && els.signOutBtn.parentElement !== els.modalAuthActions) {
       els.modalAuthActions.appendChild(els.signOutBtn);
     }
+    if (els.headerAuthButtons && els.directorProfileToggleBtn && els.signOutBtn) {
+      els.headerAuthButtons.insertBefore(els.directorProfileToggleBtn, els.signOutBtn);
+    }
   } else {
     setAuthView("signIn");
   }
@@ -817,8 +862,11 @@ export function closeAuthModal() {
   if (!els.authModal) return;
   els.authModal.classList.remove("is-open");
   els.authModal.setAttribute("aria-hidden", "true");
-  if (state.auth.currentUser && els.headerAuthActions && els.signOutBtn.parentElement !== els.headerAuthActions) {
-    els.headerAuthActions.appendChild(els.signOutBtn);
+  if (state.auth.currentUser && els.headerAuthButtons && els.signOutBtn.parentElement !== els.headerAuthButtons) {
+    els.headerAuthButtons.appendChild(els.signOutBtn);
+    if (els.directorProfileToggleBtn) {
+      els.headerAuthButtons.insertBefore(els.directorProfileToggleBtn, els.signOutBtn);
+    }
   }
   if (state.app.authModalKeyHandler) {
     document.removeEventListener("keydown", state.app.authModalKeyHandler);
@@ -1034,8 +1082,13 @@ export function updateAuthUI() {
       }
       els.authIdentityBanner.classList.remove("is-hidden");
     }
-    if (els.headerAuthActions && els.signOutBtn.parentElement !== els.headerAuthActions) {
-      els.headerAuthActions.appendChild(els.signOutBtn);
+    if (els.headerAuthButtons) {
+      if (els.signOutBtn.parentElement !== els.headerAuthButtons) {
+        els.headerAuthButtons.appendChild(els.signOutBtn);
+      }
+      if (els.directorProfileToggleBtn) {
+        els.headerAuthButtons.insertBefore(els.directorProfileToggleBtn, els.signOutBtn);
+      }
     }
     if (els.signInBtn) {
       els.signInBtn.style.display = "none";
@@ -1194,6 +1247,7 @@ export function bindAuthHandlers() {
 
 export function updateDirectorAttachUI() {
   const isDirector = isDirectorManager();
+  const isDirectorOnly = state.auth.userProfile?.role === "director";
   const hasSchool = Boolean(state.auth.userProfile?.schoolId);
   if (els.directorAttachGate) {
     els.directorAttachGate.style.display =
@@ -1207,9 +1261,23 @@ export function updateDirectorAttachUI() {
     els.directorDetachControls.style.display =
       isDirector && hasSchool ? "flex" : "none";
   }
+  if (els.directorSchoolDirectors) {
+    if (!hasSchool) {
+      els.directorSchoolDirectors.style.display = "none";
+      els.directorSchoolDirectors.innerHTML = "";
+    }
+  }
   if (els.directorEnsemblesSection) {
     els.directorEnsemblesSection.style.display =
       isDirector && hasSchool ? "grid" : "none";
+  }
+  if (els.directorEnsembleList) {
+    els.directorEnsembleList.style.display =
+      isDirector && hasSchool ? "grid" : "none";
+  }
+  if (els.directorShowEnsembleFormBtn) {
+    els.directorShowEnsembleFormBtn.style.display =
+      isDirector && hasSchool ? "inline-flex" : "none";
   }
   if (els.directorMainStack) {
     els.directorMainStack.style.display =
@@ -1223,6 +1291,9 @@ export function updateDirectorAttachUI() {
   }
   if (els.directorProfilePanel) {
     els.directorProfilePanel.style.display = "none";
+  }
+  if (els.directorProfileToggleBtn) {
+    els.directorProfileToggleBtn.style.display = isDirectorOnly ? "inline-flex" : "none";
   }
   if (els.directorEventSelect) {
     els.directorEventSelect.disabled = !(isDirector && hasSchool);
@@ -1463,6 +1534,7 @@ export function stopWatchers() {
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
   if (state.subscriptions.directorSchool) state.subscriptions.directorSchool();
+  if (state.subscriptions.directorSchoolDirectors) state.subscriptions.directorSchoolDirectors();
   if (state.subscriptions.directorEnsembles) state.subscriptions.directorEnsembles();
   if (state.subscriptions.directorEntry) state.subscriptions.directorEntry();
   if (state.subscriptions.judges) state.subscriptions.judges();
@@ -1479,6 +1551,7 @@ export function stopWatchers() {
   state.subscriptions.directorPackets = null;
   state.subscriptions.directorOpenPackets = null;
   state.subscriptions.directorSchool = null;
+  state.subscriptions.directorSchoolDirectors = null;
   state.subscriptions.directorEnsembles = null;
   state.subscriptions.directorEntry = null;
   state.subscriptions.judges = null;
@@ -1539,6 +1612,9 @@ export function startWatchers() {
     });
     watchDirectorSchool((name) => {
       setDirectorSchoolName(name);
+    });
+    watchDirectorSchoolDirectors((directors) => {
+      renderDirectorSchoolDirectors(directors || []);
     });
     watchDirectorEnsembles((ensembles) => {
       renderDirectorEnsembles(ensembles || []);
@@ -2433,24 +2509,29 @@ export function lockSubmissionUI(submissionData) {
 }
 
 export function renderDirectorEventOptions() {
-  if (!els.directorEventSelect) return;
-  els.directorEventSelect.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "Select an event";
-  els.directorEventSelect.appendChild(placeholder);
-  state.event.list.forEach((event) => {
-    const option = document.createElement("option");
-    option.value = event.id;
-    option.textContent = getEventCardLabel(event);
-    els.directorEventSelect.appendChild(option);
-  });
-  const exists = state.event.list.some((event) => event.id === state.director.selectedEventId);
-  if (!exists) {
-    state.director.selectedEventId = state.event.active?.id || state.event.list[0]?.id || null;
+  if (hasDirectorUnsavedChanges()) {
+    return;
   }
-  if (state.director.selectedEventId) {
-    els.directorEventSelect.value = state.director.selectedEventId;
+  const events = state.event.list || [];
+  const exists = events.some((event) => event.id === state.director.selectedEventId);
+  if (!exists) {
+    state.director.selectedEventId = state.event.active?.id || events[0]?.id || null;
+  }
+  if (els.directorEventSelect) {
+    els.directorEventSelect.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select an event";
+    els.directorEventSelect.appendChild(placeholder);
+    events.forEach((event) => {
+      const option = document.createElement("option");
+      option.value = event.id;
+      option.textContent = getEventCardLabel(event);
+      els.directorEventSelect.appendChild(option);
+    });
+    if (state.director.selectedEventId) {
+      els.directorEventSelect.value = state.director.selectedEventId;
+    }
   }
   updateDirectorEventMeta();
   loadDirectorEntry({
@@ -2845,9 +2926,19 @@ export function renderDirectorEntryForm() {
     return;
   }
   if (els.directorPerformanceGradeInput) {
-    els.directorPerformanceGradeInput.value =
-      state.director.entryDraft.performanceGrade || "";
+    setDirectorPerformanceGradeValue(state.director.entryDraft.performanceGrade || "");
     els.directorPerformanceGradeInput.oninput = null;
+  }
+  if (els.directorPerformanceGradeFlex) {
+    els.directorPerformanceGradeFlex.checked = Boolean(
+      state.director.entryDraft.performanceGradeFlex
+    );
+    els.directorPerformanceGradeFlex.onchange = () => {
+      state.director.entryDraft.performanceGradeFlex =
+        els.directorPerformanceGradeFlex.checked;
+      setDirectorPerformanceGradeValue(state.director.entryDraft.performanceGrade || "");
+      applyDirectorDirty("grade");
+    };
   }
   if (els.instrumentationTotalPercussion) {
     els.instrumentationTotalPercussion.value = Number(
@@ -2901,6 +2992,7 @@ export function renderDirectorEntryForm() {
         els.lunchPepperoniInput.value || 0
       );
       applyDirectorDirty("lunch");
+      updateLunchTotalCost();
     };
   }
   if (els.lunchCheeseInput) {
@@ -2912,15 +3004,11 @@ export function renderDirectorEntryForm() {
         els.lunchCheeseInput.value || 0
       );
       applyDirectorDirty("lunch");
+      updateLunchTotalCost();
     };
   }
-  if (els.lunchNotesInput) {
-    els.lunchNotesInput.value = state.director.entryDraft.lunchOrder?.notes || "";
-    els.lunchNotesInput.oninput = () => {
-      state.director.entryDraft.lunchOrder.notes = els.lunchNotesInput.value || "";
-      applyDirectorDirty("lunch");
-    };
-  }
+  
+  updateLunchTotalCost();
 
   renderRepertoireFields();
   renderInstrumentationStandard();
@@ -2997,18 +3085,18 @@ export function renderDirectorChecklist(entry, completionState) {
   const total = items.length;
   const done = items.filter((item) => Boolean(s[item.key])).length;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-  renderStatusSummary({
-    rootId: "directorChecklistPanel",
-    title: done === total ? "Ready to submit" : "Not ready yet",
-    done,
-    total,
-    pillText: done === total ? "Complete" : "Draft",
-    hintText: done === total ? "" : `${total - done} missing`,
-  });
+    renderStatusSummary({
+      rootId: "directorChecklistPanel",
+      title: done === total ? "Ready to submit" : "Not ready yet",
+      done,
+      total,
+      pillText: done === total ? "Complete" : "Incomplete",
+      hintText: done === total ? "" : `${total - done} missing`,
+    });
 
-  if (els.directorSummaryStatus) {
-    els.directorSummaryStatus.textContent = done === total ? "Ready" : "Draft";
-  }
+    if (els.directorSummaryStatus) {
+      els.directorSummaryStatus.textContent = done === total ? "Ready" : "Incomplete";
+    }
   if (els.directorSummaryCompletion) {
     els.directorSummaryCompletion.textContent = `${pct}%`;
   }
@@ -3125,12 +3213,24 @@ export function renderJudgeTestReadiness() {
 }
 
 export function updateDirectorActiveEnsembleLabel() {
-  if (!els.directorActiveEnsembleName) return;
+  if (!els.directorActiveEnsemblePill) return;
+  if (!state.director.selectedEnsembleId && state.director.ensemblesCache.length) {
+    state.director.selectedEnsembleId = state.director.ensemblesCache[0].id;
+  }
   const active = state.director.ensemblesCache.find(
     (ensemble) => ensemble.id === state.director.selectedEnsembleId
   );
-  els.directorActiveEnsembleName.textContent =
-    active?.name || "None selected";
+  if (active?.name) {
+    if (els.directorActiveEnsemblePill) {
+      els.directorActiveEnsemblePill.textContent = active.name;
+      els.directorActiveEnsemblePill.classList.remove("is-hidden");
+    }
+  } else {
+    if (els.directorActiveEnsemblePill) {
+      els.directorActiveEnsemblePill.textContent = "None selected";
+      els.directorActiveEnsemblePill.classList.add("is-hidden");
+    }
+  }
 }
 
 export function renderEntrySummary(entry) {
@@ -3827,40 +3927,37 @@ export function renderDirectorEnsembles(ensembles) {
     const li = document.createElement("li");
     li.className = "ensemble-row";
     const isActive = ensemble.id === state.director.selectedEnsembleId;
-    const details = document.createElement("div");
+    if (isActive) {
+      return;
+    }
     const name = document.createElement("div");
-    name.className = "ensemble-name";
+    name.className = isActive ? "ensemble-name is-active" : "ensemble-name";
     name.textContent = ensemble.name || "Untitled";
-    const badge = document.createElement("div");
-    badge.className = "badge-active";
-    badge.textContent = isActive ? "Active Ensemble" : "";
-    details.appendChild(name);
-    details.appendChild(badge);
-    li.appendChild(details);
-    const selectBtn = document.createElement("button");
-    selectBtn.type = "button";
-    selectBtn.textContent = ensemble.id === state.director.selectedEnsembleId ? "Active" : "Set Active";
-    selectBtn.className = ensemble.id === state.director.selectedEnsembleId ? "ghost" : "";
-    selectBtn.disabled = ensemble.id === state.director.selectedEnsembleId;
-    selectBtn.addEventListener("click", () => handleDirectorEnsembleSelection(ensemble.id));
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "ghost";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", async () => {
+    li.appendChild(name);
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "ghost";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", async () => {
       deleteBtn.dataset.loadingLabel = "Deleting...";
       deleteBtn.dataset.spinner = "true";
       await withLoading(deleteBtn, async () => {
         await handleDirectorEnsembleDelete(ensemble.id, ensemble.name);
       });
     });
-    const actions = document.createElement("div");
-    actions.className = "ensemble-actions";
-    actions.appendChild(selectBtn);
-    actions.appendChild(deleteBtn);
-    li.appendChild(actions);
-    els.directorEnsembleList.appendChild(li);
-  });
+      const actions = document.createElement("div");
+      actions.className = "ensemble-actions";
+      if (!isActive) {
+        const selectBtn = document.createElement("button");
+        selectBtn.type = "button";
+        selectBtn.textContent = "Set Active";
+        selectBtn.addEventListener("click", () => handleDirectorEnsembleSelection(ensemble.id));
+        actions.appendChild(selectBtn);
+      }
+      actions.appendChild(deleteBtn);
+      li.appendChild(actions);
+      els.directorEnsembleList.appendChild(li);
+    });
 }
 
 let adminHandlersBound = false;
@@ -4904,7 +5001,9 @@ export function bindDirectorHandlers() {
 
   if (els.directorEntryReadyBtn) {
     els.directorEntryReadyBtn.addEventListener("click", async () => {
-      const result = await markEntryReady();
+      if (!state.director.entryDraft) return;
+      const isReady = state.director.entryDraft.status === "ready";
+      const result = isReady ? await markEntryDraft() : await markEntryReady();
       if (!result) return;
       if (!result.ok) {
         if (result.message) {
@@ -4912,28 +5011,9 @@ export function bindDirectorHandlers() {
         }
         return;
       }
-      setDirectorEntryStatusLabel("Ready");
-      setDirectorReadyControls({ status: "ready" });
-      renderDirectorChecklist(
-        state.director.entryDraft,
-        computeDirectorCompletionState(state.director.entryDraft)
-      );
-    });
-  }
-  if (els.directorEntryUndoReadyBtn) {
-    els.directorEntryUndoReadyBtn.addEventListener("click", async () => {
-      const result = await markEntryDraft();
-      if (!result) return;
-      if (!result.ok) {
-        if (result.message) {
-          alertUser(result.message);
-        }
-        return;
-      }
-      setDirectorEntryStatusLabel("Draft");
-      updateDirectorReadyControlsFromState(
-        computeDirectorCompletionState(state.director.entryDraft)
-      );
+      const nextStatus = isReady ? "Incomplete" : "Ready";
+      setDirectorEntryStatusLabel(nextStatus);
+      setDirectorReadyControls({ status: isReady ? "draft" : "ready" });
       renderDirectorChecklist(
         state.director.entryDraft,
         computeDirectorCompletionState(state.director.entryDraft)

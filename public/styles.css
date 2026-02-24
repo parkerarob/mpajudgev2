@@ -340,6 +340,18 @@ h3 {
   justify-items: end;
 }
 
+.auth-action-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-action-row button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .auth-identity {
   display: grid;
   gap: 2px;
@@ -480,6 +492,12 @@ select {
   background: rgba(18, 20, 36, 0.85);
   color: var(--text);
   box-sizing: border-box;
+}
+
+#lunchPepperoniInput,
+#lunchCheeseInput {
+  width: fit-content;
+  min-width: 4ch;
 }
 
 input::placeholder,
@@ -634,6 +652,57 @@ button.is-loading .button-spinner {
   font-weight: 600;
 }
 
+.director-summary-active {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.director-summary-school .ensembles-list {
+  margin-top: 4px;
+}
+
+#directorShowEnsembleFormBtn {
+  justify-self: start;
+}
+
+.active-ensemble-name {
+  color: var(--gold);
+  font-weight: 600;
+}
+
+.director-summary-school-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+
+.director-summary-directors {
+  display: grid;
+  gap: 6px;
+}
+
+.status--incomplete {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.status--ready {
+  color: #34d399;
+  font-weight: 600;
+}
+
+.director-school-director-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.director-school-director-email {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .director-summary .actions {
   gap: 8px;
 }
@@ -695,6 +764,26 @@ body.director-only #tabLockHint {
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--panel2);
+  color: var(--muted);
+}
+
+.active-ensemble-text {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--gold);
+}
+
+#directorPerformanceGradeInput {
+  width: fit-content;
+  min-width: 4ch;
+  justify-self: start;
+}
+
+.director-flex-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
   color: var(--muted);
 }
 
@@ -792,11 +881,8 @@ body.director-only #tabLockHint {
   color: var(--text);
 }
 
-.badge-active {
-  font-size: 12px;
+.ensemble-name.is-active {
   color: var(--gold);
-  margin-top: 4px;
-  min-height: 16px;
 }
 
 .ensemble-actions {
@@ -1351,8 +1437,29 @@ select:focus-visible {
   gap: 6px;
 }
 
-.director-sticky {
-  justify-content: space-between;
+.full-width-cta {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.entry-ready-actions {
+  justify-content: center;
+}
+
+/* Director view: avoid nested card-on-card surfaces */
+#directorCard .panel {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+
+#directorCard .group {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 .bottom-nav {
@@ -1433,15 +1540,5 @@ select:focus-visible {
     transform: translateX(0%);
   }
 
-  .director-sticky {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 72px;
-    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
-    background: rgba(12, 14, 24, 0.85);
-    backdrop-filter: blur(16px);
-    border-top: 1px solid var(--border);
-    z-index: 35;
-  }
+  
 }

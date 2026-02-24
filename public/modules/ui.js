@@ -45,6 +45,7 @@ import {
   attachDirectorSchool,
   createDirectorEnsemble,
   computeDirectorCompletionState,
+  discardDirectorDraftChanges,
   detachDirectorSchool,
   handleDeleteEnsemble,
   isDirectorManager,
@@ -394,6 +395,7 @@ async function handleDirectorEnsembleSelection(ensembleId) {
   if (hasDirectorUnsavedChanges() && !confirmUser("You have unsaved changes. Leave anyway?")) {
     return;
   }
+  discardDirectorDraftChanges();
   selectDirectorEnsemble(ensembleId);
   updateDirectorActiveEnsembleLabel();
   renderDirectorEnsembles(state.director.ensemblesCache);
@@ -3068,7 +3070,7 @@ export function renderDirectorEntryForm() {
       state.director.entryDraft.performanceGradeFlex =
         els.directorPerformanceGradeFlex.checked;
       setDirectorPerformanceGradeValue(state.director.entryDraft.performanceGrade || "");
-      applyDirectorDirty("grade");
+      applyDirectorDirty("repertoire");
     };
   }
   if (els.instrumentationTotalPercussion) {
@@ -5057,13 +5059,24 @@ export function bindDirectorHandlers() {
         }
         return;
       }
+      if (
+        hasDirectorUnsavedChanges() &&
+        !confirmUser("You have unsaved changes. Leave anyway?")
+      ) {
+        return;
+      }
       if (els.directorEnsembleError) {
         els.directorEnsembleError.textContent = "";
       }
       const result = await createDirectorEnsemble(name);
       if (result?.ok) {
+        discardDirectorDraftChanges();
         els.directorEnsembleForm.reset();
         els.directorEnsembleForm.classList.add("is-hidden");
+        await loadDirectorEntry({
+          onUpdate: applyDirectorEntryUpdate,
+          onClear: applyDirectorEntryClear,
+        });
       }
     });
   }
@@ -5079,6 +5092,7 @@ export function bindDirectorHandlers() {
         }
         return;
       }
+      discardDirectorDraftChanges();
       setDirectorEvent(nextId);
       updateDirectorEventMeta();
       loadDirectorEntry({
@@ -5097,6 +5111,7 @@ export function bindDirectorHandlers() {
       if (hasDirectorUnsavedChanges() && !confirmUser("You have unsaved changes. Leave anyway?")) {
         return;
       }
+      discardDirectorDraftChanges();
       window.location.hash = `#event/${state.director.selectedEventId}`;
     });
   }

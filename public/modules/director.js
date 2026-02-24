@@ -53,6 +53,11 @@ export function clearDirectorDirty(section) {
   state.director.dirtySections.delete(section);
 }
 
+export function discardDirectorDraftChanges() {
+  state.director.dirtySections.clear();
+  state.director.draftVersion += 1;
+}
+
 export function hasDirectorUnsavedChanges() {
   return state.director.dirtySections.size > 0;
 }
@@ -518,10 +523,14 @@ export async function saveRepertoireSection() {
   state.director.entryDraft.performanceGrade = derived.value;
   const result = await saveEntrySection(
     "repertoire",
-    { repertoire, mpaSelections, performanceGrade: derived.value },
+    {
+      repertoire,
+      mpaSelections,
+      performanceGrade: derived.value,
+      performanceGradeFlex: Boolean(state.director.entryDraft.performanceGradeFlex),
+    },
     "Repertoire saved."
   );
-  clearDirectorDirty("meta");
   return {
     ...result,
     performanceGrade: derived.value,

@@ -9,7 +9,6 @@ import {
   setTestMode,
 } from "./modules/judge.js";
 import { resetJudgeOpenState, stopOpenRecording } from "./modules/judge-open.js";
-import { startAutosaveLoop } from "./modules/autosave.js";
 import {
   bindAuthHandlers,
   bindAdminHandlers,
@@ -43,13 +42,19 @@ import {
 } from "./modules/ui.js";
 import { hasUnsavedChanges } from "./modules/navigation.js";
 
+const params = new URLSearchParams(window.location.search);
+const userAgent = navigator.userAgent || "";
+const isChrome = /Chrome|CriOS/.test(userAgent) && !/Edg|OPR/.test(userAgent);
+if (params.has("safe") || isChrome) {
+  document.body.classList.add("safe-render");
+}
+
 bindAuthHandlers();
 bindAdminHandlers();
 bindJudgeHandlers();
 bindJudgeOpenHandlers();
 bindDirectorHandlers();
 bindAppHandlers();
-startAutosaveLoop();
 
 initTabs();
 

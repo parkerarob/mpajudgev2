@@ -46,6 +46,15 @@ body {
   color: var(--text);
 }
 
+body.safe-render .ios-nav,
+body.safe-render .tabbar,
+body.safe-render .sticky-bottom,
+body.safe-render .modal-panel,
+body.safe-render .bottom-nav {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .mobile-only {
   display: none;
 }

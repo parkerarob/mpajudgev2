@@ -505,9 +505,36 @@ export async function submitOpenPacket() {
   }
   const captionScoreTotal = calculateCaptionTotal(state.judgeOpen.captions);
   const rating = computeFinalRating(captionScoreTotal);
+  const selectedExisting = state.judgeOpen.selectedExisting || {};
+  const schoolName =
+    selectedExisting.schoolName ||
+    state.judgeOpen.currentPacket?.schoolName ||
+    "";
+  const ensembleName =
+    selectedExisting.ensembleName ||
+    state.judgeOpen.currentPacket?.ensembleName ||
+    "";
+  const schoolId = selectedExisting.schoolId || state.judgeOpen.currentPacket?.schoolId || "";
+  const ensembleId =
+    selectedExisting.ensembleId || state.judgeOpen.currentPacket?.ensembleId || "";
+  const ensembleSnapshot =
+    schoolId && ensembleId
+      ? {
+          schoolId,
+          schoolName,
+          ensembleId,
+          ensembleName,
+        }
+      : null;
   const submitFn = httpsCallable(functions, "submitOpenPacket");
   const response = await submitFn({
     packetId: state.judgeOpen.currentPacketId,
+    schoolName,
+    ensembleName,
+    schoolId,
+    ensembleId,
+    ensembleSnapshot,
+    formType: state.judgeOpen.formType || FORM_TYPES.stage,
     transcript: state.judgeOpen.transcriptText || "",
     transcriptFull: state.judgeOpen.transcriptText || "",
     captions: state.judgeOpen.captions || {},

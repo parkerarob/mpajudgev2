@@ -17,6 +17,8 @@ import {
   createEvent,
   createScheduleEntry,
   deleteEvent,
+  deleteOpenPacket,
+  deleteSchool,
   deleteScheduleEntry,
   getPacketData,
   lockSubmission,
@@ -31,6 +33,7 @@ import {
   unreleasePacket,
   unlockOpenPacket,
   unlockSubmission,
+  unreleaseOpenPacket,
   updateScheduleEntryTime,
   watchOpenPacketsAdmin,
   watchActiveEvent,
@@ -51,10 +54,12 @@ import {
   isDirectorManager,
   hasDirectorUnsavedChanges,
   getMpaRepertoireForGrade,
+  getDirectorSchoolId,
   loadDirectorEntry,
   markDirectorDirty,
   markEntryDraft,
   markEntryReady,
+  renameDirectorEnsemble,
   saveDirectorProfile,
   saveInstrumentationSection,
   saveLunchSection,
@@ -74,16 +79,6 @@ import {
   calculateCaptionTotal,
   computeFinalRating,
   draftCaptionsFromTranscript,
-  handleSubmit,
-  markJudgeDirty,
-  resetTestState,
-  selectRosterEntry,
-  setTestMode,
-  transcribeSubmissionAudio,
-  transcribeTestAudio,
-  watchCurrentSubmission,
-  watchAssignments,
-  watchReadyEntries,
 } from "./judge.js";
 import {
   createOpenPacket,
@@ -129,7 +124,6 @@ import {
   derivePerformanceGrade,
   levelToRoman,
   romanToLevel,
-  normalizeCaptions,
 } from "./utils.js";
 
 export function alertUser(message) {
@@ -149,8 +143,10 @@ function getEffectiveRole(profile) {
   return null;
 }
 
-function isJudgeRole(profile) {
-  return getEffectiveRole(profile) === "judge";
+
+function canUseOpenJudge(profile) {
+  const role = getEffectiveRole(profile);
+  return role === "judge" || role === "admin";
 }
 
 function updateDirectorReadyControlsFromState(completionState) {
@@ -179,215 +175,6 @@ function updateLunchTotalCost() {
   const totalMeals = Math.max(pepperoni + cheese, 0);
   const total = totalMeals * 8;
   els.lunchTotalCost.textContent = `Total: $${total.toFixed(2)}`;
-}
-
-function applyJudgeDirty() {
-  markJudgeDirty();
-}
-
-function applySubmissionToForm(submission) {
-  if (!submission || !els.captionForm) return;
-  if (els.transcriptInput) {
-    els.transcriptInput.value = submission.transcript || "";
-  }
-  state.judge.transcriptText = submission.transcript || "";
-  state.judge.captions = normalizeCaptions(state.judge.formType, submission.captions || {});
-  const template = CAPTION_TEMPLATES[state.judge.formType] || [];
-  template.forEach(({ key }) => {
-    const wrapper = els.captionForm.querySelector(`[data-key="${key}"]`);
-    if (!wrapper) return;
-    const selects = wrapper.querySelectorAll("select");
-    const comment = wrapper.querySelector("textarea");
-    const caption = state.judge.captions[key] || {};
-    if (selects[0]) selects[0].value = caption.gradeLetter || "B";
-    if (selects[1]) selects[1].value = caption.gradeModifier || "";
-    if (comment) comment.value = caption.comment || "";
-  });
-  const total = calculateCaptionTotal(state.judge.captions);
-  const rating = computeFinalRating(total);
-  if (els.captionTotal) els.captionTotal.textContent = String(total);
-  if (els.finalRating) els.finalRating.textContent = rating.label;
-  renderJudgeReadiness();
-}
-
-async function startAudioCapture({ isTest = false } = {}) {
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    alertUser("Recording is not supported in this browser.");
-    return;
-  }
-  const recordBtn = isTest ? els.testRecordBtn : els.recordBtn;
-  const stopBtn = isTest ? els.testStopBtn : els.stopBtn;
-  const statusEl = isTest ? els.testRecordingStatus : els.recordingStatus;
-  const playback = isTest ? els.testPlayback : els.playback;
-  const existing = isTest ? state.judge.testMediaRecorder : state.judge.mediaRecorder;
-  if (existing && existing.state === "recording") return;
-
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const options = MediaRecorder.isTypeSupported("audio/webm")
-      ? { mimeType: "audio/webm" }
-      : {};
-    const recorder = new MediaRecorder(stream, options);
-    const chunks = [];
-    recorder.addEventListener("dataavailable", (event) => {
-      if (event.data && event.data.size > 0) {
-        chunks.push(event.data);
-      }
-    });
-    recorder.addEventListener("stop", () => {
-      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-      if (isTest) {
-        state.judge.testAudioBlob = blob;
-        state.judge.testRecordingChunks = [];
-      } else {
-        state.judge.audioBlob = blob;
-        state.judge.audioDurationSec = 0;
-        state.judge.recordingChunks = [];
-      }
-      if (playback) {
-        playback.src = URL.createObjectURL(blob);
-        playback.onloadedmetadata = () => {
-          if (!isTest) {
-            state.judge.audioDurationSec = Number(playback.duration || 0);
-          }
-        };
-      }
-    if (statusEl) {
-      statusEl.textContent = "Recording saved.";
-      statusEl.classList.remove("recording-active");
-    }
-      if (recordBtn) recordBtn.disabled = false;
-      if (stopBtn) stopBtn.disabled = true;
-      stream.getTracks().forEach((track) => track.stop());
-      if (isTest) {
-        updateTestTranscribeState();
-        renderJudgeTestReadiness();
-      } else {
-        updateTranscribeState();
-        renderJudgeReadiness();
-      }
-    });
-    if (isTest) {
-      state.judge.testMediaRecorder = recorder;
-      state.judge.testRecordingChunks = chunks;
-    } else {
-      state.judge.mediaRecorder = recorder;
-      state.judge.recordingChunks = chunks;
-      state.judge.audioBlob = null;
-      state.judge.audioDurationSec = 0;
-    }
-    if (statusEl) {
-      statusEl.textContent = "Recording...";
-      statusEl.classList.add("recording-active");
-    }
-    if (recordBtn) recordBtn.disabled = true;
-    if (stopBtn) stopBtn.disabled = false;
-    recorder.start();
-  } catch (error) {
-    console.error("Unable to start recording", error);
-    if (statusEl) {
-      statusEl.textContent = "Recording failed. Check mic permissions.";
-      statusEl.classList.remove("recording-active");
-    }
-  }
-}
-
-function stopAudioCapture({ isTest = false } = {}) {
-  const statusEl = isTest ? els.testRecordingStatus : els.recordingStatus;
-  const recorder = isTest ? state.judge.testMediaRecorder : state.judge.mediaRecorder;
-  if (!recorder || recorder.state !== "recording") return;
-  recorder.stop();
-  if (statusEl) {
-    statusEl.classList.remove("recording-active");
-  }
-}
-
-function applyCaptionDraft({ captions = {}, overwrite = false, isTest = false } = {}) {
-  const template = CAPTION_TEMPLATES[
-    isTest ? state.judge.testFormType : state.judge.formType
-  ] || [];
-  const root = isTest ? els.testCaptionForm : els.captionForm;
-  const targetState = isTest ? state.judge.testCaptions : state.judge.captions;
-  template.forEach(({ key }) => {
-    const text = String(captions[key] || "").trim();
-    if (!text) return;
-    const existing = targetState[key]?.comment || "";
-    if (!overwrite && existing) return;
-    if (!targetState[key]) {
-      targetState[key] = {
-        gradeLetter: "B",
-        gradeModifier: "",
-        comment: "",
-      };
-    }
-    targetState[key].comment = text;
-    if (root) {
-      const wrapper = root.querySelector(`[data-key="${key}"]`);
-      const textarea = wrapper?.querySelector("textarea");
-      if (textarea) textarea.value = text;
-    }
-  });
-  if (isTest) {
-    const total = calculateCaptionTotal(targetState);
-    const rating = computeFinalRating(total);
-    if (els.testCaptionTotal) els.testCaptionTotal.textContent = String(total);
-    if (els.testFinalRating) els.testFinalRating.textContent = rating.label;
-    renderJudgeTestReadiness();
-  } else {
-    const total = calculateCaptionTotal(targetState);
-    const rating = computeFinalRating(total);
-    if (els.captionTotal) els.captionTotal.textContent = String(total);
-    if (els.finalRating) els.finalRating.textContent = rating.label;
-    applyJudgeDirty();
-    renderJudgeReadiness();
-  }
-}
-
-async function handleRosterSelection(entry) {
-  resetJudgeUI();
-  const result = await selectRosterEntry(entry);
-  if (!state.judge.isTestMode) {
-    renderCaptionForm();
-  }
-  if (result?.submission) {
-    if (els.playback && result.submission.audioUrl) {
-      els.playback.src = result.submission.audioUrl;
-    }
-    applySubmissionToForm(result.submission);
-  }
-  watchCurrentSubmission((submission) => {
-    lockSubmissionUI(submission);
-    if (!submission) return;
-    if (els.playback && submission.audioUrl) {
-      els.playback.src = submission.audioUrl;
-    }
-    if (!state.judge.draftDirty) {
-      applySubmissionToForm(submission);
-    }
-  });
-  renderRosterList();
-  if (result?.submissionHint) {
-    setSubmissionHint(result.submissionHint);
-  }
-  if (result?.summary?.summaryData) {
-    setJudgeEntrySummary(renderEntrySummary(result.summary.summaryData));
-  } else if (result?.summary?.summary) {
-    setJudgeEntrySummary(result.summary.summary);
-  } else {
-    setJudgeEntrySummary("");
-  }
-  if (result?.submitDisabled != null) {
-    setSubmitDisabled(result.submitDisabled);
-  } else {
-    setSubmitDisabled(!state.event.active || !state.judge.position);
-  }
-  if (result?.submission) {
-    lockSubmissionUI(result.submission);
-  } else {
-    lockSubmissionUI(null);
-  }
-  updateTranscribeState();
-  renderJudgeReadiness();
 }
 
 async function handleDirectorEnsembleSelection(ensembleId) {
@@ -422,6 +209,37 @@ async function handleDirectorEnsembleDelete(ensembleId, ensembleName) {
   }
 }
 
+function setDirectorEnsembleFormMode({ mode = "create", ensemble = null } = {}) {
+  const isEdit = mode === "edit" && ensemble?.id;
+  state.director.editingEnsembleId = isEdit ? ensemble.id : null;
+  if (els.directorEnsembleSubmitBtn) {
+    els.directorEnsembleSubmitBtn.textContent = isEdit ? "Save Ensemble" : "Create Ensemble";
+  }
+  if (els.directorEnsembleNameInput && isEdit) {
+    els.directorEnsembleNameInput.value = ensemble.name || "";
+  }
+  if (els.directorEnsembleForm) {
+    els.directorEnsembleForm.classList.remove("is-hidden");
+  }
+  if (els.directorEnsembleError) {
+    els.directorEnsembleError.textContent = "";
+  }
+}
+
+function closeDirectorEnsembleForm() {
+  state.director.editingEnsembleId = null;
+  if (els.directorEnsembleForm) {
+    els.directorEnsembleForm.reset();
+    els.directorEnsembleForm.classList.add("is-hidden");
+  }
+  if (els.directorEnsembleSubmitBtn) {
+    els.directorEnsembleSubmitBtn.textContent = "Create Ensemble";
+  }
+  if (els.directorEnsembleError) {
+    els.directorEnsembleError.textContent = "";
+  }
+}
+
 function applyDirectorEntryUpdate({
   entry,
   status,
@@ -453,25 +271,6 @@ function applyDirectorEntryClear({ hint, status, readyStatus } = {}) {
   setDirectorPerformanceGradeValue("");
   setPerformanceGradeError("");
   renderDirectorChecklist(null, computeDirectorCompletionState(null));
-}
-
-async function submitJudgeForm(event) {
-  const result = await handleSubmit(event);
-  if (!result) return;
-  if (!result.ok) {
-    if (result.message) {
-      setSubmissionHint(result.message);
-    }
-    return;
-  }
-  if (result.message) {
-    setSubmissionHint(result.message);
-  }
-  if (result.submission) {
-    lockSubmissionUI(result.submission);
-  }
-  renderJudgeReadiness();
-  updateTranscribeState();
 }
 
 function applyDirectorSaveResult(section, result) {
@@ -802,6 +601,74 @@ export function renderSchoolOptions(selectEl, placeholder) {
     option.textContent = label;
     selectEl.appendChild(option);
   });
+}
+
+function setAdminSchoolFormMode(editSchoolId = null) {
+  state.admin.schoolEditId = editSchoolId || null;
+  const isEditing = Boolean(state.admin.schoolEditId);
+  if (els.schoolIdCreateInput) {
+    els.schoolIdCreateInput.disabled = isEditing;
+  }
+  if (els.schoolSubmitBtn) {
+    els.schoolSubmitBtn.textContent = isEditing ? "Save School" : "Add School";
+  }
+  if (els.schoolEditCancelBtn) {
+    els.schoolEditCancelBtn.classList.toggle("is-hidden", !isEditing);
+  }
+}
+
+function resetAdminSchoolForm() {
+  if (els.schoolForm) els.schoolForm.reset?.();
+  setAdminSchoolFormMode(null);
+}
+
+function startAdminSchoolEdit(school) {
+  if (!school) return;
+  if (els.schoolIdCreateInput) els.schoolIdCreateInput.value = school.id || "";
+  if (els.schoolNameCreateInput) els.schoolNameCreateInput.value = school.name || "";
+  if (els.adminSchoolManageSelect && school.id) {
+    els.adminSchoolManageSelect.value = school.id;
+  }
+  setAdminSchoolFormMode(school.id);
+  els.schoolNameCreateInput?.focus();
+}
+
+function getSelectedAdminSchool() {
+  const schoolId = els.adminSchoolManageSelect?.value || "";
+  if (!schoolId) return null;
+  return state.admin.schoolsList.find((school) => school.id === schoolId) || null;
+}
+
+export function renderAdminSchoolsDirectory() {
+  if (!els.adminSchoolManageSelect) return;
+  const schools = state.admin.schoolsList || [];
+  const previousValue = els.adminSchoolManageSelect.value || "";
+  els.adminSchoolManageSelect.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = schools.length ? "Select a school" : "No schools added yet";
+  els.adminSchoolManageSelect.appendChild(placeholder);
+  schools.forEach((school) => {
+    const option = document.createElement("option");
+    option.value = school.id;
+    option.textContent = school.name || school.id;
+    els.adminSchoolManageSelect.appendChild(option);
+  });
+  const nextValue = schools.some((school) => school.id === previousValue)
+    ? previousValue
+    : (state.admin.schoolEditId && schools.some((school) => school.id === state.admin.schoolEditId)
+      ? state.admin.schoolEditId
+      : "");
+  els.adminSchoolManageSelect.value = nextValue;
+  els.adminSchoolManageSelect.disabled = schools.length === 0;
+
+  const hasSelection = Boolean(els.adminSchoolManageSelect.value);
+  if (els.adminSchoolManageEditBtn) {
+    els.adminSchoolManageEditBtn.disabled = !hasSelection;
+  }
+  if (els.adminSchoolManageDeleteBtn) {
+    els.adminSchoolManageDeleteBtn.disabled = !hasSelection;
+  }
 }
 
 export function refreshSchoolDropdowns() {
@@ -1283,7 +1150,7 @@ export function bindAuthHandlers() {
 export function updateDirectorAttachUI() {
   const isDirector = isDirectorManager();
   const isDirectorOnly = state.auth.userProfile?.role === "director";
-  const hasSchool = Boolean(state.auth.userProfile?.schoolId);
+  const hasSchool = Boolean(getDirectorSchoolId());
   if (els.directorAttachGate) {
     els.directorAttachGate.style.display =
       isDirector && !hasSchool ? "block" : "none";
@@ -1295,6 +1162,10 @@ export function updateDirectorAttachUI() {
   if (els.directorDetachControls) {
     els.directorDetachControls.style.display =
       isDirector && hasSchool ? "flex" : "none";
+  }
+  if (els.directorSummaryAttachedContent) {
+    els.directorSummaryAttachedContent.style.display =
+      isDirector && hasSchool ? "grid" : "none";
   }
   if (els.directorSchoolDirectors) {
     if (!hasSchool) {
@@ -1319,7 +1190,11 @@ export function updateDirectorAttachUI() {
       isDirector && hasSchool ? "grid" : "none";
   }
   if (els.directorEnsembleForm) {
+    state.director.editingEnsembleId = null;
     els.directorEnsembleForm.classList.add("is-hidden");
+  }
+  if (els.directorEnsembleSubmitBtn) {
+    els.directorEnsembleSubmitBtn.textContent = "Create Ensemble";
   }
   if (els.directorEnsembleError) {
     els.directorEnsembleError.textContent = "";
@@ -1624,34 +1499,27 @@ export function startWatchers() {
   watchActiveEvent(() => {
     renderActiveEventDisplay();
     updateAdminEmptyState();
-    updateJudgeEmptyState();
     renderDirectorEventOptions();
     renderAdminReadiness();
   });
   watchRoster((entries) => {
-    renderRosterList();
     renderAdminScheduleList(entries);
   });
   watchAssignments((data) => {
-    const positionLabel = data.position ? JUDGE_POSITION_LABELS[data.position] : "Unassigned";
-    setJudgePositionDisplay(positionLabel);
-    if (data.position) {
-      const formLabel = data.formType === FORM_TYPES.sight ? "Sight" : "Stage";
-      setJudgeAssignmentDetail(`Assigned: ${positionLabel} (${formLabel})`);
-    } else {
-      setJudgeAssignmentDetail("No assignment");
-    }
     if (data.assignments) {
       setStageJudgeSelectValues(data.assignments);
     }
-    updateJudgeEmptyState();
-    if (!state.judge.isTestMode) {
-      renderCaptionForm();
-    }
   });
   watchSchools(() => {
+    renderAdminSchoolsDirectory();
+    if (
+      state.admin.schoolEditId &&
+      !state.admin.schoolsList.some((school) => school.id === state.admin.schoolEditId)
+    ) {
+      resetAdminSchoolForm();
+    }
     refreshSchoolDropdowns();
-    if (state.auth.userProfile?.role === "judge" || state.auth.userProfile?.roles?.judge) {
+    if (canUseOpenJudge(state.auth.userProfile)) {
       fetchOpenEnsembleIndex(state.admin.schoolsList).then((items) => {
         state.judgeOpen.existingEnsembles = items;
         renderOpenExistingOptions(items);
@@ -1659,30 +1527,8 @@ export function startWatchers() {
     }
   });
 
-  if (isDirectorManager()) {
-    watchDirectorPackets(({ groups, hint } = {}) => {
-      renderDirectorPackets(groups || []);
-      setDirectorHint(hint || "");
-    });
-    watchDirectorSchool((name) => {
-      setDirectorSchoolName(name);
-    });
-    watchDirectorSchoolDirectors((directors) => {
-      renderDirectorSchoolDirectors(directors || []);
-    });
-    watchDirectorEnsembles((ensembles) => {
-      renderDirectorEnsembles(ensembles || []);
-      updateDirectorActiveEnsembleLabel();
-      loadDirectorEntry({
-        onUpdate: applyDirectorEntryUpdate,
-        onClear: applyDirectorEntryClear,
-      });
-    });
-  }
-  if (isJudgeRole(state.auth.userProfile)) {
-    watchReadyEntries(() => {
-      renderRosterList();
-    });
+  refreshDirectorWatchers();
+  if (canUseOpenJudge(state.auth.userProfile)) {
     state.subscriptions.openPackets = watchOpenPackets((packets) => {
       renderOpenPacketOptions(packets || []);
     });
@@ -1695,6 +1541,28 @@ export function startWatchers() {
       renderAdminOpenPackets(packets || []);
     });
   }
+}
+
+function refreshDirectorWatchers() {
+  if (!isDirectorManager()) return;
+  watchDirectorPackets(({ groups, hint } = {}) => {
+    renderDirectorPackets(groups || []);
+    setDirectorHint(hint || "");
+  });
+  watchDirectorSchool((name) => {
+    setDirectorSchoolName(name);
+  });
+  watchDirectorSchoolDirectors((directors) => {
+    renderDirectorSchoolDirectors(directors || []);
+  });
+  watchDirectorEnsembles((ensembles) => {
+    renderDirectorEnsembles(ensembles || []);
+    updateDirectorActiveEnsembleLabel();
+    loadDirectorEntry({
+      onUpdate: applyDirectorEntryUpdate,
+      onClear: applyDirectorEntryClear,
+    });
+  });
 }
 
 export function initTabs() {
@@ -1723,7 +1591,7 @@ export function initTabs() {
       }
     });
   });
-  setTab("judge");
+  setTab("judge-open");
 }
 
 export function updateAdminEmptyState() {
@@ -1826,42 +1694,6 @@ export function renderScheduleEnsembles(ensembles = []) {
   updateScheduleSubmitState();
 }
 
-export function updateJudgeEmptyState() {
-  if (!els.judgeEmpty) return;
-  const show = !state.event.active || !state.judge.position;
-  els.judgeEmpty.style.display = show ? "block" : "none";
-  if (els.judgeStatusBadge) {
-    if (!state.event.active) {
-      els.judgeStatusBadge.textContent = "No active event";
-    } else if (!state.judge.position) {
-      els.judgeStatusBadge.textContent = "No assignment";
-    } else {
-      els.judgeStatusBadge.textContent = "Assigned";
-    }
-  }
-  renderJudgeReadiness();
-}
-
-export function setSubmissionHint(message) {
-  if (!els.submissionHint) return;
-  els.submissionHint.textContent = message || "";
-}
-
-export function setJudgeEntrySummary(message) {
-  if (!els.judgeEntrySummary) return;
-  els.judgeEntrySummary.textContent = message || "";
-}
-
-export function setJudgePositionDisplay(message) {
-  if (!els.judgePositionDisplay) return;
-  els.judgePositionDisplay.textContent = message || "";
-}
-
-export function setJudgeAssignmentDetail(message) {
-  if (!els.judgeAssignmentDetail) return;
-  els.judgeAssignmentDetail.textContent = message || "";
-}
-
 export function setOpenPacketHint(message) {
   if (!els.judgeOpenPacketHint) return;
   els.judgeOpenPacketHint.textContent = message || "";
@@ -1922,14 +1754,68 @@ function renderOpenPacketCards(packets) {
     const progress = computePacketProgress(packet);
     const statusRaw = packet.status || "draft";
     const status = statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1);
+    const creator =
+      packet.createdByJudgeName ||
+      packet.createdByJudgeEmail ||
+      packet.createdByJudgeUid ||
+      "Unknown judge";
     card.innerHTML = `
       <div class="packet-card-header">
         <div class="packet-card-title">${packet.schoolName || "Unknown school"} • ${packet.ensembleName || "Unknown ensemble"}</div>
         <span class="status-badge">${status}</span>
       </div>
+      <div class="packet-card-meta">Judge: ${creator}</div>
       <div class="packet-card-meta">${formatPacketUpdatedAt(packet)}</div>
       <div class="progress-bar"><span style="width: ${progress}%"></span></div>
     `;
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "ghost";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const label = `${packet.schoolName || "Unknown school"} • ${packet.ensembleName || "Unknown ensemble"}`;
+      if (!confirmUser(`Delete open packet for ${label}? This removes packet audio and sessions.`)) {
+        return;
+      }
+      deleteBtn.dataset.loadingLabel = "Deleting...";
+      deleteBtn.dataset.spinner = "true";
+      await withLoading(deleteBtn, async () => {
+        await deleteOpenPacket({ packetId: packet.id });
+        if (state.judgeOpen.currentPacketId === packet.id) {
+          resetJudgeOpenState();
+          if (els.judgeOpenPacketSelect) els.judgeOpenPacketSelect.value = "";
+          if (els.judgeOpenExistingSelect) els.judgeOpenExistingSelect.value = "";
+          if (els.judgeOpenSchoolNameInput) els.judgeOpenSchoolNameInput.value = "";
+          if (els.judgeOpenEnsembleNameInput) els.judgeOpenEnsembleNameInput.value = "";
+          if (els.judgeOpenTranscriptInput) els.judgeOpenTranscriptInput.value = "";
+          if (els.judgeOpenDraftStatus) els.judgeOpenDraftStatus.textContent = "";
+          renderOpenSegments([]);
+          renderOpenCaptionForm();
+          updateOpenHeader();
+          hideOpenDetailView();
+          updateOpenEmptyState();
+          updateOpenSubmitState();
+          saveOpenPrefs({ lastPacketId: "" });
+          try {
+            await saveOpenPrefsToServer({ lastJudgeOpenPacketId: "" });
+          } catch (error) {
+            console.error("Clear open packet preference failed", error);
+          }
+          if (state.auth.userProfile) {
+            state.auth.userProfile.preferences = {
+              ...(state.auth.userProfile.preferences || {}),
+              lastJudgeOpenPacketId: "",
+            };
+          }
+        }
+        setOpenPacketHint("Packet deleted.");
+      });
+    });
+    actions.appendChild(deleteBtn);
+    card.appendChild(actions);
     card.addEventListener("click", () => {
       if (els.judgeOpenPacketSelect) {
         els.judgeOpenPacketSelect.value = packet.id;
@@ -1945,8 +1831,35 @@ function updateOpenHeader() {
   const packet = state.judgeOpen.currentPacket || {};
   const school = packet.schoolName || "School";
   const ensemble = packet.ensembleName || "Ensemble";
-  els.judgeOpenHeaderTitle.textContent = `${school} • ${ensemble}`;
-  els.judgeOpenHeaderSub.textContent = packet.status || "Draft";
+  const statusRaw = String(packet.status || "draft");
+  const statusLabel = statusRaw ? statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1) : "Draft";
+  const title = `${school} • ${ensemble}`;
+  els.judgeOpenHeaderTitle.textContent = title;
+  els.judgeOpenHeaderSub.textContent = statusLabel;
+  if (els.judgeOpenSummaryTitle) {
+    els.judgeOpenSummaryTitle.textContent = title;
+  }
+  if (els.judgeOpenSummaryStatus) {
+    els.judgeOpenSummaryStatus.textContent = statusLabel;
+  }
+  if (els.judgeOpenSummaryMeta) {
+    const formLabel = (packet.formType || state.judgeOpen.formType || "stage") === "sight"
+      ? "Sight Reading"
+      : "Stage";
+    const segments = Number(packet.segmentCount || packet.audioSessionCount || 0);
+    els.judgeOpenSummaryMeta.textContent = `${formLabel} packet • ${segments} segment${segments === 1 ? "" : "s"}`;
+  }
+  if (els.judgeOpenSummaryHint) {
+    if (!state.judgeOpen.currentPacketId) {
+      els.judgeOpenSummaryHint.textContent = "Create or select a packet to begin.";
+    } else if (statusRaw === "released") {
+      els.judgeOpenSummaryHint.textContent = "This packet has been released.";
+    } else if (statusRaw === "submitted" || statusRaw === "locked") {
+      els.judgeOpenSummaryHint.textContent = "Packet is submitted and locked.";
+    } else {
+      els.judgeOpenSummaryHint.textContent = "Complete the steps below, then submit the packet.";
+    }
+  }
 }
 
 function updateRoleTabBar(role) {
@@ -1970,14 +1883,22 @@ function scrollToSection(target) {
 }
 
 function showOpenDetailView() {
+  if (els.judgeOpenListView) {
+    els.judgeOpenListView.style.display = "none";
+  }
   if (els.judgeOpenDetailView) {
     els.judgeOpenDetailView.classList.add("is-open");
+    els.judgeOpenDetailView.style.display = "grid";
   }
 }
 
 function hideOpenDetailView() {
+  if (els.judgeOpenListView) {
+    els.judgeOpenListView.style.display = "grid";
+  }
   if (els.judgeOpenDetailView) {
     els.judgeOpenDetailView.classList.remove("is-open");
+    els.judgeOpenDetailView.style.display = "none";
   }
 }
 
@@ -2248,7 +2169,7 @@ export function updateOpenSubmitState() {
 export async function restoreOpenPacketFromPrefs() {
   if (state.judgeOpen.restoreAttempted) return;
   state.judgeOpen.restoreAttempted = true;
-  if (!isJudgeRole(state.auth.userProfile)) return;
+  if (!canUseOpenJudge(state.auth.userProfile)) return;
   const local = loadOpenPrefs();
   const prefs = state.auth.userProfile?.preferences || {};
   const defaultFormType = prefs.judgeOpenDefaultFormType || local.defaultFormType || "stage";
@@ -2378,10 +2299,15 @@ export function renderAdminOpenPackets(packets) {
     const title = document.createElement("strong");
     const school = packet.schoolName || packet.schoolId || "Unknown school";
     const ensemble = packet.ensembleName || packet.ensembleId || "Unknown ensemble";
+    const creator =
+      packet.createdByJudgeName ||
+      packet.createdByJudgeEmail ||
+      packet.createdByJudgeUid ||
+      "Unknown judge";
     title.textContent = `${school} • ${ensemble}`;
     const detail = document.createElement("div");
     detail.className = "note";
-    detail.textContent = `Status: ${packet.status || "draft"}`;
+    detail.textContent = `Status: ${packet.status || "draft"} • Judge: ${creator}`;
     meta.appendChild(title);
     meta.appendChild(detail);
     item.appendChild(meta);
@@ -2403,11 +2329,23 @@ export function renderAdminOpenPackets(packets) {
 
     const releaseBtn = document.createElement("button");
     releaseBtn.className = "ghost";
-    releaseBtn.textContent = packet.status === "released" ? "Released" : "Release";
-    releaseBtn.disabled = packet.status === "released";
+    const isReleased = packet.status === "released";
+    releaseBtn.textContent = isReleased ? "Revoke" : "Release";
+    releaseBtn.disabled = !isReleased && !isLocked;
+    if (!isReleased && !isLocked) {
+      releaseBtn.title = "Lock packet before releasing.";
+    }
     releaseBtn.addEventListener("click", async () => {
-      if (packet.status === "released") return;
-      await releaseOpenPacket({ packetId: packet.id });
+      try {
+        if (isReleased) {
+          await unreleaseOpenPacket({ packetId: packet.id });
+          return;
+        }
+        await releaseOpenPacket({ packetId: packet.id });
+      } catch (error) {
+        console.error("Release/revoke open packet failed", error);
+        alertUser(error?.message || "Unable to update packet release state.");
+      }
     });
     actions.appendChild(releaseBtn);
 
@@ -2422,6 +2360,23 @@ export function renderAdminOpenPackets(packets) {
       await linkOpenPacketToEnsemble({ packetId: packet.id, schoolId, ensembleId });
     });
     actions.appendChild(linkBtn);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "ghost";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", async () => {
+      const label = `${school} • ${ensemble}`;
+      if (!confirmUser(`Delete open packet for ${label}? This removes packet audio and sessions.`)) {
+        return;
+      }
+      try {
+        await deleteOpenPacket({ packetId: packet.id });
+      } catch (error) {
+        console.error("Delete open packet failed", error);
+        alertUser("Unable to delete open packet. Check console for details.");
+      }
+    });
+    actions.appendChild(deleteBtn);
 
     item.appendChild(actions);
     els.adminOpenPacketsList.appendChild(item);
@@ -2438,128 +2393,6 @@ export function setStageJudgeSelectValues({
   if (els.stage2JudgeSelect) els.stage2JudgeSelect.value = stage2Uid;
   if (els.stage3JudgeSelect) els.stage3JudgeSelect.value = stage3Uid;
   if (els.sightJudgeSelect) els.sightJudgeSelect.value = sightUid;
-}
-
-export function setSubmitDisabled(disabled) {
-  if (!els.submitBtn) return;
-  els.submitBtn.disabled = Boolean(disabled);
-  els.submitBtn.dataset.locked = disabled ? "true" : "false";
-}
-
-export function resetJudgeUI() {
-  if (els.submissionForm) els.submissionForm.reset?.();
-  if (els.recordingStatus) els.recordingStatus.textContent = "";
-  if (els.playback) els.playback.src = "";
-  if (els.transcriptInput) els.transcriptInput.value = "";
-  if (els.captionForm) els.captionForm.innerHTML = "";
-  if (els.captionTotal) els.captionTotal.textContent = "0";
-  if (els.finalRating) els.finalRating.textContent = "N/A";
-  if (els.submitBtn) {
-    els.submitBtn.disabled = false;
-    els.submitBtn.dataset.locked = "false";
-  }
-}
-
-export function resetTestUI() {
-  if (els.testRecordingStatus) els.testRecordingStatus.textContent = "";
-  if (els.testPlayback) els.testPlayback.src = "";
-  if (els.testTranscriptInput) els.testTranscriptInput.value = "";
-  if (els.testCaptionForm) els.testCaptionForm.innerHTML = "";
-  if (els.testCaptionTotal) els.testCaptionTotal.textContent = "0";
-  if (els.testFinalRating) els.testFinalRating.textContent = "N/A";
-}
-
-export function setTestModeUI(isEnabled) {
-  if (els.testModeToggle) {
-    els.testModeToggle.textContent = isEnabled ? "Exit Test Mode" : "Enter Test Mode";
-  }
-  if (els.testModeContent) {
-    els.testModeContent.classList.toggle("is-hidden", !isEnabled);
-  }
-  if (els.testFormTypeSelect) {
-    els.testFormTypeSelect.disabled = !isEnabled;
-  }
-  if (els.judgeTestBadge) {
-    els.judgeTestBadge.classList.toggle("is-hidden", !isEnabled);
-  }
-}
-
-export function setTestFormTypeValue(value) {
-  if (!els.testFormTypeSelect) return;
-  els.testFormTypeSelect.value = value || "stage";
-}
-
-export function updateTranscribeState() {
-  if (!els.transcribeBtn) return;
-  if (els.submitBtn?.dataset.locked === "true") {
-    els.transcribeBtn.disabled = true;
-    return;
-  }
-  if (state.app.isOffline) {
-    els.transcribeBtn.disabled = true;
-    return;
-  }
-  const hasLocalAudio = Boolean(state.judge.audioBlob);
-  const ready =
-    !!state.auth.currentUser &&
-    !!state.event.active &&
-    !!state.judge.selectedRosterEntry &&
-    !!state.judge.position &&
-    (state.judge.currentSubmissionHasAudio || hasLocalAudio);
-  els.transcribeBtn.disabled = !ready;
-  els.transcribeBtn.title = ready
-    ? ""
-    : "Record audio and select an ensemble to enable transcription.";
-  renderJudgeReadiness();
-}
-
-export function updateTestTranscribeState() {
-  if (!els.testTranscribeBtn) return;
-  els.testTranscribeBtn.disabled = !state.judge.testAudioBlob;
-  renderJudgeTestReadiness();
-}
-
-export function lockSubmissionUI(submissionData) {
-  const isSubmitted = submissionData?.status === STATUSES.submitted;
-  const isLocked = Boolean(submissionData?.locked);
-  if (els.submissionSubmittedBadge) {
-    els.submissionSubmittedBadge.classList.toggle("is-hidden", !isSubmitted);
-  }
-  if (els.submissionSubmittedAt) {
-    if (isSubmitted && submissionData?.submittedAt?.toDate) {
-      els.submissionSubmittedAt.textContent = `Submitted ${submissionData.submittedAt.toDate().toLocaleString()}`;
-    } else {
-      els.submissionSubmittedAt.textContent = "";
-    }
-  }
-  if (els.submissionForm) {
-    const controls = els.submissionForm.querySelectorAll("input, textarea, select, button");
-    controls.forEach((el) => {
-      el.disabled = isSubmitted && isLocked;
-    });
-  }
-  if (els.recordBtn) {
-    els.recordBtn.style.display = isSubmitted && isLocked ? "none" : "";
-    if (!isSubmitted || !isLocked) els.recordBtn.disabled = false;
-  }
-  if (els.stopBtn) {
-    els.stopBtn.style.display = isSubmitted && isLocked ? "none" : "";
-    if (!isSubmitted || !isLocked) els.stopBtn.disabled = true;
-  }
-  if (els.submitBtn) {
-    els.submitBtn.style.display = isSubmitted && isLocked ? "none" : "";
-    if (isSubmitted && isLocked) {
-      els.submitBtn.dataset.locked = "true";
-    } else {
-      els.submitBtn.dataset.locked = "false";
-    }
-    if ((!isSubmitted || !isLocked) && !state.app.isOffline) {
-      els.submitBtn.disabled = false;
-    }
-  }
-  if (!isSubmitted || !isLocked) {
-    updateTranscribeState();
-  }
 }
 
 export function renderDirectorEventOptions() {
@@ -3300,16 +3133,13 @@ export function renderAdminReadiness() {
     Boolean(assignments.stage2Uid) &&
     Boolean(assignments.stage3Uid) &&
     Boolean(assignments.sightUid);
-  const hasSchedule = hasEvent && state.event.rosterEntries.length > 0;
   const items = [
     { key: "event", label: "Active event" },
     { key: "assignments", label: "Judge assignments" },
-    { key: "schedule", label: "Schedule loaded" },
   ];
   const status = {
     event: hasEvent,
     assignments: hasAssignments,
-    schedule: hasSchedule,
   };
   const total = items.length;
   const done = items.filter((item) => Boolean(status[item.key])).length;
@@ -3326,75 +3156,6 @@ export function renderAdminReadiness() {
   renderChecklist(els.adminReadinessChecklist, items, status);
 }
 
-export function renderJudgeReadiness() {
-  if (!els.judgeReadinessChecklist) return;
-  const hasRoster = Boolean(state.judge.selectedRosterEntry);
-  const hasAudio = state.judge.currentSubmissionHasAudio || Boolean(state.judge.audioBlob);
-  const transcriptReady = Boolean(els.transcriptInput?.value.trim());
-  const template = CAPTION_TEMPLATES[state.judge.formType] || [];
-  const captionsReady =
-    template.length > 0 &&
-    template.every(({ key }) => Boolean(state.judge.captions[key]?.gradeLetter));
-  const items = [
-    { key: "roster", label: "Ensemble selected" },
-    { key: "audio", label: "Recording captured" },
-    { key: "transcript", label: "Transcript drafted" },
-    { key: "captions", label: "Captions scored" },
-  ];
-  const status = {
-    roster: hasRoster,
-    audio: hasAudio,
-    transcript: transcriptReady,
-    captions: captionsReady,
-  };
-  const total = items.length;
-  const done = items.filter((item) => Boolean(status[item.key])).length;
-
-  renderStatusSummary({
-    rootId: "judgeReadinessPanel",
-    title: done === total ? "Ready to submit" : "Submission in progress",
-    done,
-    total,
-    pillText: done === total ? "Complete" : "Draft",
-    hintText: done === total ? "" : `${total - done} missing`,
-  });
-
-  renderChecklist(els.judgeReadinessChecklist, items, status);
-}
-
-export function renderJudgeTestReadiness() {
-  if (!els.judgeTestReadinessChecklist) return;
-  const hasAudio = Boolean(state.judge.testAudioBlob);
-  const transcriptReady = Boolean(els.testTranscriptInput?.value.trim());
-  const template = CAPTION_TEMPLATES[state.judge.testFormType] || [];
-  const captionsReady =
-    template.length > 0 &&
-    template.every(({ key }) => Boolean(state.judge.testCaptions[key]?.gradeLetter));
-  const items = [
-    { key: "audio", label: "Recording captured" },
-    { key: "transcript", label: "Transcript drafted" },
-    { key: "captions", label: "Captions scored" },
-  ];
-  const status = {
-    audio: hasAudio,
-    transcript: transcriptReady,
-    captions: captionsReady,
-  };
-  const total = items.length;
-  const done = items.filter((item) => Boolean(status[item.key])).length;
-
-  renderStatusSummary({
-    rootId: "judgeTestReadinessPanel",
-    title: done === total ? "Test run complete" : "Test in progress",
-    done,
-    total,
-    pillText: done === total ? "Complete" : "Draft",
-    hintText: done === total ? "" : `${total - done} missing`,
-  });
-
-  renderChecklist(els.judgeTestReadinessChecklist, items, status);
-}
-
 export function updateDirectorActiveEnsembleLabel() {
   if (!els.directorActiveEnsemblePill) return;
   if (!state.director.selectedEnsembleId && state.director.ensemblesCache.length) {
@@ -3408,232 +3169,17 @@ export function updateDirectorActiveEnsembleLabel() {
       els.directorActiveEnsemblePill.textContent = active.name;
       els.directorActiveEnsemblePill.classList.remove("is-hidden");
     }
+    if (els.directorEditActiveEnsembleBtn) {
+      els.directorEditActiveEnsembleBtn.classList.remove("is-hidden");
+    }
   } else {
     if (els.directorActiveEnsemblePill) {
       els.directorActiveEnsemblePill.textContent = "None selected";
       els.directorActiveEnsemblePill.classList.add("is-hidden");
     }
-  }
-}
-
-export function renderEntrySummary(entry) {
-  if (!entry) return "";
-  const standard = entry.instrumentation?.standardCounts || {};
-  const standardSummary = STANDARD_INSTRUMENTS.map((inst) => {
-    const count = Number(standard[inst.key] || 0);
-    return count ? `${inst.label}: ${count}` : null;
-  }).filter(Boolean);
-  const nonStandard = (entry.instrumentation?.nonStandard || [])
-    .filter((row) => row.instrumentName)
-    .map((row) => `${row.instrumentName}: ${row.count || 0}`);
-  const otherNotes = entry.instrumentation?.otherInstrumentationNotes || "";
-  const totalPerc = entry.instrumentation?.totalPercussion ?? 0;
-  const lines = [];
-  if (standardSummary.length) lines.push(`Standard: ${standardSummary.join(", ")}`);
-  lines.push(`Total Percussion: ${totalPerc}`);
-  if (nonStandard.length) lines.push(`Non-standard: ${nonStandard.join(", ")}`);
-  if (otherNotes.trim()) lines.push(`Notes: ${otherNotes.trim()}`);
-  return lines.join(" • ");
-}
-
-export function renderCaptionForm() {
-  els.captionForm.innerHTML = "";
-  if (!state.judge.formType) return;
-  const template = CAPTION_TEMPLATES[state.judge.formType] || [];
-  template.forEach(({ key, label }) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "stack";
-    wrapper.dataset.key = key;
-
-    const title = document.createElement("div");
-    title.textContent = label;
-    title.className = "note";
-
-    const row = document.createElement("div");
-    row.className = "row";
-
-    const gradeSelect = document.createElement("select");
-    ["A", "B", "C", "D", "F"].forEach((grade) => {
-      const option = document.createElement("option");
-      option.value = grade;
-      option.textContent = grade;
-      gradeSelect.appendChild(option);
-    });
-
-    const modifierSelect = document.createElement("select");
-    ["", "+", "-"].forEach((mod) => {
-      const option = document.createElement("option");
-      option.value = mod;
-      option.textContent = mod === "" ? "(none)" : mod;
-      modifierSelect.appendChild(option);
-    });
-
-    const comment = document.createElement("textarea");
-    comment.rows = 2;
-    comment.placeholder = "Notes";
-
-    const updateCaptionState = (skipDirty = false) => {
-      state.judge.captions[key] = {
-        gradeLetter: gradeSelect.value,
-        gradeModifier: modifierSelect.value,
-        comment: comment.value.trim(),
-      };
-      const total = calculateCaptionTotal(state.judge.captions);
-      const rating = computeFinalRating(total);
-      els.captionTotal.textContent = String(total);
-      els.finalRating.textContent = rating.label;
-      renderJudgeReadiness();
-      if (!skipDirty) {
-        applyJudgeDirty();
-      }
-    };
-
-    gradeSelect.addEventListener("change", updateCaptionState);
-    modifierSelect.addEventListener("change", updateCaptionState);
-    comment.addEventListener("input", updateCaptionState);
-
-    row.appendChild(gradeSelect);
-    row.appendChild(modifierSelect);
-    wrapper.appendChild(title);
-    wrapper.appendChild(row);
-    wrapper.appendChild(comment);
-    els.captionForm.appendChild(wrapper);
-
-    gradeSelect.value = "B";
-    updateCaptionState(true);
-  });
-}
-
-export function renderTestCaptionForm() {
-  if (!els.testCaptionForm) return;
-  els.testCaptionForm.innerHTML = "";
-  const template = CAPTION_TEMPLATES[state.judge.testFormType] || [];
-  template.forEach(({ key, label }) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "stack";
-    wrapper.dataset.key = key;
-
-    const title = document.createElement("div");
-    title.textContent = label;
-    title.className = "note";
-
-    const row = document.createElement("div");
-    row.className = "row";
-
-    const gradeSelect = document.createElement("select");
-    ["A", "B", "C", "D", "F"].forEach((grade) => {
-      const option = document.createElement("option");
-      option.value = grade;
-      option.textContent = grade;
-      gradeSelect.appendChild(option);
-    });
-
-    const modifierSelect = document.createElement("select");
-    ["", "+", "-"].forEach((mod) => {
-      const option = document.createElement("option");
-      option.value = mod;
-      option.textContent = mod === "" ? "(none)" : mod;
-      modifierSelect.appendChild(option);
-    });
-
-    const comment = document.createElement("textarea");
-    comment.rows = 2;
-    comment.placeholder = "Notes";
-
-    const updateCaptionState = () => {
-      state.judge.testCaptions[key] = {
-        gradeLetter: gradeSelect.value,
-        gradeModifier: modifierSelect.value,
-        comment: comment.value.trim(),
-      };
-      const total = calculateCaptionTotal(state.judge.testCaptions);
-      const rating = computeFinalRating(total);
-      if (els.testCaptionTotal) {
-        els.testCaptionTotal.textContent = String(total);
-      }
-      if (els.testFinalRating) {
-        els.testFinalRating.textContent = rating.label;
-      }
-      renderJudgeTestReadiness();
-    };
-
-    gradeSelect.addEventListener("change", updateCaptionState);
-    modifierSelect.addEventListener("change", updateCaptionState);
-    comment.addEventListener("input", updateCaptionState);
-
-    row.appendChild(gradeSelect);
-    row.appendChild(modifierSelect);
-    wrapper.appendChild(title);
-    wrapper.appendChild(row);
-    wrapper.appendChild(comment);
-    els.testCaptionForm.appendChild(wrapper);
-
-    gradeSelect.value = "B";
-    updateCaptionState();
-  });
-}
-
-export function renderRosterList() {
-  const search = (els.rosterSearch?.value || "").trim().toLowerCase();
-  const readyOnly = state.auth.userProfile?.role === "judge";
-  const readySet = state.event.readyEnsembles || new Set();
-  const filtered = state.event.rosterEntries.filter((entry) => {
-    if (readyOnly && !readySet.has(entry.ensembleId)) return false;
-    if (!search) return true;
-    const timeLabel = formatPerformanceAt(entry.performanceAt) || "";
-    const searchText = [entry.schoolId, entry.ensembleId, entry.ensembleName, timeLabel]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    return searchText.includes(search);
-  });
-
-  els.rosterList.innerHTML = "";
-  if (!filtered.length) {
-    const li = document.createElement("li");
-    li.className = "note";
-    li.textContent = "No ready ensembles yet.";
-    els.rosterList.appendChild(li);
-    return;
-  }
-  const MAX_ROSTER_ROWS = 50;
-  const visible = filtered.slice(0, MAX_ROSTER_ROWS);
-  visible.forEach((entry) => {
-    const performanceLabel = formatPerformanceAt(entry.performanceAt);
-    const schoolName =
-      entry.schoolName || getSchoolNameById(state.admin.schoolsList, entry.schoolId);
-    const ensembleName = entry.ensembleName || entry.ensembleId || "Ensemble";
-    const selectedId = state.judge.selectedRosterEntry?.id || state.judge.selectedRosterEntry?.ensembleId;
-    const entryId = entry.id || entry.ensembleId;
-    const isSelected = selectedId && entryId === selectedId;
-    const li = document.createElement("li");
-    if (isSelected) {
-      li.classList.add("is-selected");
+    if (els.directorEditActiveEnsembleBtn) {
+      els.directorEditActiveEnsembleBtn.classList.add("is-hidden");
     }
-    const top = document.createElement("div");
-    const strong = document.createElement("strong");
-    strong.textContent = performanceLabel || "Missing datetime";
-    top.appendChild(strong);
-    top.appendChild(document.createTextNode(` - ${schoolName} — ${ensembleName}`));
-    if (isSelected) {
-      const badge = document.createElement("span");
-      badge.className = "roster-selected-badge";
-      badge.textContent = "Selected";
-      top.appendChild(badge);
-    }
-    li.appendChild(top);
-    const selectBtn = document.createElement("button");
-    selectBtn.textContent = isSelected ? "Selected" : "Select";
-    selectBtn.disabled = isSelected;
-    selectBtn.addEventListener("click", () => handleRosterSelection(entry));
-    li.appendChild(selectBtn);
-    els.rosterList.appendChild(li);
-  });
-  if (filtered.length > MAX_ROSTER_ROWS) {
-    const li = document.createElement("li");
-    li.className = "note";
-    li.textContent = `Showing ${MAX_ROSTER_ROWS} of ${filtered.length}. Refine your search to narrow results.`;
-    els.rosterList.appendChild(li);
   }
 }
 
@@ -3666,9 +3212,13 @@ export function renderAdminSchedule({
   onDeleteEntry,
   onLoadPacketView,
 } = {}) {
-  els.scheduleList.innerHTML = "";
   state.subscriptions.entryStatusMap.forEach((unsub) => unsub());
   state.subscriptions.entryStatusMap.clear();
+  if (!els.scheduleList) {
+    renderAdminReadiness();
+    return;
+  }
+  els.scheduleList.innerHTML = "";
   const sorted = [...entries].sort((a, b) => {
     const aTime = a.performanceAt?.toMillis ? a.performanceAt.toMillis() : 0;
     const bTime = b.performanceAt?.toMillis ? b.performanceAt.toMillis() : 0;
@@ -3807,7 +3357,7 @@ export function renderAdminScheduleList(entries) {
   });
 }
 
-export function renderSubmissionCard(submission, position) {
+export function renderSubmissionCard(submission, position, { showTranscript = true } = {}) {
   const card = document.createElement("div");
   card.className = "packet-card";
   if (!submission) {
@@ -3855,33 +3405,10 @@ export function renderSubmissionCard(submission, position) {
     audio.src = submission.audioUrl;
   }
 
-  const captionSummary = document.createElement("div");
-  captionSummary.className = "caption-grid";
-  const captions = submission.captions || {};
-  Object.entries(captions).forEach(([key, value]) => {
-    const row = document.createElement("div");
-    row.className = "caption-row";
-    const gradeDisplay = `${value.gradeLetter || ""}${value.gradeModifier || ""}`;
-    const title = document.createElement("strong");
-    title.textContent = key;
-    const grade = document.createElement("div");
-    grade.textContent = `Grade: ${gradeDisplay}`;
-    const comment = document.createElement("div");
-    comment.textContent = value.comment || "";
-    row.appendChild(title);
-    row.appendChild(grade);
-    row.appendChild(comment);
-    captionSummary.appendChild(row);
-  });
-
-  const transcript = document.createElement("details");
-  const summary = document.createElement("summary");
-  summary.textContent = "Transcript";
-  transcript.appendChild(summary);
-  const transcriptBody = document.createElement("div");
-  transcriptBody.className = "note";
-  transcriptBody.textContent = submission.transcript || "No transcript.";
-  transcript.appendChild(transcriptBody);
+  const captionSummary = renderPacketCaptionSummary(
+    submission.captions || {},
+    submission.formType || FORM_TYPES.stage
+  );
 
   const footer = document.createElement("div");
   footer.className = "note";
@@ -3891,10 +3418,64 @@ export function renderSubmissionCard(submission, position) {
   card.appendChild(judgeInfo);
   card.appendChild(audio);
   card.appendChild(captionSummary);
-  card.appendChild(transcript);
+  if (showTranscript) {
+    const transcript = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Transcript";
+    transcript.appendChild(summary);
+    const transcriptBody = document.createElement("div");
+    transcriptBody.className = "note";
+    transcriptBody.textContent = submission.transcript || "No transcript.";
+    transcript.appendChild(transcriptBody);
+    card.appendChild(transcript);
+  }
   card.appendChild(footer);
 
   return card;
+}
+
+function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) {
+  const captionSummary = document.createElement("div");
+  captionSummary.className = "caption-grid";
+  const template = CAPTION_TEMPLATES[formType] || CAPTION_TEMPLATES.stage || [];
+  const seen = new Set();
+
+  template.forEach(({ key, label }) => {
+    seen.add(key);
+    const value = captions[key] || {};
+    const row = document.createElement("div");
+    row.className = "caption-row";
+    const gradeDisplay = `${value.gradeLetter || ""}${value.gradeModifier || ""}`;
+    const title = document.createElement("strong");
+    title.textContent = label || key;
+    const grade = document.createElement("div");
+    grade.textContent = `Grade: ${gradeDisplay || "N/A"}`;
+    const comment = document.createElement("div");
+    comment.textContent = value.comment || "";
+    row.appendChild(title);
+    row.appendChild(grade);
+    row.appendChild(comment);
+    captionSummary.appendChild(row);
+  });
+
+  Object.entries(captions).forEach(([key, value]) => {
+    if (seen.has(key)) return;
+    const row = document.createElement("div");
+    row.className = "caption-row";
+    const gradeDisplay = `${value?.gradeLetter || ""}${value?.gradeModifier || ""}`;
+    const title = document.createElement("strong");
+    title.textContent = key;
+    const grade = document.createElement("div");
+    grade.textContent = `Grade: ${gradeDisplay || "N/A"}`;
+    const comment = document.createElement("div");
+    comment.textContent = value?.comment || "";
+    row.appendChild(title);
+    row.appendChild(grade);
+    row.appendChild(comment);
+    captionSummary.appendChild(row);
+  });
+
+  return captionSummary;
 }
 
 export async function loadAdminPacketView(entry, packetPanel) {
@@ -4011,19 +3592,51 @@ export function renderDirectorPackets(groups) {
 
       const grid = document.createElement("div");
       grid.className = "packet-grid";
-      const transcriptCard = document.createElement("div");
-      transcriptCard.className = "packet-card";
-      const transcriptBadge = document.createElement("div");
-      transcriptBadge.className = "badge";
-      transcriptBadge.textContent = "Transcript";
-      const transcriptText = document.createElement("div");
-      transcriptText.className = "note";
-      transcriptText.textContent = group.transcript
-        ? group.transcript
-        : "Transcript not available.";
-      transcriptCard.appendChild(transcriptBadge);
-      transcriptCard.appendChild(transcriptText);
-      grid.appendChild(transcriptCard);
+      const scoringCard = document.createElement("div");
+      scoringCard.className = "packet-card";
+      const scoringHeader = document.createElement("div");
+      scoringHeader.className = "row";
+      const scoringBadge = document.createElement("span");
+      scoringBadge.className = "badge";
+      scoringBadge.textContent = "Judge";
+      const scoringStatus = document.createElement("span");
+      scoringStatus.className = "note";
+      scoringStatus.textContent = `Status: ${group.status || "released"}`;
+      const scoringLocked = document.createElement("span");
+      scoringLocked.className = "note";
+      scoringLocked.textContent = `Locked: ${group.locked ? "yes" : "no"}`;
+      scoringHeader.appendChild(scoringBadge);
+      scoringHeader.appendChild(scoringStatus);
+      scoringHeader.appendChild(scoringLocked);
+
+      const judgeInfo = document.createElement("div");
+      judgeInfo.className = "note";
+      judgeInfo.textContent =
+        group.judgeName && group.judgeEmail
+          ? `${group.judgeName} • ${group.judgeEmail}`
+          : group.judgeName || group.judgeEmail || "Unknown judge";
+
+      const captionSummary = renderPacketCaptionSummary(
+        group.captions || {},
+        group.formType || FORM_TYPES.stage
+      );
+      if (!Object.keys(group.captions || {}).length) {
+        const empty = document.createElement("div");
+        empty.className = "note";
+        empty.textContent = "No captions available.";
+        captionSummary.appendChild(empty);
+      }
+
+      const scoringFooter = document.createElement("div");
+      scoringFooter.className = "note";
+      scoringFooter.textContent =
+        `Caption Total: ${group.captionScoreTotal || 0} • Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
+
+      scoringCard.appendChild(scoringHeader);
+      scoringCard.appendChild(judgeInfo);
+      scoringCard.appendChild(captionSummary);
+      scoringCard.appendChild(scoringFooter);
+      grid.appendChild(scoringCard);
 
       if (group.latestAudioUrl) {
         const audioCard = document.createElement("div");
@@ -4081,7 +3694,7 @@ export function renderDirectorPackets(groups) {
     Object.values(JUDGE_POSITIONS).forEach((position) => {
       const submission = group.submissions[position];
       if (submission && submission.status === STATUSES.released) {
-        grid.appendChild(renderSubmissionCard(submission, position));
+        grid.appendChild(renderSubmissionCard(submission, position, { showTranscript: false }));
       }
     });
 
@@ -4131,6 +3744,16 @@ export function renderDirectorEnsembles(ensembles) {
       const actions = document.createElement("div");
       actions.className = "ensemble-actions";
       if (!isActive) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "ghost";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", () => {
+          setDirectorEnsembleFormMode({ mode: "edit", ensemble });
+          els.directorEnsembleNameInput?.focus();
+        });
+        actions.appendChild(editBtn);
+
         const selectBtn = document.createElement("button");
         selectBtn.type = "button";
         selectBtn.textContent = "Set Active";
@@ -4144,7 +3767,6 @@ export function renderDirectorEnsembles(ensembles) {
 }
 
 let adminHandlersBound = false;
-let judgeHandlersBound = false;
 let judgeOpenHandlersBound = false;
 let tapePlaybackBound = false;
 let directorHandlersBound = false;
@@ -4268,15 +3890,71 @@ export function bindAdminHandlers() {
   if (els.schoolForm) {
     els.schoolForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const schoolId = els.schoolIdCreateInput?.value.trim() || "";
+      const schoolId = state.admin.schoolEditId || (els.schoolIdCreateInput?.value.trim() || "");
       const name = els.schoolNameCreateInput?.value.trim() || "";
       if (!schoolId || !name) {
         alertUser("Enter a school ID and name.");
         return;
       }
       await saveSchool({ schoolId, name });
-      els.schoolIdCreateInput.value = "";
-      els.schoolNameCreateInput.value = "";
+      if (els.schoolResult) {
+        els.schoolResult.textContent = state.admin.schoolEditId
+          ? `Updated ${schoolId}.`
+          : `Added ${schoolId}.`;
+      }
+      resetAdminSchoolForm();
+    });
+  }
+
+  if (els.schoolEditCancelBtn) {
+    els.schoolEditCancelBtn.addEventListener("click", () => {
+      resetAdminSchoolForm();
+      if (els.schoolResult) els.schoolResult.textContent = "";
+    });
+  }
+
+  if (els.adminSchoolManageSelect) {
+    els.adminSchoolManageSelect.addEventListener("change", () => {
+      const hasSelection = Boolean(els.adminSchoolManageSelect?.value);
+      if (els.adminSchoolManageEditBtn) {
+        els.adminSchoolManageEditBtn.disabled = !hasSelection;
+      }
+      if (els.adminSchoolManageDeleteBtn) {
+        els.adminSchoolManageDeleteBtn.disabled = !hasSelection;
+      }
+    });
+  }
+
+  if (els.adminSchoolManageEditBtn) {
+    els.adminSchoolManageEditBtn.addEventListener("click", () => {
+      const school = getSelectedAdminSchool();
+      if (!school) return;
+      startAdminSchoolEdit(school);
+    });
+  }
+
+  if (els.adminSchoolManageDeleteBtn) {
+    els.adminSchoolManageDeleteBtn.addEventListener("click", async () => {
+      const school = getSelectedAdminSchool();
+      if (!school) return;
+      const label = school.name || school.id;
+      const ok = confirmUser(
+        `Delete school ${label}? This only works if no ensembles, users, entries, schedule items, or open packets reference it.`
+      );
+      if (!ok) return;
+      try {
+        await deleteSchool({ schoolId: school.id });
+        if (state.admin.schoolEditId === school.id) {
+          resetAdminSchoolForm();
+        }
+        if (els.schoolResult) {
+          els.schoolResult.textContent = `Deleted ${school.id}.`;
+        }
+      } catch (error) {
+        console.error("Delete school failed", error);
+        const message = error?.message || "Unable to delete school.";
+        alertUser(message);
+      }
     });
   }
 
@@ -4327,225 +4005,6 @@ export function bindAdminHandlers() {
   }
 }
 
-export function bindJudgeHandlers() {
-  if (judgeHandlersBound) return;
-  judgeHandlersBound = true;
-
-  if (els.submissionForm) {
-    els.submissionForm.addEventListener("submit", submitJudgeForm);
-  }
-
-  if (els.transcriptInput) {
-    els.transcriptInput.addEventListener("input", () => {
-      state.judge.transcriptText = els.transcriptInput.value || "";
-      applyJudgeDirty();
-      renderJudgeReadiness();
-    });
-  }
-
-  if (els.testTranscriptInput) {
-    els.testTranscriptInput.addEventListener("input", () => {
-      state.judge.testTranscriptText = els.testTranscriptInput.value || "";
-      renderJudgeTestReadiness();
-    });
-  }
-
-  if (els.testModeToggle) {
-    els.testModeToggle.addEventListener("click", () => {
-      const result = setTestMode(!state.judge.isTestMode);
-      setTestModeUI(result.isTestMode);
-      setTestFormTypeValue(state.judge.testFormType);
-      if (result.isTestMode) {
-        renderTestCaptionForm();
-      } else if (result.hasSelection) {
-        renderCaptionForm();
-      }
-      updateTranscribeState();
-    });
-  }
-
-  if (els.testFormTypeSelect) {
-    els.testFormTypeSelect.addEventListener("change", () => {
-      state.judge.testFormType = els.testFormTypeSelect.value || "stage";
-      if (state.judge.isTestMode) {
-        const result = setTestMode(true);
-        setTestModeUI(result.isTestMode);
-        setTestFormTypeValue(state.judge.testFormType);
-        renderTestCaptionForm();
-      }
-    });
-  }
-
-  if (els.testClearBtn) {
-    els.testClearBtn.addEventListener("click", () => {
-      resetTestState();
-      resetTestUI();
-      renderTestCaptionForm();
-    });
-  }
-
-  if (els.testDraftBtn) {
-    els.testDraftBtn.addEventListener("click", async () => {
-      const transcript = state.judge.testTranscriptText || "";
-      if (!transcript.trim()) {
-        if (els.testRecordingStatus) {
-          els.testRecordingStatus.textContent = "Add a transcript before drafting captions.";
-        }
-        return;
-      }
-      if (!state.judge.testFormType) {
-        if (els.testRecordingStatus) {
-          els.testRecordingStatus.textContent = "Select a form type before drafting.";
-        }
-        return;
-      }
-      if (!els.testCaptionForm?.children?.length) {
-        renderTestCaptionForm();
-      }
-      els.testDraftBtn.dataset.loadingLabel = "Drafting...";
-      els.testDraftBtn.dataset.spinner = "true";
-      await withLoading(els.testDraftBtn, async () => {
-        if (els.testRecordingStatus) {
-          els.testRecordingStatus.textContent = "Drafting captions. Please wait...";
-        }
-        const result = await draftCaptionsFromTranscript({
-          transcript,
-          formType: state.judge.testFormType,
-        });
-        if (!result?.ok) {
-          if (els.testRecordingStatus) {
-            els.testRecordingStatus.textContent =
-              result?.message || "Unable to draft captions.";
-          }
-          return;
-        }
-        applyCaptionDraft({ captions: result.captions, overwrite: true, isTest: true });
-        if (els.testRecordingStatus) {
-          els.testRecordingStatus.textContent = "Drafted captions.";
-        }
-      });
-    });
-  }
-
-  if (els.draftBtn) {
-    els.draftBtn.addEventListener("click", async () => {
-      const transcript = state.judge.transcriptText || "";
-      if (!transcript.trim()) {
-        if (els.draftStatus) {
-          els.draftStatus.textContent = "Add a transcript before drafting captions.";
-        }
-        return;
-      }
-      if (!state.judge.formType) {
-        if (els.draftStatus) {
-          els.draftStatus.textContent = "Select a form type before drafting.";
-        }
-        return;
-      }
-      if (!els.captionForm?.children?.length) {
-        renderCaptionForm();
-      }
-      els.draftBtn.dataset.loadingLabel = "Drafting...";
-      els.draftBtn.dataset.spinner = "true";
-      await withLoading(els.draftBtn, async () => {
-        if (els.draftStatus) {
-          els.draftStatus.textContent = "Drafting captions. Please wait...";
-        }
-        const overwrite = Boolean(els.overwriteCaptionsToggle?.checked);
-        const result = await draftCaptionsFromTranscript({
-          transcript,
-          formType: state.judge.formType,
-        });
-        if (!result?.ok) {
-          if (els.draftStatus) {
-            els.draftStatus.textContent =
-              result?.message || "Unable to draft captions.";
-          }
-          return;
-        }
-        applyCaptionDraft({ captions: result.captions, overwrite, isTest: false });
-        if (els.draftStatus) {
-          els.draftStatus.textContent = "Drafted captions.";
-        }
-      });
-    });
-  }
-
-  if (els.transcribeBtn) {
-    els.transcribeBtn.addEventListener("click", async () => {
-      if (els.transcribeBtn.disabled) return;
-      els.transcribeBtn.dataset.loadingLabel = "Transcribing...";
-      els.transcribeBtn.dataset.spinner = "true";
-      await withLoading(els.transcribeBtn, async () => {
-        setSubmissionHint("Transcription in progress. Please wait...");
-        const result = await transcribeSubmissionAudio();
-        if (!result?.ok) {
-          setSubmissionHint(result?.message || "Transcription failed.");
-          return;
-        }
-        if (els.transcriptInput) {
-          els.transcriptInput.value = result.transcript || "";
-        }
-        state.judge.transcriptText = result.transcript || "";
-        setSubmissionHint("Transcription complete.");
-      });
-      updateTranscribeState();
-    });
-  }
-
-  if (els.testTranscribeBtn) {
-    els.testTranscribeBtn.addEventListener("click", async () => {
-      if (els.testTranscribeBtn.disabled) return;
-      els.testTranscribeBtn.dataset.loadingLabel = "Transcribing...";
-      els.testTranscribeBtn.dataset.spinner = "true";
-      await withLoading(els.testTranscribeBtn, async () => {
-        if (els.testRecordingStatus) {
-          els.testRecordingStatus.textContent = "Transcription in progress. Please wait...";
-        }
-        const result = await transcribeTestAudio();
-        if (!result?.ok) {
-          if (els.testRecordingStatus) {
-            els.testRecordingStatus.textContent = result?.message || "Transcription failed.";
-          }
-          return;
-        }
-        if (els.testTranscriptInput) {
-          els.testTranscriptInput.value = result.transcript || "";
-        }
-        state.judge.testTranscriptText = result.transcript || "";
-        if (els.testRecordingStatus) {
-          els.testRecordingStatus.textContent = "Transcription complete.";
-        }
-      });
-      updateTestTranscribeState();
-    });
-  }
-
-  if (els.recordBtn) {
-    els.recordBtn.addEventListener("click", () => {
-      startAudioCapture({ isTest: false });
-    });
-  }
-
-  if (els.stopBtn) {
-    els.stopBtn.addEventListener("click", () => {
-      stopAudioCapture({ isTest: false });
-    });
-  }
-
-  if (els.testRecordBtn) {
-    els.testRecordBtn.addEventListener("click", () => {
-      startAudioCapture({ isTest: true });
-    });
-  }
-
-  if (els.testStopBtn) {
-    els.testStopBtn.addEventListener("click", () => {
-      stopAudioCapture({ isTest: true });
-    });
-  }
-}
-
 export function bindJudgeOpenHandlers() {
   if (judgeOpenHandlersBound) return;
   judgeOpenHandlersBound = true;
@@ -4581,33 +4040,38 @@ export function bindJudgeOpenHandlers() {
 
   if (els.judgeOpenNewPacketBtn) {
     els.judgeOpenNewPacketBtn.addEventListener("click", async () => {
-      const payload = gatherOpenPacketMeta();
-      const result = await createOpenPacket({ ...payload, onSessions: renderOpenSegments });
-      if (!result?.ok) {
-        setOpenPacketHint(result?.message || "Unable to create packet.");
-        return;
-      }
-      state.judgeOpen.tapePlaylistIndex = 0;
-      if (els.judgeOpenPacketSelect && result.packetId) {
-        els.judgeOpenPacketSelect.value = result.packetId;
-      }
-      await saveOpenPrefsToServer({
-        lastJudgeOpenPacketId: result.packetId,
-        lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
-      });
-      if (state.auth.userProfile) {
-        state.auth.userProfile.preferences = {
-          ...(state.auth.userProfile.preferences || {}),
+      els.judgeOpenNewPacketBtn.dataset.loadingLabel = "Creating...";
+      els.judgeOpenNewPacketBtn.dataset.spinner = "true";
+      await withLoading(els.judgeOpenNewPacketBtn, async () => {
+        setOpenPacketHint("Creating draft tape...");
+        const payload = gatherOpenPacketMeta();
+        const result = await createOpenPacket({ ...payload, onSessions: renderOpenSegments });
+        if (!result?.ok) {
+          setOpenPacketHint(result?.message || "Unable to create packet.");
+          return;
+        }
+        state.judgeOpen.tapePlaylistIndex = 0;
+        if (els.judgeOpenPacketSelect && result.packetId) {
+          els.judgeOpenPacketSelect.value = result.packetId;
+        }
+        await saveOpenPrefsToServer({
           lastJudgeOpenPacketId: result.packetId,
           lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
-        };
-      }
-      setOpenPacketHint("Draft packet created.");
-      renderOpenCaptionForm();
-      updateOpenHeader();
-      showOpenDetailView();
-      updateOpenEmptyState();
-      updateOpenSubmitState();
+        });
+        if (state.auth.userProfile) {
+          state.auth.userProfile.preferences = {
+            ...(state.auth.userProfile.preferences || {}),
+            lastJudgeOpenPacketId: result.packetId,
+            lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
+          };
+        }
+        setOpenPacketHint("Draft packet created.");
+        renderOpenCaptionForm();
+        updateOpenHeader();
+        showOpenDetailView();
+        updateOpenEmptyState();
+        updateOpenSubmitState();
+      });
     });
   }
 
@@ -4924,7 +4388,11 @@ export function bindJudgeOpenHandlers() {
         setOpenPacketHint(result?.message || "Unable to submit packet.");
         return;
       }
-      setOpenPacketHint("Submitted and locked.");
+      if (result.status === "released") {
+        setOpenPacketHint("Submitted and released to school results.");
+      } else {
+        setOpenPacketHint("Submitted and locked.");
+      }
       const refreshed = await selectOpenPacket(state.judgeOpen.currentPacketId, {
         onSessions: renderOpenSegments,
       });
@@ -5010,7 +4478,7 @@ function updateOpenRecordingStatus() {
     els.judgeOpenRecordDot.classList.remove("is-active");
   }
   if (els.judgeOpenRecordLabel) {
-    els.judgeOpenRecordLabel.textContent = "Record Append";
+    els.judgeOpenRecordLabel.textContent = "Start Recording";
   }
   if (els.judgeOpenRecordBtn) {
     els.judgeOpenRecordBtn.classList.remove("is-recording");
@@ -5038,12 +4506,7 @@ export function bindDirectorHandlers() {
 
   if (els.directorShowEnsembleFormBtn) {
     els.directorShowEnsembleFormBtn.addEventListener("click", () => {
-      if (els.directorEnsembleForm) {
-        els.directorEnsembleForm.classList.remove("is-hidden");
-      }
-      if (els.directorEnsembleError) {
-        els.directorEnsembleError.textContent = "";
-      }
+      setDirectorEnsembleFormMode({ mode: "create" });
       if (els.directorEnsembleNameInput) {
         els.directorEnsembleNameInput.focus();
       }
@@ -5052,15 +4515,18 @@ export function bindDirectorHandlers() {
 
   if (els.directorEnsembleCancelBtn) {
     els.directorEnsembleCancelBtn.addEventListener("click", () => {
-      if (els.directorEnsembleForm) {
-        els.directorEnsembleForm.classList.add("is-hidden");
-      }
-      if (els.directorEnsembleError) {
-        els.directorEnsembleError.textContent = "";
-      }
-      if (els.directorEnsembleForm) {
-        els.directorEnsembleForm.reset();
-      }
+      closeDirectorEnsembleForm();
+    });
+  }
+
+  if (els.directorEditActiveEnsembleBtn) {
+    els.directorEditActiveEnsembleBtn.addEventListener("click", () => {
+      const active = state.director.ensemblesCache.find(
+        (ensemble) => ensemble.id === state.director.selectedEnsembleId
+      );
+      if (!active) return;
+      setDirectorEnsembleFormMode({ mode: "edit", ensemble: active });
+      els.directorEnsembleNameInput?.focus();
     });
   }
 
@@ -5070,8 +4536,12 @@ export function bindDirectorHandlers() {
       if (!schoolId) return;
       const result = await attachDirectorSchool(schoolId);
       if (result?.ok) {
+        const selectedSchool = state.admin.schoolsList.find((school) => school.id === schoolId);
+        if (state.auth.userProfile?.role === "admin") {
+          setDirectorSchoolName(selectedSchool?.name || schoolId);
+        }
         updateDirectorAttachUI();
-        startWatchers();
+        refreshDirectorWatchers();
       }
     });
   }
@@ -5094,7 +4564,7 @@ export function bindDirectorHandlers() {
           status: "Draft",
           readyStatus: "disabled",
         });
-        startWatchers();
+        refreshDirectorWatchers();
       }
     });
   }
@@ -5103,6 +4573,7 @@ export function bindDirectorHandlers() {
     els.directorEnsembleForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const name = els.directorEnsembleNameInput?.value.trim() || "";
+      const editingEnsembleId = state.director.editingEnsembleId;
       if (!name) {
         if (els.directorEnsembleError) {
           els.directorEnsembleError.textContent = "Ensemble name is required.";
@@ -5110,6 +4581,7 @@ export function bindDirectorHandlers() {
         return;
       }
       if (
+        !editingEnsembleId &&
         hasDirectorUnsavedChanges() &&
         !confirmUser("You have unsaved changes. Leave anyway?")
       ) {
@@ -5118,11 +4590,20 @@ export function bindDirectorHandlers() {
       if (els.directorEnsembleError) {
         els.directorEnsembleError.textContent = "";
       }
-      const result = await createDirectorEnsemble(name);
+      const result = editingEnsembleId
+        ? await renameDirectorEnsemble(editingEnsembleId, name)
+        : await createDirectorEnsemble(name);
       if (result?.ok) {
-        discardDirectorDraftChanges();
-        els.directorEnsembleForm.reset();
-        els.directorEnsembleForm.classList.add("is-hidden");
+        if (editingEnsembleId) {
+          state.director.ensemblesCache = state.director.ensemblesCache.map((ensemble) =>
+            ensemble.id === editingEnsembleId ? { ...ensemble, name } : ensemble
+          );
+          renderDirectorEnsembles(state.director.ensemblesCache);
+          updateDirectorActiveEnsembleLabel();
+        } else {
+          discardDirectorDraftChanges();
+        }
+        closeDirectorEnsembleForm();
         await loadDirectorEntry({
           onUpdate: applyDirectorEntryUpdate,
           onClear: applyDirectorEntryClear,
@@ -5435,11 +4916,11 @@ export function bindAppHandlers() {
         switch (action) {
           case "admin-home":
             setTab("admin", { force: true });
-            scrollToSection(els.adminReadinessPanel);
+            scrollToSection(els.adminOpenPacketsSection || els.adminSchoolsSection);
             break;
           case "admin-events":
             setTab("admin", { force: true });
-            scrollToSection(els.adminEventsSection || els.adminScheduleSection);
+            scrollToSection(els.adminOpenPacketsSection || els.adminSchoolsSection);
             break;
           case "admin-schools":
             setTab("admin", { force: true });

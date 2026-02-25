@@ -4,6 +4,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   fetchEnsembleGrade,
   fetchPacketSubmissions,
   getDocs,
@@ -74,15 +75,16 @@ export async function saveAssignments({ eventId, stage1Uid, stage2Uid, stage3Uid
 }
 
 export async function saveSchool({ schoolId, name }) {
-  return setDoc(
-    doc(db, COLLECTIONS.schools, schoolId),
-    {
-      name,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
+  const schoolRef = doc(db, COLLECTIONS.schools, schoolId);
+  const existing = await getDoc(schoolRef);
+  const payload = {
+    name,
+    updatedAt: serverTimestamp(),
+  };
+  if (!existing.exists()) {
+    payload.createdAt = serverTimestamp();
+  }
+  return setDoc(schoolRef, payload, { merge: true });
 }
 
 export async function bulkImportSchools(lines) {
@@ -332,7 +334,22 @@ export async function releaseOpenPacket({ packetId }) {
   return releaseFn({ packetId });
 }
 
+export async function unreleaseOpenPacket({ packetId }) {
+  const unreleaseFn = httpsCallable(functions, "unreleaseOpenPacket");
+  return unreleaseFn({ packetId });
+}
+
 export async function linkOpenPacketToEnsemble({ packetId, schoolId, ensembleId }) {
   const linkFn = httpsCallable(functions, "linkOpenPacketToEnsemble");
   return linkFn({ packetId, schoolId, ensembleId });
+}
+
+export async function deleteOpenPacket({ packetId }) {
+  const deleteFn = httpsCallable(functions, "deleteOpenPacket");
+  return deleteFn({ packetId });
+}
+
+export async function deleteSchool({ schoolId }) {
+  const deleteFn = httpsCallable(functions, "deleteSchool");
+  return deleteFn({ schoolId });
 }

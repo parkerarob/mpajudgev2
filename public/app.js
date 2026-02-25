@@ -3,18 +3,12 @@ import { doc, getDoc } from "./modules/firestore.js";
 import { auth, db, firebaseConfig } from "./firebase.js";
 import { COLLECTIONS, state } from "./state.js";
 import { watchSchools } from "./modules/admin.js";
-import {
-  resetJudgeState,
-  resetTestState,
-  setTestMode,
-} from "./modules/judge.js";
 import { resetJudgeOpenState, stopOpenRecording } from "./modules/judge-open.js";
 import {
   bindAuthHandlers,
   bindAdminHandlers,
   bindAppHandlers,
   bindDirectorHandlers,
-  bindJudgeHandlers,
   bindJudgeOpenHandlers,
   closeAuthModal,
   handleHashChange,
@@ -27,8 +21,6 @@ import {
   setDirectorSaveStatus,
   setMainInteractionDisabled,
   setRoleHint,
-  resetTestUI,
-  setTestModeUI,
   showSessionExpiredModal,
   startWatchers,
   stopOpenLevelMeter,
@@ -51,7 +43,6 @@ if (params.has("safe") || isChrome) {
 
 bindAuthHandlers();
 bindAdminHandlers();
-bindJudgeHandlers();
 bindJudgeOpenHandlers();
 bindDirectorHandlers();
 bindAppHandlers();
@@ -103,14 +94,10 @@ onAuthStateChanged(auth, async (user) => {
     state.auth.userProfile = null;
     state.auth.profileLoading = false;
     updateRoleUI();
-    resetJudgeState();
     resetJudgeOpenState();
     stopWatchers();
-    setTestMode(false);
-    setTestModeUI(false);
-    resetTestState();
-    resetTestUI();
     state.director.selectedEventId = null;
+    state.director.adminViewSchoolId = null;
     state.director.selectedEnsembleId = null;
     state.director.entryDraft = null;
     state.director.entryRef = null;
@@ -147,7 +134,7 @@ onAuthStateChanged(auth, async (user) => {
     const roles = state.auth.userProfile.roles || {};
     const role = state.auth.userProfile.role
       || (roles.admin ? "admin" : roles.director ? "director" : roles.judge ? "judge" : null);
-    const preferJudgeOpen = roles.judge === true;
+    const preferJudgeOpen = roles.judge === true && role !== "admin";
     const path = window.location.pathname || "";
     const isLegacyJudgePath = path.endsWith("/judge") || path.endsWith("/judge/");
     if (isLegacyJudgePath && role !== "admin") {
@@ -175,7 +162,6 @@ onAuthStateChanged(auth, async (user) => {
     }
   } else {
     stopWatchers();
-    resetJudgeState();
   }
   closeAuthModal();
   handleHashChange();

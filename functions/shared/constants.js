@@ -87,6 +87,7 @@ const FIELDS = {
     segmentCount: "segmentCount",
   },
   entries: {
+    schoolId: "schoolId",
     performanceGrade: "performanceGrade",
   },
 };

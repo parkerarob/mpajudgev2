@@ -716,13 +716,30 @@ exports.submitOpenPacket = onCall(async (request) => {
   if (!["draft", "reopened"].includes(currentStatus)) {
     throw new HttpsError("failed-precondition", "Packet cannot be submitted.");
   }
+  const nextSchoolName = String(data.schoolName || packet.schoolName || "");
+  const nextEnsembleName = String(data.ensembleName || packet.ensembleName || "");
+  const nextSchoolId = String(data.schoolId || packet.schoolId || "");
+  const nextEnsembleId = String(data.ensembleId || packet.ensembleId || "");
+  const nextEnsembleSnapshot = data.ensembleSnapshot || packet.ensembleSnapshot || null;
+  const nextFormType =
+    (data.formType === FORM_TYPES.sight || data.formType === FORM_TYPES.stage) ?
+      data.formType :
+      (packet.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage);
+  const shouldAutoRelease = Boolean(nextSchoolId && nextEnsembleId);
+  const nextStatus = shouldAutoRelease ? "released" : "submitted";
   const captions = data.captions || {};
   const captionScoreTotal = calculateCaptionTotal(captions);
   const rating = computeFinalRatingFromTotal(captionScoreTotal);
 
   const payload = {
-    [FIELDS.packets.status]: "submitted",
+    [FIELDS.packets.status]: nextStatus,
     [FIELDS.packets.locked]: true,
+    [FIELDS.packets.schoolName]: nextSchoolName,
+    [FIELDS.packets.ensembleName]: nextEnsembleName,
+    [FIELDS.packets.schoolId]: nextSchoolId,
+    [FIELDS.packets.ensembleId]: nextEnsembleId,
+    [FIELDS.packets.ensembleSnapshot]: nextEnsembleSnapshot,
+    [FIELDS.packets.formType]: nextFormType,
     [FIELDS.packets.transcript]: String(data.transcript || ""),
     [FIELDS.packets.transcriptFull]: String(data.transcriptFull || data.transcript || ""),
     [FIELDS.packets.captions]: captions,
@@ -730,16 +747,19 @@ exports.submitOpenPacket = onCall(async (request) => {
     [FIELDS.packets.computedFinalRatingJudge]: rating.value,
     [FIELDS.packets.computedFinalRatingLabel]: rating.label,
     [FIELDS.packets.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.packets.releasedAt]: shouldAutoRelease ?
+      admin.firestore.FieldValue.serverTimestamp() :
+      (packet.releasedAt || null),
     [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
   };
   await packetRef.set(payload, {merge: true});
   await writePacketAudit(packetRef, {
     action: "submit",
     fromStatus: currentStatus,
-    toStatus: "submitted",
+    toStatus: nextStatus,
     actor: {uid: request.auth.uid, role: userRole || "judge"},
   });
-  return {packetId, status: "submitted"};
+  return {packetId, status: nextStatus, autoReleased: shouldAutoRelease};
 });
 
 exports.lockPacket = onCall(async (request) => {
@@ -754,6 +774,7 @@ exports.lockPacket = onCall(async (request) => {
   await packetRef.set({
     [FIELDS.packets.locked]: true,
     [FIELDS.packets.status]: "locked",
+    [FIELDS.packets.releasedAt]: null,
     [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
   }, {merge: true});
   await writePacketAudit(packetRef, {
@@ -777,6 +798,7 @@ exports.unlockPacket = onCall(async (request) => {
   await packetRef.set({
     [FIELDS.packets.locked]: false,
     [FIELDS.packets.status]: "reopened",
+    [FIELDS.packets.releasedAt]: null,
     [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
   }, {merge: true});
   await writePacketAudit(packetRef, {
@@ -797,6 +819,9 @@ exports.releaseOpenPacket = onCall(async (request) => {
   const packetSnap = await packetRef.get();
   if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
   const packet = packetSnap.data();
+  if (packet.locked !== true) {
+    throw new HttpsError("failed-precondition", "Open packet must be locked before release.");
+  }
   await packetRef.set({
     [FIELDS.packets.status]: "released",
     [FIELDS.packets.releasedAt]: admin.firestore.FieldValue.serverTimestamp(),
@@ -809,6 +834,30 @@ exports.releaseOpenPacket = onCall(async (request) => {
     actor: {uid: request.auth.uid, role: "admin"},
   });
   return {packetId, status: "released"};
+});
+
+exports.unreleaseOpenPacket = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
+  const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
+  const packet = packetSnap.data();
+  const nextStatus = packet.locked === true ? "locked" : "reopened";
+  await packetRef.set({
+    [FIELDS.packets.status]: nextStatus,
+    [FIELDS.packets.releasedAt]: null,
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "unrelease",
+    fromStatus: packet.status || null,
+    toStatus: nextStatus,
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {packetId, status: nextStatus};
 });
 
 exports.linkOpenPacketToEnsemble = onCall(async (request) => {
@@ -859,6 +908,106 @@ exports.linkOpenPacketToEnsemble = onCall(async (request) => {
     actor: {uid: request.auth.uid, role: "admin"},
   });
   return {ok: true};
+});
+
+exports.deleteOpenPacket = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const packetId = String(data.packetId || "").trim();
+  if (!packetId) {
+    throw new HttpsError("invalid-argument", "packetId required.");
+  }
+
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const userRole = userSnap.exists ? userSnap.data().role : null;
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const packet = packetSnap.data() || {};
+  const isAdmin = userRole === "admin";
+  const isOwner = packet.createdByJudgeUid === request.auth.uid;
+  if (!isAdmin && !isOwner) {
+    throw new HttpsError("permission-denied", "Not authorized to delete this packet.");
+  }
+  const bucket = admin.storage().bucket();
+
+  const sessionsSnap = await packetRef.collection("sessions").get();
+  const sessionIds = sessionsSnap.docs.map((docSnap) => docSnap.id);
+
+  for (const sessionId of sessionIds) {
+    const sessionRef = packetRef.collection("sessions").doc(sessionId);
+    const sessionSnap = await sessionRef.get();
+    const session = sessionSnap.exists ? (sessionSnap.data() || {}) : {};
+
+    const candidatePaths = new Set();
+    if (session.masterAudioPath) {
+      candidatePaths.add(String(session.masterAudioPath));
+    }
+    const derivedPath = getStoragePathFromUrl(session.masterAudioUrl);
+    if (derivedPath) {
+      candidatePaths.add(derivedPath);
+    }
+    if (packet.createdByJudgeUid) {
+      candidatePaths.add(
+          `packet_audio/${packet.createdByJudgeUid}/${packetId}/${sessionId}/master.webm`,
+      );
+    }
+
+    for (const objectPath of candidatePaths) {
+      if (!objectPath) continue;
+      try {
+        await bucket.file(objectPath).delete({ignoreNotFound: true});
+      } catch (error) {
+        logger.warn("deleteOpenPacket master audio delete failed", {
+          packetId,
+          sessionId,
+          objectPath,
+          error: error?.message || String(error),
+        });
+      }
+    }
+
+    if (packet.createdByJudgeUid) {
+      const chunkPrefix =
+        `packet_audio/${packet.createdByJudgeUid}/${packetId}/${sessionId}/chunk_`;
+      try {
+        const [files] = await bucket.getFiles({prefix: chunkPrefix});
+        await Promise.all(files.map((file) => file.delete({ignoreNotFound: true})));
+      } catch (error) {
+        logger.warn("deleteOpenPacket chunk delete failed", {
+          packetId,
+          sessionId,
+          chunkPrefix,
+          error: error?.message || String(error),
+        });
+      }
+    }
+  }
+
+  // Delete packet subcollections first, then packet document.
+  await Promise.all(
+      sessionsSnap.docs.map((docSnap) => docSnap.ref.delete()),
+  );
+  const auditSnap = await packetRef.collection("audit").get();
+  await Promise.all(
+      auditSnap.docs.map((docSnap) => docSnap.ref.delete()),
+  );
+  await packetRef.delete();
+
+  logger.info("deleteOpenPacket", {
+    packetId,
+    deletedSessionCount: sessionsSnap.size,
+    deletedAuditCount: auditSnap.size,
+    actorUid: request.auth.uid,
+    actorRole: userRole || null,
+  });
+
+  return {ok: true, packetId};
 });
 
 exports.transcribePacketSession = onCall(
@@ -1503,6 +1652,88 @@ exports.deleteEnsemble = onCall(async (request) => {
   }
 
   await ensembleRef.delete();
+  return {deleted: true};
+});
+
+exports.deleteSchool = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const schoolId = String(data.schoolId || "").trim();
+  if (!schoolId) {
+    throw new HttpsError("invalid-argument", "schoolId is required.");
+  }
+
+  const db = admin.firestore();
+  const schoolRef = db.collection(COLLECTIONS.schools).doc(schoolId);
+  const schoolSnap = await schoolRef.get();
+  if (!schoolSnap.exists) {
+    throw new HttpsError("not-found", "School not found.");
+  }
+
+  const ensemblesSnap = await schoolRef.collection(COLLECTIONS.ensembles).limit(1).get();
+  if (!ensemblesSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Delete all ensembles in this school before deleting the school.",
+    );
+  }
+
+  const directorsSnap = await db
+      .collection(COLLECTIONS.users)
+      .where(FIELDS.users.schoolId, "==", schoolId)
+      .limit(1)
+      .get();
+  if (!directorsSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "One or more users are still attached to this school.",
+    );
+  }
+
+  const eventsSnap = await db.collection(COLLECTIONS.events).get();
+  for (const eventDoc of eventsSnap.docs) {
+    const scheduleSnap = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventDoc.id)
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.schoolId, "==", schoolId)
+        .limit(1)
+        .get();
+    if (!scheduleSnap.empty) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Event schedule entries exist for this school.",
+      );
+    }
+
+    const entriesSnap = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventDoc.id)
+        .collection(COLLECTIONS.entries)
+        .where(FIELDS.entries.schoolId, "==", schoolId)
+        .limit(1)
+        .get();
+    if (!entriesSnap.empty) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Event entries exist for this school.",
+      );
+    }
+  }
+
+  const openPacketsSnap = await db
+      .collection(COLLECTIONS.packets)
+      .where(FIELDS.packets.schoolId, "==", schoolId)
+      .limit(1)
+      .get();
+  if (!openPacketsSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Open packets are linked to this school.",
+    );
+  }
+
+  await schoolRef.delete();
   return {deleted: true};
 });
 

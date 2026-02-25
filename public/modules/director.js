@@ -41,6 +41,13 @@ export function isDirectorManager() {
   return state.auth.userProfile?.role === "director" || state.auth.userProfile?.role === "admin";
 }
 
+export function getDirectorSchoolId() {
+  if (state.auth.userProfile?.role === "admin") {
+    return state.director.adminViewSchoolId || null;
+  }
+  return state.auth.userProfile?.schoolId || null;
+}
+
 export function markDirectorDirty(section) {
   if (!section) return;
   state.director.dirtySections.add(section);
@@ -352,7 +359,7 @@ export async function ensureEntryDocExists() {
   if (state.director.entryExists) return true;
   const base = buildDefaultEntry({
     eventId: state.director.selectedEventId,
-    schoolId: state.auth.userProfile?.schoolId || "",
+    schoolId: getDirectorSchoolId() || "",
     ensembleId: state.director.selectedEnsembleId,
     createdByUid: state.auth.currentUser?.uid || "",
   });
@@ -646,7 +653,7 @@ export async function saveLunchSection() {
 
 export function validateEntryReady(entry) {
   const issues = [];
-  if (!state.auth.userProfile?.schoolId) {
+  if (!getDirectorSchoolId()) {
     issues.push("Select a school.");
   }
   if (!state.director.ensemblesCache.length) {
@@ -746,7 +753,8 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
     state.subscriptions.directorEntry();
     state.subscriptions.directorEntry = null;
   }
-  if (!state.auth.userProfile?.schoolId || !state.director.selectedEventId || !state.director.selectedEnsembleId) {
+  const directorSchoolId = getDirectorSchoolId();
+  if (!directorSchoolId || !state.director.selectedEventId || !state.director.selectedEnsembleId) {
     state.director.entryDraft = null;
     state.director.entryExists = false;
     state.director.entryRef = null;
@@ -768,7 +776,7 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
   state.subscriptions.directorEntry = onSnapshot(state.director.entryRef, (snapshot) => {
     const defaults = buildDefaultEntry({
       eventId: state.director.selectedEventId,
-      schoolId: state.auth.userProfile.schoolId,
+      schoolId: directorSchoolId,
       ensembleId: state.director.selectedEnsembleId,
       createdByUid: state.auth.currentUser?.uid || "",
     });
@@ -803,11 +811,12 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
 }
 
 export async function handleDeleteEnsemble(ensembleId, ensembleName) {
-  if (!state.auth.userProfile?.schoolId) return;
+  const directorSchoolId = getDirectorSchoolId();
+  if (!directorSchoolId) return;
   try {
     const deleteEnsemble = httpsCallable(functions, "deleteEnsemble");
     await deleteEnsemble({
-      schoolId: state.auth.userProfile.schoolId,
+      schoolId: directorSchoolId,
       ensembleId,
     });
     if (state.director.selectedEnsembleId === ensembleId) {
@@ -830,6 +839,14 @@ export async function attachDirectorSchool(schoolId) {
     return { ok: false, reason: "not-authorized" };
   }
   if (!schoolId) return { ok: false, reason: "missing-school" };
+  if (state.auth.userProfile.role === "admin") {
+    state.director.adminViewSchoolId = schoolId;
+    state.director.selectedEnsembleId = null;
+    state.director.entryDraft = null;
+    state.director.entryRef = null;
+    state.director.entryExists = false;
+    return { ok: true, mode: "admin-view" };
+  }
   const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
   try {
     const userSnap = await getDoc(userRef);
@@ -851,6 +868,14 @@ export async function attachDirectorSchool(schoolId) {
 export async function detachDirectorSchool() {
   if (!state.auth.currentUser || !state.auth.userProfile || !isDirectorManager()) {
     return { ok: false, reason: "not-authorized" };
+  }
+  if (state.auth.userProfile.role === "admin") {
+    state.director.adminViewSchoolId = null;
+    state.director.selectedEnsembleId = null;
+    state.director.entryDraft = null;
+    state.director.entryRef = null;
+    state.director.entryExists = false;
+    return { ok: true, mode: "admin-view" };
   }
   const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
   try {
@@ -877,7 +902,8 @@ export async function createDirectorEnsemble(name) {
   if (!state.auth.currentUser || !state.auth.userProfile || !isDirectorManager()) {
     return { ok: false, reason: "not-authorized" };
   }
-  if (!state.auth.userProfile.schoolId) {
+  const directorSchoolId = getDirectorSchoolId();
+  if (!directorSchoolId) {
     return { ok: false, reason: "missing-school" };
   }
   if (!name) {
@@ -886,18 +912,51 @@ export async function createDirectorEnsemble(name) {
   const ensemblesRef = collection(
     db,
     COLLECTIONS.schools,
-    state.auth.userProfile.schoolId,
+    directorSchoolId,
     "ensembles"
   );
   const docRef = await addDoc(ensemblesRef, {
     name,
-    schoolId: state.auth.userProfile.schoolId,
+    schoolId: directorSchoolId,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     createdByUid: state.auth.currentUser.uid,
   });
   state.director.selectedEnsembleId = docRef.id;
   return { ok: true, id: docRef.id };
+}
+
+export async function renameDirectorEnsemble(ensembleId, name) {
+  if (!state.auth.currentUser || !state.auth.userProfile || !isDirectorManager()) {
+    return { ok: false, reason: "not-authorized" };
+  }
+  const directorSchoolId = getDirectorSchoolId();
+  if (!directorSchoolId) {
+    return { ok: false, reason: "missing-school" };
+  }
+  if (!ensembleId) {
+    return { ok: false, reason: "missing-ensemble" };
+  }
+  if (!name) {
+    return { ok: false, reason: "missing-name" };
+  }
+  try {
+    const ensembleRef = doc(
+      db,
+      COLLECTIONS.schools,
+      directorSchoolId,
+      COLLECTIONS.ensembles,
+      ensembleId
+    );
+    await updateDoc(ensembleRef, {
+      name,
+      updatedAt: serverTimestamp(),
+    });
+    return { ok: true, ensembleId, name };
+  } catch (error) {
+    console.error("Rename ensemble failed", error);
+    return { ok: false, error, message: error?.message || "Unable to rename ensemble." };
+  }
 }
 
 export function setDirectorEvent(nextId) {
@@ -989,46 +1048,73 @@ export async function uploadDirectorProfileCard(file) {
 export function watchDirectorPackets(callback) {
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
+  state.director.packetWatchVersion += 1;
+  const watchVersion = state.director.packetWatchVersion;
   if (!state.auth.userProfile || !isDirectorManager()) {
     callback?.({ groups: [], hint: "" });
     return;
   }
-  if (!state.auth.userProfile.schoolId) {
+  const directorSchoolId = getDirectorSchoolId();
+  if (!directorSchoolId) {
     callback?.({ groups: [], hint: "Select a school to continue." });
     return;
   }
 
   const submissionsQuery = query(
     collection(db, COLLECTIONS.submissions),
-    where(FIELDS.submissions.schoolId, "==", state.auth.userProfile.schoolId),
+    where(FIELDS.submissions.schoolId, "==", directorSchoolId),
     where(FIELDS.submissions.status, "==", STATUSES.released)
   );
 
   const packetsQuery = query(
     collection(db, COLLECTIONS.packets),
-    where(FIELDS.packets.schoolId, "==", state.auth.userProfile.schoolId),
+    where(FIELDS.packets.schoolId, "==", directorSchoolId),
     where(FIELDS.packets.status, "==", STATUSES.released)
   );
 
   const merged = { submissions: [], packets: [] };
+  let buildVersion = 0;
 
-  state.subscriptions.directorPackets = onSnapshot(submissionsQuery, async (snapshot) => {
-    merged.submissions = snapshot.docs.map((docSnap) => ({
-      id: docSnap.id,
-      ...docSnap.data(),
-    }));
+  const emitMergedGroups = async () => {
+    const currentBuildVersion = ++buildVersion;
     const groups = await buildDirectorPacketGroups(merged);
+    // Ignore stale async completions after a newer snapshot or watcher restart.
+    if (watchVersion !== state.director.packetWatchVersion) return;
+    if (currentBuildVersion !== buildVersion) return;
     callback?.({ groups, hint: "" });
-  });
+  };
 
-  state.subscriptions.directorOpenPackets = onSnapshot(packetsQuery, async (snapshot) => {
-    merged.packets = snapshot.docs.map((docSnap) => ({
-      id: docSnap.id,
-      ...docSnap.data(),
-    }));
-    const groups = await buildDirectorPacketGroups(merged);
-    callback?.({ groups, hint: "" });
-  });
+  state.subscriptions.directorPackets = onSnapshot(
+    submissionsQuery,
+    async (snapshot) => {
+      merged.submissions = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
+      await emitMergedGroups();
+    },
+    (error) => {
+      console.error("watchDirectorPackets submissions failed", error);
+      if (watchVersion !== state.director.packetWatchVersion) return;
+      callback?.({ groups: [], hint: "Unable to load released packets right now." });
+    }
+  );
+
+  state.subscriptions.directorOpenPackets = onSnapshot(
+    packetsQuery,
+    async (snapshot) => {
+      merged.packets = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
+      await emitMergedGroups();
+    },
+    (error) => {
+      console.error("watchDirectorPackets open packets failed", error);
+      if (watchVersion !== state.director.packetWatchVersion) return;
+      callback?.({ groups: [], hint: "Unable to load released packets right now." });
+    }
+  );
 }
 
 async function buildDirectorPacketGroups(merged) {
@@ -1070,7 +1156,12 @@ async function buildDirectorPacketGroups(merged) {
     schoolName: packet.schoolName || "",
     ensembleId: packet.ensembleId || "",
     ensembleName: packet.ensembleName || "",
-    transcript: packet.transcriptFull || packet.transcript || "",
+    status: packet.status || "released",
+    locked: Boolean(packet.locked),
+    judgeName: packet.createdByJudgeName || "",
+    judgeEmail: packet.createdByJudgeEmail || "",
+    formType: packet.formType || "stage",
+    captions: packet.captions || {},
     captionScoreTotal: packet.captionScoreTotal,
     computedFinalRatingLabel: packet.computedFinalRatingLabel || "N/A",
     latestAudioUrl: packet.latestAudioUrl || "",
@@ -1083,15 +1174,23 @@ async function buildDirectorPacketGroups(merged) {
 export function watchDirectorSchool(callback) {
   if (state.subscriptions.directorSchool) state.subscriptions.directorSchool();
   if (!state.auth.userProfile || !isDirectorManager()) return;
-  if (!state.auth.userProfile.schoolId) {
+  const directorSchoolId = getDirectorSchoolId();
+  if (!directorSchoolId) {
     callback?.("No school attached");
     return;
   }
-  const schoolRef = doc(db, COLLECTIONS.schools, state.auth.userProfile.schoolId);
-  state.subscriptions.directorSchool = onSnapshot(schoolRef, (snapshot) => {
-    const name = snapshot.exists() ? snapshot.data().name || snapshot.id : "Unknown school";
-    callback?.(name);
-  });
+  const schoolRef = doc(db, COLLECTIONS.schools, directorSchoolId);
+  state.subscriptions.directorSchool = onSnapshot(
+    schoolRef,
+    (snapshot) => {
+      const name = snapshot.exists() ? snapshot.data().name || snapshot.id : "Unknown school";
+      callback?.(name);
+    },
+    (error) => {
+      console.error("watchDirectorSchool failed", error);
+      callback?.("Unable to load school");
+    }
+  );
 }
 
 export function watchDirectorSchoolDirectors(callback) {
@@ -1099,7 +1198,7 @@ export function watchDirectorSchoolDirectors(callback) {
     state.subscriptions.directorSchoolDirectors();
   }
   if (!state.auth.userProfile || !isDirectorManager()) return;
-  const schoolId = state.auth.userProfile.schoolId;
+  const schoolId = getDirectorSchoolId();
   if (!schoolId) {
     callback?.([]);
     return;
@@ -1137,30 +1236,43 @@ export function watchDirectorSchoolDirectors(callback) {
 export function watchDirectorEnsembles(callback) {
   if (state.subscriptions.directorEnsembles) state.subscriptions.directorEnsembles();
   if (!state.auth.userProfile || !isDirectorManager()) return;
-  if (!state.auth.userProfile.schoolId) {
+  const directorSchoolId = getDirectorSchoolId();
+  if (!directorSchoolId) {
     state.director.ensemblesCache = [];
+    state.director.selectedEnsembleId = null;
     callback?.([]);
     return;
   }
   const ensemblesRef = collection(
     db,
     COLLECTIONS.schools,
-    state.auth.userProfile.schoolId,
+    directorSchoolId,
     "ensembles"
   );
   const ensemblesQuery = query(ensemblesRef, orderBy("name"));
-  state.subscriptions.directorEnsembles = onSnapshot(ensemblesQuery, (snapshot) => {
-    const ensembles = snapshot.docs.map((docSnap) => ({
-      id: docSnap.id,
-      ...docSnap.data(),
-    }));
-    state.director.ensemblesCache = ensembles;
-    const exists = ensembles.some(
-      (ensemble) => ensemble.id === state.director.selectedEnsembleId
-    );
-    if ((!state.director.selectedEnsembleId || !exists) && ensembles.length) {
-      state.director.selectedEnsembleId = ensembles[0].id;
+  state.subscriptions.directorEnsembles = onSnapshot(
+    ensemblesQuery,
+    (snapshot) => {
+      const ensembles = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
+      state.director.ensemblesCache = ensembles;
+      const exists = ensembles.some(
+        (ensemble) => ensemble.id === state.director.selectedEnsembleId
+      );
+      if (!ensembles.length) {
+        state.director.selectedEnsembleId = null;
+      } else if (!state.director.selectedEnsembleId || !exists) {
+        state.director.selectedEnsembleId = ensembles[0].id;
+      }
+      callback?.(ensembles);
+    },
+    (error) => {
+      console.error("watchDirectorEnsembles failed", error);
+      state.director.ensemblesCache = [];
+      state.director.selectedEnsembleId = null;
+      callback?.([]);
     }
-    callback?.(ensembles);
-  });
+  );
 }

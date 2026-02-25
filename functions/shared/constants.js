@@ -78,6 +78,9 @@ const FIELDS = {
     latestAudioUrl: "latestAudioUrl",
     latestAudioPath: "latestAudioPath",
     eventId: "eventId",
+    assignmentEventId: "assignmentEventId",
+    judgePosition: "judgePosition",
+    assignmentMode: "assignmentMode",
     scheduleEntryId: "scheduleEntryId",
     createdAt: "createdAt",
     updatedAt: "updatedAt",
@@ -85,6 +88,7 @@ const FIELDS = {
     releasedAt: "releasedAt",
     tapeDurationSec: "tapeDurationSec",
     segmentCount: "segmentCount",
+    directorEntrySnapshot: "directorEntrySnapshot",
   },
   entries: {
     schoolId: "schoolId",

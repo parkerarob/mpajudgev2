@@ -34,11 +34,87 @@ import {
 } from "./modules/ui.js";
 import { hasUnsavedChanges } from "./modules/navigation.js";
 
+const VERSION_CHECK_INTERVAL_MS = 5 * 60_000;
+const VERSION_CHECK_PATHS = ["/index.html"];
+
 const params = new URLSearchParams(window.location.search);
 const userAgent = navigator.userAgent || "";
 const isChrome = /Chrome|CriOS/.test(userAgent) && !/Edg|OPR/.test(userAgent);
 if (params.has("safe") || isChrome) {
   document.body.classList.add("safe-render");
+}
+
+let versionCheckBaseline = null;
+let versionCheckTimerId = null;
+let versionReloadTriggered = false;
+
+async function getAssetSignature(path) {
+  const url = `${path}${path.includes("?") ? "&" : "?"}vcheck=${Date.now()}`;
+  const response = await fetch(url, {
+    method: "HEAD",
+    cache: "no-store",
+    headers: { "cache-control": "no-cache" },
+  });
+  if (!response.ok) {
+    throw new Error(`Version check failed for ${path}: ${response.status}`);
+  }
+  const etag = response.headers.get("etag") || "";
+  const lastModified = response.headers.get("last-modified") || "";
+  const contentLength = response.headers.get("content-length") || "";
+  if (!(etag || lastModified || contentLength)) {
+    throw new Error(`Version headers missing for ${path}`);
+  }
+  return `${etag}|${lastModified}|${contentLength}`;
+}
+
+async function getVersionSignatureSnapshot() {
+  const signatures = await Promise.all(
+    VERSION_CHECK_PATHS.map(async (path) => [path, await getAssetSignature(path)])
+  );
+  return Object.fromEntries(signatures);
+}
+
+function triggerVersionReload() {
+  if (versionReloadTriggered) return;
+  versionReloadTriggered = true;
+  const url = new URL(window.location.href);
+  url.searchParams.set("refresh", String(Date.now()));
+  window.location.replace(url.toString());
+}
+
+async function runVersionCheck({ initial = false } = {}) {
+  try {
+    const next = await getVersionSignatureSnapshot();
+    if (!versionCheckBaseline) {
+      versionCheckBaseline = next;
+      return;
+    }
+    const changed = VERSION_CHECK_PATHS.some((path) => versionCheckBaseline[path] !== next[path]);
+    if (!changed) return;
+    if (initial) {
+      versionCheckBaseline = next;
+      return;
+    }
+    if (hasUnsavedChanges()) {
+      console.info("Update detected, waiting for unsaved changes to clear before reload.");
+      return;
+    }
+    triggerVersionReload();
+  } catch (error) {
+    console.warn("Version check skipped", error);
+  }
+}
+
+function startVersionChecks() {
+  if (versionCheckTimerId) return;
+  runVersionCheck({ initial: true });
+  versionCheckTimerId = window.setInterval(() => {
+    if (document.visibilityState === "hidden") return;
+    runVersionCheck();
+  }, VERSION_CHECK_INTERVAL_MS);
+  window.addEventListener("focus", () => {
+    runVersionCheck();
+  });
 }
 
 bindAuthHandlers();
@@ -68,6 +144,7 @@ watchSchools(() => {
   refreshSchoolDropdowns();
 });
 handleHashChange();
+startVersionChecks();
 
 if (window.location.pathname.includes("/judge-open") && window.location.hash !== "#judge-open") {
   window.location.hash = "#judge-open";
@@ -96,6 +173,9 @@ onAuthStateChanged(auth, async (user) => {
     updateRoleUI();
     resetJudgeOpenState();
     stopWatchers();
+    watchSchools(() => {
+      refreshSchoolDropdowns();
+    });
     state.director.selectedEventId = null;
     state.director.adminViewSchoolId = null;
     state.director.selectedEnsembleId = null;
@@ -117,6 +197,11 @@ onAuthStateChanged(auth, async (user) => {
   }
 
   closeAuthModal();
+
+  if (state.subscriptions.schools) {
+    state.subscriptions.schools();
+    state.subscriptions.schools = null;
+  }
 
   const userRef = doc(db, COLLECTIONS.users, user.uid);
   const snap = await getDoc(userRef);
@@ -147,6 +232,9 @@ onAuthStateChanged(auth, async (user) => {
       }
     } else if (role === "admin") {
       setTab("admin");
+      if (window.location.hash !== "#admin") {
+        window.location.hash = "#admin";
+      }
     } else if (role === "judge") {
       setTab("judge-open");
       if (window.location.hash !== "#judge-open") {

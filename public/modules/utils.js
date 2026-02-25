@@ -85,22 +85,12 @@ export function blobToBase64(blob) {
 
 export function getEventLabel(event) {
   if (!event) return "Unknown event";
-  const startLabel = event.startAt ? formatPerformanceAt(event.startAt) : "";
-  const endLabel = event.endAt ? formatPerformanceAt(event.endAt) : "";
-  const dateLabel =
-    startLabel && endLabel ? ` - ${startLabel} -> ${endLabel}` : "";
-  return `${event.name || "Event"} (${event.id})${dateLabel}`;
+  return `${event.name || "Event"} (${event.id})`;
 }
 
 export function getEventCardLabel(event) {
   if (!event) return "Unknown event";
-  const startDate = event.startAt ? formatDateHeading(event.startAt) : "";
-  const endDate = event.endAt ? formatDateHeading(event.endAt) : "";
-  const dateLabel =
-    startDate && endDate && startDate !== endDate
-      ? ` - ${startDate} - ${endDate}`
-      : startDate || endDate || "";
-  return `${event.name || "Event"}${dateLabel ? ` - ${dateLabel}` : ""}`;
+  return event.name || "Event";
 }
 
 export function normalizeGrade(value) {

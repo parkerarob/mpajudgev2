@@ -2,6 +2,7 @@ import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/fireba
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 import {
   collection,
+  collectionGroup,
   doc,
   getDoc,
   getDocs,
@@ -29,12 +30,78 @@ import {
 
 const OPEN_RECORDING_TIMESLICE_MS = 10000;
 const OPEN_PREFS_KEY = "judgeOpenPrefs";
+const OPEN_ENSEMBLE_INDEX_CACHE_TTL_MS = 60 * 1000;
+const OPEN_AUDIO_CONSTRAINTS = {
+  audio: {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+  },
+};
+
+let openEnsembleIndexCache = {
+  key: "",
+  cachedAt: 0,
+  items: [],
+  inFlight: null,
+};
 
 function buildPacketDisplay(packet) {
   const school = packet.schoolName || "Unknown school";
   const ensemble = packet.ensembleName || "Unknown ensemble";
   const status = packet.status || "draft";
-  return `${school} • ${ensemble} • ${status}`;
+  return `${school} - ${ensemble} - ${status}`;
+}
+
+function normalizeDirectorEntrySnapshot(data, { eventId, eventName } = {}) {
+  if (!data || typeof data !== "object") return null;
+  const repertoire = data.repertoire || {};
+  const instrumentation = data.instrumentation || {};
+  const snapshot = {
+    source: {
+      eventId: eventId || "",
+      eventName: eventName || "",
+    },
+    performanceGrade: String(data.performanceGrade || ""),
+    performanceGradeFlex: Boolean(data.performanceGradeFlex),
+    repertoire: {
+      repertoireRuleMode:
+        repertoire.repertoireRuleMode === "masterwork" ? "masterwork" : "standard",
+      march: {
+        title: String(repertoire.march?.title || ""),
+        composer: String(repertoire.march?.composer || ""),
+      },
+      selection1: {
+        grade: String(repertoire.selection1?.grade || ""),
+        title: String(repertoire.selection1?.title || ""),
+        composer: String(repertoire.selection1?.composer || ""),
+        pieceId: repertoire.selection1?.pieceId || null,
+      },
+      selection2: {
+        grade: String(repertoire.selection2?.grade || ""),
+        title: String(repertoire.selection2?.title || ""),
+        composer: String(repertoire.selection2?.composer || ""),
+        pieceId: repertoire.selection2?.pieceId || null,
+      },
+    },
+    instrumentation: {
+      totalPercussion: Number(instrumentation.totalPercussion || 0),
+      standardCounts:
+        instrumentation.standardCounts && typeof instrumentation.standardCounts === "object"
+          ? { ...instrumentation.standardCounts }
+          : {},
+      nonStandard: Array.isArray(instrumentation.nonStandard)
+        ? instrumentation.nonStandard.map((row) => ({
+            instrumentName: String(row?.instrumentName || ""),
+            count: Number(row?.count || 0),
+          }))
+        : [],
+      otherInstrumentationNotes: String(instrumentation.otherInstrumentationNotes || ""),
+    },
+    entryStatus: String(data.status || ""),
+    updatedAt: data.updatedAt || null,
+  };
+  return snapshot;
 }
 
 export function resetJudgeOpenState() {
@@ -51,6 +118,12 @@ export function resetJudgeOpenState() {
   state.judgeOpen.selectedExisting = null;
   state.judgeOpen.restoreAttempted = false;
   state.judgeOpen.levelMeter = null;
+  state.judgeOpen.activeEventAssignment = null;
+  state.judgeOpen.micTrackSettings = null;
+  state.judgeOpen.directorEntryReference = null;
+  state.judgeOpen.directorEntryReferenceStatus = "idle";
+  state.judgeOpen.directorEntryReferenceMessage = "";
+  state.judgeOpen.directorEntryReferenceLoadVersion = 0;
 }
 
 export function markJudgeOpenDirty() {
@@ -125,6 +198,11 @@ export async function selectOpenPacket(packetId, { onSessions } = {}) {
         ensembleName: packetSnap.data().ensembleName || "",
       }
     : null;
+  state.judgeOpen.directorEntryReference = packetSnap.data().directorEntrySnapshot || null;
+  state.judgeOpen.directorEntryReferenceStatus = state.judgeOpen.directorEntryReference
+    ? "loaded"
+    : "idle";
+  state.judgeOpen.directorEntryReferenceMessage = "";
   saveOpenPrefs({ lastPacketId: packetSnap.id, lastFormType: state.judgeOpen.formType });
   watchOpenSessions(packetId, onSessions);
   return { ok: true, packet: state.judgeOpen.currentPacket };
@@ -136,6 +214,7 @@ export async function createOpenPacket({
   schoolId,
   ensembleId,
   ensembleSnapshot,
+  directorEntrySnapshot,
   formType,
   onSessions,
 } = {}) {
@@ -149,7 +228,9 @@ export async function createOpenPacket({
     schoolId: schoolId || "",
     ensembleId: ensembleId || "",
     ensembleSnapshot: ensembleSnapshot || null,
+    directorEntrySnapshot: directorEntrySnapshot || null,
     formType: formType || FORM_TYPES.stage,
+    useActiveEventDefaults: state.judgeOpen.useActiveEventDefaults !== false,
     createdByJudgeName:
       state.auth.userProfile?.displayName || state.auth.currentUser.displayName || "",
     createdByJudgeEmail:
@@ -172,6 +253,25 @@ export async function updateOpenPacketDraft(payload = {}) {
   return { ok: true };
 }
 
+export async function loadDirectorEntrySnapshotForJudge({ eventId, ensembleId } = {}) {
+  if (!eventId) {
+    return { ok: false, reason: "no-event", message: "No active event selected." };
+  }
+  if (!ensembleId) {
+    return { ok: false, reason: "not-linked", message: "No ensemble linked." };
+  }
+  const entryRef = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId);
+  const snap = await getDoc(entryRef);
+  if (!snap.exists()) {
+    return { ok: false, reason: "not-found", message: "No Director entry found for active event." };
+  }
+  const eventName = state.event.active?.id === eventId
+    ? (state.event.active?.name || eventId)
+    : (state.event.list.find((item) => item.id === eventId)?.name || eventId);
+  const snapshot = normalizeDirectorEntrySnapshot(snap.data(), { eventId, eventName });
+  return { ok: true, snapshot };
+}
+
 export async function fetchOpenEnsembles(schoolId) {
   if (!schoolId) return [];
   const ensemblesRef = collection(db, COLLECTIONS.schools, schoolId, "ensembles");
@@ -186,18 +286,82 @@ export async function fetchOpenEnsembles(schoolId) {
 export async function fetchOpenEnsembleIndex(schoolsList) {
   const schools = Array.isArray(schoolsList) ? schoolsList : [];
   if (!schools.length) return [];
-  const results = await Promise.all(
-    schools.map(async (school) => {
-      const ensembles = await fetchOpenEnsembles(school.id);
-      return ensembles.map((ensemble) => ({
-        schoolId: school.id,
-        schoolName: school.name || school.id,
-        ensembleId: ensemble.id,
-        ensembleName: ensemble.name || ensemble.id,
-      }));
-    })
+  const schoolNameById = new Map(
+    schools.map((school) => [String(school.id || ""), school.name || school.id || ""])
   );
-  return results.flat();
+  const schoolIds = Array.from(schoolNameById.keys()).filter(Boolean).sort();
+  const cacheKey = schoolIds.join("|");
+  const now = Date.now();
+  if (
+    openEnsembleIndexCache.key === cacheKey &&
+    now - openEnsembleIndexCache.cachedAt < OPEN_ENSEMBLE_INDEX_CACHE_TTL_MS
+  ) {
+    return openEnsembleIndexCache.items;
+  }
+  if (openEnsembleIndexCache.key === cacheKey && openEnsembleIndexCache.inFlight) {
+    return openEnsembleIndexCache.inFlight;
+  }
+
+  const loader = (async () => {
+    try {
+      const snapshot = await getDocs(query(collectionGroup(db, COLLECTIONS.ensembles)));
+      const items = snapshot.docs
+        .map((docSnap) => {
+          const schoolId = docSnap.ref.parent?.parent?.id || "";
+          if (!schoolNameById.has(schoolId)) return null;
+          const data = docSnap.data() || {};
+          return {
+            schoolId,
+            schoolName: schoolNameById.get(schoolId) || schoolId,
+            ensembleId: docSnap.id,
+            ensembleName: data.name || docSnap.id,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => {
+          const schoolCmp = String(a.schoolName || "").localeCompare(String(b.schoolName || ""));
+          if (schoolCmp !== 0) return schoolCmp;
+          return String(a.ensembleName || "").localeCompare(String(b.ensembleName || ""));
+        });
+      openEnsembleIndexCache = {
+        key: cacheKey,
+        cachedAt: Date.now(),
+        items,
+        inFlight: null,
+      };
+      return items;
+    } catch (error) {
+      // Fallback to legacy fan-out so the Judge page still works if collectionGroup is denied.
+      console.warn("fetchOpenEnsembleIndex collectionGroup failed; falling back", error);
+      const results = await Promise.all(
+        schools.map(async (school) => {
+          const ensembles = await fetchOpenEnsembles(school.id);
+          return ensembles.map((ensemble) => ({
+            schoolId: school.id,
+            schoolName: school.name || school.id,
+            ensembleId: ensemble.id,
+            ensembleName: ensemble.name || ensemble.id,
+          }));
+        })
+      );
+      const items = results.flat();
+      openEnsembleIndexCache = {
+        key: cacheKey,
+        cachedAt: Date.now(),
+        items,
+        inFlight: null,
+      };
+      return items;
+    }
+  })();
+
+  openEnsembleIndexCache = {
+    key: cacheKey,
+    cachedAt: openEnsembleIndexCache.cachedAt,
+    items: openEnsembleIndexCache.items,
+    inFlight: loader,
+  };
+  return loader;
 }
 
 export function loadOpenPrefs() {
@@ -273,7 +437,17 @@ export async function startOpenRecording({
     chunkCount: 0,
   });
 
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(OPEN_AUDIO_CONSTRAINTS);
+  } catch (error) {
+    // Fallback for browsers that reject one or more advanced audio constraints.
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+  const audioTrack = stream.getAudioTracks?.()[0] || null;
+  state.judgeOpen.micTrackSettings =
+    typeof audioTrack?.getSettings === "function" ? audioTrack.getSettings() : null;
+
   const options = MediaRecorder.isTypeSupported("audio/webm")
     ? { mimeType: "audio/webm" }
     : {};
@@ -365,6 +539,7 @@ export async function startOpenRecording({
     state.judgeOpen.recordingChunks = [];
     state.judgeOpen.mediaRecorder = null;
     state.judgeOpen.activeSessionId = null;
+    state.judgeOpen.micTrackSettings = null;
     stream.getTracks().forEach((track) => track.stop());
     onStatus?.();
   });
@@ -534,7 +709,12 @@ export async function submitOpenPacket() {
     schoolId,
     ensembleId,
     ensembleSnapshot,
+    directorEntrySnapshot:
+      state.judgeOpen.directorEntryReferenceStatus === "loaded"
+        ? state.judgeOpen.directorEntryReference
+        : (state.judgeOpen.currentPacket?.directorEntrySnapshot || null),
     formType: state.judgeOpen.formType || FORM_TYPES.stage,
+    useActiveEventDefaults: state.judgeOpen.useActiveEventDefaults !== false,
     transcript: state.judgeOpen.transcriptText || "",
     transcriptFull: state.judgeOpen.transcriptText || "",
     captions: state.judgeOpen.captions || {},

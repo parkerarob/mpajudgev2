@@ -35,7 +35,7 @@ import {
   normalizeNumber,
   romanToLevel,
 } from "./utils.js";
-import { computePacketSummary } from "./judge.js";
+import { computePacketSummary } from "./judge-shared.js";
 
 export function isDirectorManager() {
   return state.auth.userProfile?.role === "director" || state.auth.userProfile?.role === "admin";
@@ -174,6 +174,7 @@ export function buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid 
     performanceGradeFlex: false,
     mpaSelections: defaultSelections,
     repertoire: {
+      repertoireRuleMode: "standard",
       march: {
         title: "",
         composer: "",
@@ -237,6 +238,8 @@ export function normalizeEntryData(data, defaults) {
     composer: row?.composer || "",
   }));
   base.repertoire = { ...defaults.repertoire, ...(data?.repertoire || {}) };
+  base.repertoire.repertoireRuleMode =
+    data?.repertoire?.repertoireRuleMode === "masterwork" ? "masterwork" : "standard";
   REPERTOIRE_FIELDS.forEach((item) => {
     const existing = data?.repertoire?.[item.key] || {};
     const fallbackSelection =
@@ -352,6 +355,16 @@ export async function getDirectorNameForSchool(schoolId) {
   const fallback = "Unknown";
   state.director.nameCache.set(schoolId, fallback);
   return fallback;
+}
+
+async function getCachedPacketGrade(eventId, ensembleId) {
+  const key = `${eventId || ""}_${ensembleId || ""}`;
+  if (state.director.packetGradeCache.has(key)) {
+    return state.director.packetGradeCache.get(key);
+  }
+  const grade = await fetchEnsembleGrade(eventId, ensembleId);
+  state.director.packetGradeCache.set(key, grade || "");
+  return grade || "";
 }
 
 export async function ensureEntryDocExists() {
@@ -477,6 +490,9 @@ export async function getMpaRepertoireForGrade(grade) {
           composerLower: data.composerLower || (data.composer || "").toLowerCase(),
           distributorPublisher: data.distributorPublisher || "",
           specialInstructions: data.specialInstructions || "",
+          status: data.status || "",
+          tags: Array.isArray(data.tags) ? data.tags : [],
+          isMasterwork: Boolean(data.isMasterwork),
         };
       });
       entries.sort((a, b) => a.titleLower.localeCompare(b.titleLower));
@@ -495,6 +511,10 @@ export async function getMpaRepertoireForGrade(grade) {
 
 export async function saveRepertoireSection() {
   if (!state.director.entryDraft) return;
+  const repertoireRuleMode =
+    state.director.entryDraft.repertoire?.repertoireRuleMode === "masterwork"
+      ? "masterwork"
+      : "standard";
   const marchTitle = state.director.entryDraft.repertoire?.march?.title?.trim();
   const selection1Grade = state.director.entryDraft.repertoire?.selection1?.grade;
   const selection2Grade = state.director.entryDraft.repertoire?.selection2?.grade;
@@ -502,22 +522,54 @@ export async function saveRepertoireSection() {
   const selection2Title = state.director.entryDraft.repertoire?.selection2?.title?.trim();
   const selection1Level = romanToLevel(selection1Grade);
   const selection2Level = romanToLevel(selection2Grade);
-  const derived = derivePerformanceGrade(selection1Level, selection2Level);
-  if (!derived.ok) {
-    return {
-      ok: false,
-      reason: "validation",
-      message: derived.error,
-      performanceGradeError: derived.error,
+  let derived = null;
+  if (repertoireRuleMode === "masterwork") {
+    const isMasterworkPiece = (selection) => {
+      const id = selection?.pieceId || null;
+      const grade = normalizeGrade(selection?.grade);
+      if (!id || !grade) return false;
+      const options = state.director.mpaCacheByGrade.get(grade) || [];
+      const match = options.find((item) => item.id === id);
+      if (!match) return false;
+      if (match.isMasterwork) return true;
+      const haystack = `${match.specialInstructions || ""} ${match.status || ""} ${(match.tags || []).join(" ")}`.toLowerCase();
+      return haystack.includes("masterwork") || haystack.includes("mw*");
     };
-  }
-  if (!selection1Title || !selection2Title) {
-    const message = "Enter titles for Selection #1 and Selection #2.";
-    return { ok: false, reason: "validation", message };
-  }
-  if (!selection1Grade || !selection2Grade) {
-    const message = "Select grades for Selection #1 and Selection #2.";
-    return { ok: false, reason: "validation", message };
+    const selection1 = state.director.entryDraft.repertoire?.selection1 || {};
+    const hasSelection1 = Boolean(selection1Title && selection1Grade);
+    if (!hasSelection1) {
+      return {
+        ok: false,
+        reason: "validation",
+        message: "Masterwork Exception requires Selection #1.",
+      };
+    }
+    if (!isMasterworkPiece(selection1)) {
+      return {
+        ok: false,
+        reason: "validation",
+        message: "Masterwork Exception requires Selection #1 to be a Masterwork.",
+      };
+    }
+    derived = { ok: true, value: "VI" };
+  } else {
+    derived = derivePerformanceGrade(selection1Level, selection2Level);
+    if (!derived.ok) {
+      return {
+        ok: false,
+        reason: "validation",
+        message: derived.error,
+        performanceGradeError: derived.error,
+      };
+    }
+    if (!selection1Title || !selection2Title) {
+      const message = "Enter titles for Selection #1 and Selection #2.";
+      return { ok: false, reason: "validation", message };
+    }
+    if (!selection1Grade || !selection2Grade) {
+      const message = "Select grades for Selection #1 and Selection #2.";
+      return { ok: false, reason: "validation", message };
+    }
   }
   if (!marchTitle) {
     const message = "March title is required.";
@@ -586,17 +638,37 @@ export async function saveRule3cSection() {
 
 export function computeDirectorCompletionState(entry) {
   const hasEnsemble = Boolean(state.director.selectedEnsembleId);
+  const repertoireRuleMode = entry?.repertoire?.repertoireRuleMode === "masterwork" ? "masterwork" : "standard";
   const marchTitle = entry?.repertoire?.march?.title?.trim();
   const selection1Title = entry?.repertoire?.selection1?.title?.trim();
   const selection2Title = entry?.repertoire?.selection2?.title?.trim();
   const selection1Grade = entry?.repertoire?.selection1?.grade;
   const selection2Grade = entry?.repertoire?.selection2?.grade;
-  const repertoireComplete =
+  const standardRepertoireComplete =
     Boolean(marchTitle) &&
     Boolean(selection1Title) &&
     Boolean(selection2Title) &&
     Boolean(selection1Grade) &&
     Boolean(selection2Grade);
+  const hasSelection1 = Boolean(selection1Title) && Boolean(selection1Grade);
+  const hasSelection2 = Boolean(selection2Title) && Boolean(selection2Grade);
+  let repertoireComplete = standardRepertoireComplete;
+  if (repertoireRuleMode === "masterwork") {
+    const isMasterworkBySelection = (selection) => {
+      const id = selection?.pieceId || null;
+      const grade = normalizeGrade(selection?.grade);
+      if (!id || !grade) return false;
+      const options = state.director.mpaCacheByGrade.get(grade) || [];
+      const match = options.find((item) => item.id === id);
+      if (!match) return false;
+      if (match.isMasterwork) return true;
+      const haystack = `${match.specialInstructions || ""} ${match.status || ""} ${(match.tags || []).join(" ")}`.toLowerCase();
+      return haystack.includes("masterwork") || haystack.includes("mw*");
+    };
+    const hasMasterworkSelection1 =
+      hasSelection1 && isMasterworkBySelection(entry?.repertoire?.selection1);
+    repertoireComplete = Boolean(marchTitle) && hasSelection1 && hasMasterworkSelection1;
+  }
   const standardCounts = entry?.instrumentation?.standardCounts || {};
   const hasStandardCount = Object.values(standardCounts).some(
     (value) => Number(value) > 0
@@ -649,6 +721,67 @@ export async function saveLunchSection() {
   lunchOrder.cheeseQty = normalizeNumber(lunchOrder.cheeseQty);
   state.director.entryDraft.lunchOrder = lunchOrder;
   return saveEntrySection("lunch", { lunchOrder }, "Lunch saved.");
+}
+
+export async function loadDirectorSchoolLunchTotal({ eventId, schoolId } = {}) {
+  if (!eventId || !schoolId) return { total: 0, mealCount: 0 };
+  const ensembles = Array.isArray(state.director.ensemblesCache)
+    ? state.director.ensemblesCache
+    : [];
+  if (!ensembles.length) return { total: 0, mealCount: 0 };
+  const ensembleIds = ensembles.map((ensemble) => ensemble.id).filter(Boolean).sort();
+  const cacheKey = `${eventId}:${schoolId}:${ensembleIds.join(",")}`;
+  const cached = state.director.lunchTotalsCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - cached.cachedAt < 5000) {
+    return cached.value;
+  }
+  if (state.director.lunchTotalsInFlight.has(cacheKey)) {
+    return state.director.lunchTotalsInFlight.get(cacheKey);
+  }
+
+  const loader = (async () => {
+    const docs = await Promise.all(
+      ensembleIds.map((ensembleId) =>
+        getDoc(doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId))
+      )
+    );
+
+    let mealCount = 0;
+    docs.forEach((snap) => {
+      if (!snap.exists()) return;
+      const data = snap.data() || {};
+      const lunch = data.lunchOrder || {};
+      mealCount += normalizeNumber(lunch.pepperoniQty) + normalizeNumber(lunch.cheeseQty);
+    });
+
+    const value = {
+      mealCount,
+      total: mealCount * 8,
+    };
+    state.director.lunchTotalsCache.set(cacheKey, { cachedAt: Date.now(), value });
+    return value;
+  })();
+  state.director.lunchTotalsInFlight.set(cacheKey, loader);
+  try {
+    return await loader;
+  } finally {
+    state.director.lunchTotalsInFlight.delete(cacheKey);
+  }
+}
+
+export function invalidateDirectorSchoolLunchTotalCache({ eventId, schoolId } = {}) {
+  const eventPrefix = eventId ? `${eventId}:` : "";
+  for (const key of state.director.lunchTotalsCache.keys()) {
+    if (eventId && !key.startsWith(eventPrefix)) continue;
+    if (schoolId && !key.includes(`:${schoolId}:`)) continue;
+    state.director.lunchTotalsCache.delete(key);
+  }
+  for (const key of state.director.lunchTotalsInFlight.keys()) {
+    if (eventId && !key.startsWith(eventPrefix)) continue;
+    if (schoolId && !key.includes(`:${schoolId}:`)) continue;
+    state.director.lunchTotalsInFlight.delete(key);
+  }
 }
 
 export function validateEntryReady(entry) {
@@ -748,6 +881,34 @@ export function selectDirectorEnsemble(ensembleId) {
   return { ok: true, ensembleId };
 }
 
+async function loadLatestDirectorEntryForEnsemble({
+  schoolId,
+  ensembleId,
+  excludeEventId,
+} = {}) {
+  if (!schoolId || !ensembleId) return null;
+  const events = Array.isArray(state.event.list) ? [...state.event.list] : [];
+  events.sort((a, b) => {
+    const aTime = a?.startAt?.toMillis ? a.startAt.toMillis() : 0;
+    const bTime = b?.startAt?.toMillis ? b.startAt.toMillis() : 0;
+    return bTime - aTime;
+  });
+  for (const event of events) {
+    if (!event?.id || event.id === excludeEventId) continue;
+    try {
+      const ref = doc(db, COLLECTIONS.events, event.id, COLLECTIONS.entries, ensembleId);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) continue;
+      const data = snap.data() || {};
+      if ((data.schoolId || schoolId) !== schoolId) continue;
+      return { eventId: event.id, data };
+    } catch (error) {
+      console.warn("Failed loading prior director entry for carry-forward", error);
+    }
+  }
+  return null;
+}
+
 export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
   if (state.subscriptions.directorEntry) {
     state.subscriptions.directorEntry();
@@ -773,26 +934,46 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
     state.director.selectedEnsembleId
   );
 
-  state.subscriptions.directorEntry = onSnapshot(state.director.entryRef, (snapshot) => {
+  const loadEventId = state.director.selectedEventId;
+  const loadEnsembleId = state.director.selectedEnsembleId;
+  const loadSchoolId = directorSchoolId;
+
+  state.subscriptions.directorEntry = onSnapshot(state.director.entryRef, async (snapshot) => {
     const defaults = buildDefaultEntry({
-      eventId: state.director.selectedEventId,
-      schoolId: directorSchoolId,
-      ensembleId: state.director.selectedEnsembleId,
+      eventId: loadEventId,
+      schoolId: loadSchoolId,
+      ensembleId: loadEnsembleId,
       createdByUid: state.auth.currentUser?.uid || "",
     });
     if (hasDirectorUnsavedChanges()) {
       return;
     }
     if (!snapshot.exists()) {
-      state.director.entryDraft = defaults;
+      const prior = await loadLatestDirectorEntryForEnsemble({
+        schoolId: loadSchoolId,
+        ensembleId: loadEnsembleId,
+        excludeEventId: loadEventId,
+      });
+      if (
+        state.director.selectedEventId !== loadEventId ||
+        state.director.selectedEnsembleId !== loadEnsembleId ||
+        getDirectorSchoolId() !== loadSchoolId ||
+        hasDirectorUnsavedChanges()
+      ) {
+        return;
+      }
+      state.director.entryDraft = prior
+        ? normalizeEntryData(prior.data, defaults)
+        : defaults;
       state.director.entryExists = false;
       state.director.dirtySections.clear();
-    onUpdate?.({
-      entry: state.director.entryDraft,
-      status: "Incomplete",
-      readyStatus: "draft",
-      completionState: computeDirectorCompletionState(state.director.entryDraft),
-    });
+      const carriedReady = state.director.entryDraft.status === "ready";
+      onUpdate?.({
+        entry: state.director.entryDraft,
+        status: carriedReady ? "Ready" : "Incomplete",
+        readyStatus: carriedReady ? "ready" : "draft",
+        completionState: computeDirectorCompletionState(state.director.entryDraft),
+      });
       return;
     }
     state.director.entryExists = true;
@@ -941,18 +1122,14 @@ export async function renameDirectorEnsemble(ensembleId, name) {
     return { ok: false, reason: "missing-name" };
   }
   try {
-    const ensembleRef = doc(
-      db,
-      COLLECTIONS.schools,
-      directorSchoolId,
-      COLLECTIONS.ensembles,
-      ensembleId
-    );
-    await updateDoc(ensembleRef, {
+    const renameEnsemble = httpsCallable(functions, "renameEnsemble");
+    const response = await renameEnsemble({ schoolId: directorSchoolId, ensembleId, name });
+    return {
+      ok: true,
+      ensembleId,
       name,
-      updatedAt: serverTimestamp(),
-    });
-    return { ok: true, ensembleId, name };
+      updatedPacketCount: Number(response?.data?.updatedPacketCount || 0),
+    };
   } catch (error) {
     console.error("Rename ensemble failed", error);
     return { ok: false, error, message: error?.message || "Unable to rename ensemble." };
@@ -1048,6 +1225,7 @@ export async function uploadDirectorProfileCard(file) {
 export function watchDirectorPackets(callback) {
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
+  state.director.packetGradeCache.clear();
   state.director.packetWatchVersion += 1;
   const watchVersion = state.director.packetWatchVersion;
   if (!state.auth.userProfile || !isDirectorManager()) {
@@ -1074,13 +1252,54 @@ export function watchDirectorPackets(callback) {
 
   const merged = { submissions: [], packets: [] };
   let buildVersion = 0;
+  let lastSignature = "";
+  let lastGroups = [];
+
+  const buildSignature = () => {
+    const submissionSig = merged.submissions
+      .map((item) => [
+        item.id || "",
+        item.status || "",
+        item.locked ? 1 : 0,
+        item.releasedAt?.seconds || 0,
+        item.releasedAt?.nanoseconds || 0,
+        item.updatedAt?.seconds || 0,
+        item.updatedAt?.nanoseconds || 0,
+      ].join(":"))
+      .sort()
+      .join("|");
+    const packetSig = merged.packets
+      .map((item) => [
+        item.id || "",
+        item.status || "",
+        item.locked ? 1 : 0,
+        item.judgePosition || "",
+        item.assignmentEventId || "",
+        item.schoolId || "",
+        item.ensembleId || "",
+        item.updatedAt?.seconds || 0,
+        item.updatedAt?.nanoseconds || 0,
+        item.releasedAt?.seconds || 0,
+        item.releasedAt?.nanoseconds || 0,
+      ].join(":"))
+      .sort()
+      .join("|");
+    return `s:${submissionSig}||p:${packetSig}`;
+  };
 
   const emitMergedGroups = async () => {
     const currentBuildVersion = ++buildVersion;
+    const signature = buildSignature();
+    if (signature === lastSignature) {
+      callback?.({ groups: lastGroups, hint: "" });
+      return;
+    }
     const groups = await buildDirectorPacketGroups(merged);
     // Ignore stale async completions after a newer snapshot or watcher restart.
     if (watchVersion !== state.director.packetWatchVersion) return;
     if (currentBuildVersion !== buildVersion) return;
+    lastSignature = signature;
+    lastGroups = groups;
     callback?.({ groups, hint: "" });
   };
 
@@ -1136,7 +1355,7 @@ async function buildDirectorPacketGroups(merged) {
   const scheduledGroups = await Promise.all(
     Object.values(grouped).map(async (group) => {
       const [grade, directorName] = await Promise.all([
-        fetchEnsembleGrade(group.eventId, group.ensembleId),
+        getCachedPacketGrade(group.eventId, group.ensembleId),
         getDirectorNameForSchool(group.schoolId),
       ]);
       const summary = computePacketSummary(grade, group.submissions);
@@ -1148,27 +1367,106 @@ async function buildDirectorPacketGroups(merged) {
       };
     })
   );
+  const openPacketSets = new Map();
+  const standaloneOpenGroups = [];
 
-  const openGroups = merged.packets.map((packet) => ({
-    type: "open",
-    packetId: packet.id,
-    schoolId: packet.schoolId || "",
-    schoolName: packet.schoolName || "",
-    ensembleId: packet.ensembleId || "",
-    ensembleName: packet.ensembleName || "",
-    status: packet.status || "released",
-    locked: Boolean(packet.locked),
-    judgeName: packet.createdByJudgeName || "",
-    judgeEmail: packet.createdByJudgeEmail || "",
-    formType: packet.formType || "stage",
-    captions: packet.captions || {},
-    captionScoreTotal: packet.captionScoreTotal,
-    computedFinalRatingLabel: packet.computedFinalRatingLabel || "N/A",
-    latestAudioUrl: packet.latestAudioUrl || "",
-    releasedAt: packet.releasedAt || null,
-  }));
+  merged.packets.forEach((packet) => {
+    const judgePosition = packet.judgePosition || "";
+    const assignmentEventId = packet.assignmentEventId || "";
+    const canAssemble =
+      Boolean(packet.schoolId) &&
+      Boolean(packet.ensembleId) &&
+      Boolean(judgePosition) &&
+      Boolean(assignmentEventId);
 
-  return [...openGroups, ...scheduledGroups];
+    if (!canAssemble) {
+      standaloneOpenGroups.push({
+        type: "open",
+        packetId: packet.id,
+        schoolId: packet.schoolId || "",
+        schoolName: packet.schoolName || "",
+        ensembleId: packet.ensembleId || "",
+        ensembleName: packet.ensembleName || "",
+        status: packet.status || "released",
+        locked: Boolean(packet.locked),
+        judgeName: packet.createdByJudgeName || "",
+        judgeEmail: packet.createdByJudgeEmail || "",
+        formType: packet.formType || "stage",
+        captions: packet.captions || {},
+        captionScoreTotal: packet.captionScoreTotal,
+        computedFinalRatingLabel: packet.computedFinalRatingLabel || "N/A",
+        computedFinalRatingJudge: packet.computedFinalRatingJudge ?? null,
+        latestAudioUrl: packet.latestAudioUrl || "",
+        judgePosition,
+        assignmentEventId,
+        releasedAt: packet.releasedAt || null,
+      });
+      return;
+    }
+
+    const key = `${assignmentEventId}_${packet.ensembleId}`;
+    if (!openPacketSets.has(key)) {
+      openPacketSets.set(key, {
+        type: "open-assembled",
+        eventId: assignmentEventId,
+        ensembleId: packet.ensembleId || "",
+        ensembleName: packet.ensembleName || packet.ensembleId || "",
+        schoolId: packet.schoolId || "",
+        schoolName: packet.schoolName || packet.schoolId || "",
+        submissions: {},
+        sourcePackets: [],
+        conflicts: [],
+      });
+    }
+    const group = openPacketSets.get(key);
+    const syntheticSubmission = {
+      id: packet.id,
+      status: packet.status || "released",
+      locked: Boolean(packet.locked),
+      judgePosition,
+      judgeName: packet.createdByJudgeName || "",
+      judgeEmail: packet.createdByJudgeEmail || "",
+      formType: packet.formType || "stage",
+      captions: packet.captions || {},
+      captionScoreTotal: packet.captionScoreTotal ?? null,
+      computedFinalRatingJudge: packet.computedFinalRatingJudge ?? null,
+      computedFinalRatingLabel: packet.computedFinalRatingLabel || "N/A",
+      audioUrl: packet.latestAudioUrl || "",
+      transcript: "",
+      transcriptFull: "",
+    };
+    if (group.submissions[judgePosition]) {
+      group.conflicts.push(judgePosition);
+    } else {
+      group.submissions[judgePosition] = syntheticSubmission;
+    }
+    group.sourcePackets.push({
+      id: packet.id,
+      judgePosition,
+      judgeName: syntheticSubmission.judgeName,
+      judgeEmail: syntheticSubmission.judgeEmail,
+    });
+  });
+
+  const assembledOpenGroups = await Promise.all(
+    Array.from(openPacketSets.values()).map(async (group) => {
+      const [grade, directorName] = await Promise.all([
+        group.eventId ? getCachedPacketGrade(group.eventId, group.ensembleId) : Promise.resolve(""),
+        getDirectorNameForSchool(group.schoolId),
+      ]);
+      const summary = computePacketSummary(grade, group.submissions);
+      const overall = group.conflicts.length ? { label: "N/A", value: null } : summary.overall;
+      return {
+        ...group,
+        grade,
+        directorName,
+        overall,
+        hasConflicts: group.conflicts.length > 0,
+      };
+    })
+  );
+
+  return [...standaloneOpenGroups, ...assembledOpenGroups, ...scheduledGroups];
 }
 
 export function watchDirectorSchool(callback) {
@@ -1240,6 +1538,7 @@ export function watchDirectorEnsembles(callback) {
   if (!directorSchoolId) {
     state.director.ensemblesCache = [];
     state.director.selectedEnsembleId = null;
+    invalidateDirectorSchoolLunchTotalCache();
     callback?.([]);
     return;
   }
@@ -1258,6 +1557,10 @@ export function watchDirectorEnsembles(callback) {
         ...docSnap.data(),
       }));
       state.director.ensemblesCache = ensembles;
+      invalidateDirectorSchoolLunchTotalCache({
+        eventId: state.director.selectedEventId || state.event.active?.id || null,
+        schoolId: directorSchoolId,
+      });
       const exists = ensembles.some(
         (ensemble) => ensemble.id === state.director.selectedEnsembleId
       );
@@ -1272,6 +1575,10 @@ export function watchDirectorEnsembles(callback) {
       console.error("watchDirectorEnsembles failed", error);
       state.director.ensemblesCache = [];
       state.director.selectedEnsembleId = null;
+      invalidateDirectorSchoolLunchTotalCache({
+        eventId: state.director.selectedEventId || state.event.active?.id || null,
+        schoolId: directorSchoolId,
+      });
       callback?.([]);
     }
   );

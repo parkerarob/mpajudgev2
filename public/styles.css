@@ -1307,6 +1307,10 @@ body.director-only #tabLockHint {
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
 }
 
+.mpa-combobox-list[hidden] {
+  display: none;
+}
+
 .mpa-combobox-option {
   text-align: left;
   background: transparent;
@@ -1565,26 +1569,64 @@ select:focus-visible {
   gap: 8px;
 }
 
+.caption-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.caption-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.caption-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .caption-title {
   font-weight: 600;
   font-size: 13px;
 }
 
+.caption-grade-rail {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  align-self: start;
+  min-width: 90px;
+}
+
 .caption-segments {
   display: flex;
-  gap: 6px;
   flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
-.caption-segments button {
-  min-height: 44px;
-  padding: 6px 10px;
-  border-radius: 8px;
+.caption-segments button,
+.caption-modifiers button {
+  width: 42px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  border-radius: 999px;
   background: rgba(18, 20, 36, 0.7);
   border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
 }
 
-.caption-segments button.is-active {
+.caption-segments button.is-active,
+.caption-modifiers button.is-active {
   background: rgba(90, 140, 240, 0.4);
   border-color: rgba(90, 140, 240, 0.7);
 }
@@ -1592,6 +1634,26 @@ select:focus-visible {
 .caption-modifiers {
   display: flex;
   gap: 6px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 768px) {
+  .caption-body {
+    grid-template-columns: 1fr;
+  }
+
+  .caption-grade-rail {
+    justify-items: start;
+    min-width: 0;
+  }
+
+  .caption-segments {
+    justify-content: flex-start;
+  }
+
+  .caption-modifiers {
+    justify-content: flex-start;
+  }
 }
 
 .full-width-cta {

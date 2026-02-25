@@ -178,6 +178,46 @@ async function assertRole(request, allowedRoles) {
   return userSnap.data();
 }
 
+function detectJudgePositionFromAssignments(assignments, uid) {
+  if (!assignments || !uid) return null;
+  if (assignments.stage1Uid === uid) return JUDGE_POSITIONS.stage1;
+  if (assignments.stage2Uid === uid) return JUDGE_POSITIONS.stage2;
+  if (assignments.stage3Uid === uid) return JUDGE_POSITIONS.stage3;
+  if (assignments.sightUid === uid) return JUDGE_POSITIONS.sight;
+  return null;
+}
+
+function normalizeOpenPacketJudgePosition(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return "";
+  return Object.values(JUDGE_POSITIONS).includes(candidate) ? candidate : "";
+}
+
+async function resolveActiveEventAssignmentForUser(uid) {
+  if (!uid) return null;
+  const db = admin.firestore();
+  const activeSnap = await db
+      .collection(COLLECTIONS.events)
+      .where(FIELDS.events.isActive, "==", true)
+      .limit(1)
+      .get();
+  if (activeSnap.empty) return null;
+  const eventDoc = activeSnap.docs[0];
+  const assignmentsSnap = await db
+      .collection(COLLECTIONS.events)
+      .doc(eventDoc.id)
+      .collection(COLLECTIONS.assignments)
+      .doc("positions")
+      .get();
+  if (!assignmentsSnap.exists) return null;
+  const judgePosition = detectJudgePositionFromAssignments(assignmentsSnap.data(), uid);
+  if (!judgePosition) return null;
+  return {
+    eventId: eventDoc.id,
+    judgePosition,
+  };
+}
+
 async function checkRateLimit(uid, key, limit, windowSeconds) {
   const db = admin.firestore();
   const ref = db.collection("rateLimits").doc(uid);
@@ -622,6 +662,10 @@ exports.createOpenPacket = onCall(async (request) => {
   const schoolName = String(data.schoolName || "").trim();
   const ensembleName = String(data.ensembleName || "").trim();
   const formType = data.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
+  const useActiveEventDefaults = data.useActiveEventDefaults !== false;
+  const assignment = useActiveEventDefaults ?
+    await resolveActiveEventAssignmentForUser(request.auth.uid) :
+    null;
   const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc();
   const payload = {
     [FIELDS.packets.status]: "draft",
@@ -634,7 +678,11 @@ exports.createOpenPacket = onCall(async (request) => {
     [FIELDS.packets.schoolId]: data.schoolId || "",
     [FIELDS.packets.ensembleId]: data.ensembleId || "",
     [FIELDS.packets.ensembleSnapshot]: data.ensembleSnapshot || null,
+    [FIELDS.packets.directorEntrySnapshot]: data.directorEntrySnapshot || null,
     [FIELDS.packets.formType]: formType,
+    [FIELDS.packets.assignmentEventId]: assignment?.eventId || "",
+    [FIELDS.packets.judgePosition]: assignment?.judgePosition || "",
+    [FIELDS.packets.assignmentMode]: assignment ? "activeEventDefault" : "open",
     [FIELDS.packets.transcript]: "",
     [FIELDS.packets.transcriptFull]: "",
     [FIELDS.packets.captions]: {},
@@ -678,8 +726,14 @@ exports.setUserPrefs = onCall(async (request) => {
   if (typeof prefs.lastJudgeOpenFormType === "string") {
     next.lastJudgeOpenFormType = prefs.lastJudgeOpenFormType;
   }
-  await admin.firestore().collection(COLLECTIONS.users).doc(request.auth.uid).set({
-    preferences: next,
+  if (typeof prefs.judgeOpenUseActiveEventDefaults === "boolean") {
+    next.judgeOpenUseActiveEventDefaults = prefs.judgeOpenUseActiveEventDefaults;
+  }
+  const userRef = admin.firestore().collection(COLLECTIONS.users).doc(request.auth.uid);
+  const userSnap = await userRef.get();
+  const currentPrefs = userSnap.exists ? (userSnap.data().preferences || {}) : {};
+  await userRef.set({
+    preferences: {...currentPrefs, ...next},
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, {merge: true});
   return {ok: true};
@@ -725,8 +779,11 @@ exports.submitOpenPacket = onCall(async (request) => {
     (data.formType === FORM_TYPES.sight || data.formType === FORM_TYPES.stage) ?
       data.formType :
       (packet.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage);
-  const shouldAutoRelease = Boolean(nextSchoolId && nextEnsembleId);
-  const nextStatus = shouldAutoRelease ? "released" : "submitted";
+  const useActiveEventDefaults = data.useActiveEventDefaults !== false;
+  const assignment = useActiveEventDefaults ?
+    await resolveActiveEventAssignmentForUser(request.auth.uid) :
+    null;
+  const nextStatus = "locked";
   const captions = data.captions || {};
   const captionScoreTotal = calculateCaptionTotal(captions);
   const rating = computeFinalRatingFromTotal(captionScoreTotal);
@@ -739,7 +796,18 @@ exports.submitOpenPacket = onCall(async (request) => {
     [FIELDS.packets.schoolId]: nextSchoolId,
     [FIELDS.packets.ensembleId]: nextEnsembleId,
     [FIELDS.packets.ensembleSnapshot]: nextEnsembleSnapshot,
+    [FIELDS.packets.directorEntrySnapshot]:
+      data.directorEntrySnapshot ?? packet.directorEntrySnapshot ?? null,
     [FIELDS.packets.formType]: nextFormType,
+    [FIELDS.packets.assignmentEventId]: packet.assignmentMode === "adminOverride" ?
+      (packet.assignmentEventId || "") :
+      (assignment?.eventId || packet.assignmentEventId || ""),
+    [FIELDS.packets.judgePosition]: packet.assignmentMode === "adminOverride" ?
+      (packet.judgePosition || "") :
+      (assignment?.judgePosition || packet.judgePosition || ""),
+    [FIELDS.packets.assignmentMode]: packet.assignmentMode === "adminOverride" ?
+      "adminOverride" :
+      (assignment ? "activeEventDefault" : (packet.assignmentMode || "open")),
     [FIELDS.packets.transcript]: String(data.transcript || ""),
     [FIELDS.packets.transcriptFull]: String(data.transcriptFull || data.transcript || ""),
     [FIELDS.packets.captions]: captions,
@@ -747,9 +815,7 @@ exports.submitOpenPacket = onCall(async (request) => {
     [FIELDS.packets.computedFinalRatingJudge]: rating.value,
     [FIELDS.packets.computedFinalRatingLabel]: rating.label,
     [FIELDS.packets.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
-    [FIELDS.packets.releasedAt]: shouldAutoRelease ?
-      admin.firestore.FieldValue.serverTimestamp() :
-      (packet.releasedAt || null),
+    [FIELDS.packets.releasedAt]: null,
     [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
   };
   await packetRef.set(payload, {merge: true});
@@ -759,7 +825,7 @@ exports.submitOpenPacket = onCall(async (request) => {
     toStatus: nextStatus,
     actor: {uid: request.auth.uid, role: userRole || "judge"},
   });
-  return {packetId, status: nextStatus, autoReleased: shouldAutoRelease};
+  return {packetId, status: nextStatus, autoReleased: false};
 });
 
 exports.lockPacket = onCall(async (request) => {
@@ -908,6 +974,41 @@ exports.linkOpenPacketToEnsemble = onCall(async (request) => {
     actor: {uid: request.auth.uid, role: "admin"},
   });
   return {ok: true};
+});
+
+exports.setOpenPacketJudgePosition = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = String(data.packetId || "").trim();
+  if (!packetId) {
+    throw new HttpsError("invalid-argument", "packetId required.");
+  }
+  const judgePosition = normalizeOpenPacketJudgePosition(data.judgePosition);
+  const assignmentEventId = String(data.assignmentEventId || "").trim();
+  const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const packet = packetSnap.data() || {};
+  if ((packet.status || "") === "released") {
+    throw new HttpsError("failed-precondition", "Revoke packet before changing judge slot.");
+  }
+  await packetRef.set({
+    [FIELDS.packets.judgePosition]: judgePosition,
+    [FIELDS.packets.assignmentEventId]: judgePosition ?
+      (assignmentEventId || packet.assignmentEventId || "") :
+      "",
+    [FIELDS.packets.assignmentMode]: judgePosition ? "adminOverride" : "open",
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "set_judge_position",
+    fromStatus: packet.status || null,
+    toStatus: packet.status || null,
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {ok: true, judgePosition};
 });
 
 exports.deleteOpenPacket = onCall(async (request) => {
@@ -1653,6 +1754,79 @@ exports.deleteEnsemble = onCall(async (request) => {
 
   await ensembleRef.delete();
   return {deleted: true};
+});
+
+exports.renameEnsemble = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const schoolId = String(data.schoolId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const name = String(data.name || "").trim();
+  if (!schoolId || !ensembleId || !name) {
+    throw new HttpsError("invalid-argument", "schoolId, ensembleId, and name required.");
+  }
+
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const userRole = userSnap.exists ? userSnap.data().role : null;
+  const userSchoolId = userSnap.exists ? userSnap.data().schoolId : null;
+  const isAdmin = userRole === "admin";
+  const isDirector = userRole === "director";
+  if (!isAdmin && !(isDirector && userSchoolId === schoolId)) {
+    throw new HttpsError("permission-denied", "Not authorized to rename ensemble.");
+  }
+
+  const ensembleRef = db
+      .collection(COLLECTIONS.schools)
+      .doc(schoolId)
+      .collection(COLLECTIONS.ensembles)
+      .doc(ensembleId);
+  const ensembleSnap = await ensembleRef.get();
+  if (!ensembleSnap.exists) {
+    throw new HttpsError("not-found", "Ensemble not found.");
+  }
+
+  await ensembleRef.set({
+    name,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+
+  const packetsSnap = await db
+      .collection(COLLECTIONS.packets)
+      .where(FIELDS.packets.schoolId, "==", schoolId)
+      .where(FIELDS.packets.ensembleId, "==", ensembleId)
+      .get();
+
+  const unreleasedStatuses = new Set(["draft", "reopened", "submitted", "locked"]);
+  let updatedPacketCount = 0;
+  const batch = db.batch();
+  packetsSnap.docs.forEach((packetDoc) => {
+    const packet = packetDoc.data() || {};
+    const status = String(packet.status || "draft");
+    if (!unreleasedStatuses.has(status)) return;
+    const nextEnsembleSnapshot = packet.ensembleSnapshot &&
+      typeof packet.ensembleSnapshot === "object" ?
+      {...packet.ensembleSnapshot, ensembleName: name} :
+      {
+        schoolId,
+        schoolName: packet.schoolName || "",
+        ensembleId,
+        ensembleName: name,
+      };
+    batch.set(packetDoc.ref, {
+      [FIELDS.packets.ensembleName]: name,
+      [FIELDS.packets.ensembleSnapshot]: nextEnsembleSnapshot,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    updatedPacketCount += 1;
+  });
+  if (updatedPacketCount > 0) {
+    await batch.commit();
+  }
+
+  return {ok: true, ensembleId, name, updatedPacketCount};
 });
 
 exports.deleteSchool = onCall(async (request) => {

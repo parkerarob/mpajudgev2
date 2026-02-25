@@ -1,4 +1,6 @@
+import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
 import {
+  COLLECTIONS,
   STATUSES,
   JUDGE_POSITIONS,
   JUDGE_POSITION_LABELS,
@@ -21,9 +23,11 @@ import {
   deleteSchool,
   deleteScheduleEntry,
   getPacketData,
+  renameEvent,
   lockSubmission,
   lockOpenPacket,
   linkOpenPacketToEnsemble,
+  setOpenPacketJudgePosition,
   provisionUser,
   releasePacket,
   releaseOpenPacket,
@@ -36,6 +40,7 @@ import {
   unreleaseOpenPacket,
   updateScheduleEntryTime,
   watchOpenPacketsAdmin,
+  watchAssignmentsForActiveEvent,
   watchActiveEvent,
   watchEvents,
   watchJudges,
@@ -55,7 +60,9 @@ import {
   hasDirectorUnsavedChanges,
   getMpaRepertoireForGrade,
   getDirectorSchoolId,
+  invalidateDirectorSchoolLunchTotalCache,
   loadDirectorEntry,
+  loadDirectorSchoolLunchTotal,
   markDirectorDirty,
   markEntryDraft,
   markEntryReady,
@@ -76,15 +83,18 @@ import {
   watchDirectorSchoolDirectors,
 } from "./director.js";
 import {
-  calculateCaptionTotal,
-  computeFinalRating,
   draftCaptionsFromTranscript,
 } from "./judge.js";
+import {
+  calculateCaptionTotal,
+  computeFinalRating,
+} from "./judge-shared.js";
 import {
   createOpenPacket,
   fetchOpenEnsembleIndex,
   getOpenCaptionTemplate,
   isOpenPacketEditable,
+  loadDirectorEntrySnapshotForJudge,
   loadOpenPrefs,
   markJudgeOpenDirty,
   resetJudgeOpenState,
@@ -114,7 +124,8 @@ import {
   resolveHash,
   setTab as setTabState,
 } from "./navigation.js";
-import { DEV_FLAGS } from "../firebase.js";
+import { DEV_FLAGS, db, storage } from "../firebase.js";
+import { collection, doc, getDoc, getDocs, orderBy, query, updateDoc, serverTimestamp } from "./firestore.js";
 import {
   formatPerformanceAt,
   formatDateHeading,
@@ -147,6 +158,86 @@ function getEffectiveRole(profile) {
 function canUseOpenJudge(profile) {
   const role = getEffectiveRole(profile);
   return role === "judge" || role === "admin";
+}
+
+function detectOpenJudgeAssignment(assignments, uid) {
+  if (!assignments || !uid) return null;
+  if (assignments.stage1Uid === uid) return JUDGE_POSITIONS.stage1;
+  if (assignments.stage2Uid === uid) return JUDGE_POSITIONS.stage2;
+  if (assignments.stage3Uid === uid) return JUDGE_POSITIONS.stage3;
+  if (assignments.sightUid === uid) return JUDGE_POSITIONS.sight;
+  return null;
+}
+
+function getOpenEventDefaultsPreference() {
+  return state.judgeOpen.useActiveEventDefaults !== false;
+}
+
+function syncOpenEventDefaultsUI() {
+  if (els.judgeOpenUseEventDefaultsToggle) {
+    els.judgeOpenUseEventDefaultsToggle.checked = getOpenEventDefaultsPreference();
+  }
+  if (!els.judgeOpenEventDefaultsStatus) return;
+  const assignment = state.judgeOpen.activeEventAssignment;
+  if (!getOpenEventDefaultsPreference()) {
+    els.judgeOpenEventDefaultsStatus.textContent = "Open mode: event defaults are turned off.";
+    return;
+  }
+  const activeEventName = state.event.active?.name || "";
+  if (activeEventName && !assignment) {
+    els.judgeOpenEventDefaultsStatus.textContent =
+      `Active event detected (${activeEventName}), but no judge assignment was found for your account. Working in open mode.`;
+    return;
+  }
+  if (!assignment) {
+    els.judgeOpenEventDefaultsStatus.textContent = "Open mode: no active event is set.";
+    return;
+  }
+  const eventName = activeEventName || "Active event";
+  const label = JUDGE_POSITION_LABELS[assignment.judgePosition] || assignment.judgePosition;
+  els.judgeOpenEventDefaultsStatus.textContent = `Using active event defaults: ${label} for ${eventName}.`;
+}
+
+function applyOpenEventAssignmentDefaults() {
+  if (!getOpenEventDefaultsPreference()) return;
+  if (state.judgeOpen.currentPacketId) return;
+  const assignment = state.judgeOpen.activeEventAssignment;
+  if (!assignment) return;
+  const nextFormType =
+    assignment.judgePosition === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
+  if (state.judgeOpen.formType !== nextFormType) {
+    state.judgeOpen.formType = nextFormType;
+    if (els.judgeOpenFormTypeSelect) {
+      els.judgeOpenFormTypeSelect.value = nextFormType;
+    }
+    syncOpenFormTypeSegmented();
+    renderOpenCaptionForm();
+    updateOpenSubmitState();
+  }
+}
+
+function refreshOpenEventDefaultsState() {
+  const uid = state.auth.currentUser?.uid || null;
+  const judgePosition = detectOpenJudgeAssignment(state.event.assignments, uid);
+  if (judgePosition && state.event.active?.id) {
+    state.judgeOpen.activeEventAssignment = {
+      eventId: state.event.active.id,
+      judgePosition,
+      source: "activeEventDefault",
+    };
+  } else {
+    state.judgeOpen.activeEventAssignment = null;
+  }
+  syncOpenEventDefaultsUI();
+  applyOpenEventAssignmentDefaults();
+}
+
+function startActiveAssignmentsWatcher() {
+  watchAssignmentsForActiveEvent((assignments) => {
+    setStageJudgeSelectValues(assignments || {});
+    renderAdminReadiness();
+    refreshOpenEventDefaultsState();
+  });
 }
 
 function updateDirectorReadyControlsFromState(completionState) {
@@ -261,6 +352,7 @@ function applyDirectorEntryUpdate({
   } else {
     setDirectorEntryHint("");
   }
+  refreshDirectorSchoolLunchTotal();
 }
 
 function applyDirectorEntryClear({ hint, status, readyStatus } = {}) {
@@ -271,6 +363,11 @@ function applyDirectorEntryClear({ hint, status, readyStatus } = {}) {
   setDirectorPerformanceGradeValue("");
   setPerformanceGradeError("");
   renderDirectorChecklist(null, computeDirectorCompletionState(null));
+  invalidateDirectorSchoolLunchTotalCache({
+    eventId: state.director.selectedEventId || state.event.active?.id || null,
+    schoolId: getDirectorSchoolId() || null,
+  });
+  refreshDirectorSchoolLunchTotal();
 }
 
 function applyDirectorSaveResult(section, result) {
@@ -303,6 +400,13 @@ function applyDirectorSaveResult(section, result) {
   const completion = computeDirectorCompletionState(state.director.entryDraft);
   renderDirectorChecklist(state.director.entryDraft, completion);
   updateDirectorReadyControlsFromState(completion);
+  if (section === "lunch") {
+    invalidateDirectorSchoolLunchTotalCache({
+      eventId: state.director.selectedEventId || state.event.active?.id || null,
+      schoolId: getDirectorSchoolId() || null,
+    });
+    refreshDirectorSchoolLunchTotal();
+  }
 }
 
 export function setRoleHint(message) {
@@ -352,6 +456,36 @@ export function setDirectorSchoolName(name) {
   }
   if (els.directorSummarySchool) {
     els.directorSummarySchool.textContent = name || "";
+  }
+}
+
+function setDirectorSchoolLunchTotalText(text) {
+  if (!els.directorSchoolLunchTotal) return;
+  els.directorSchoolLunchTotal.textContent = text || "";
+}
+
+async function refreshDirectorSchoolLunchTotal() {
+  if (!els.directorSchoolLunchTotal) return;
+  const schoolId = getDirectorSchoolId();
+  const eventId = state.director.selectedEventId || state.event.active?.id || null;
+  if (!isDirectorManager() || !schoolId || !eventId) {
+    setDirectorSchoolLunchTotalText("");
+    return;
+  }
+
+  const version = (state.director.lunchTotalLoadVersion || 0) + 1;
+  state.director.lunchTotalLoadVersion = version;
+  try {
+    const result = await loadDirectorSchoolLunchTotal({ eventId, schoolId });
+    if (state.director.lunchTotalLoadVersion !== version) return;
+    const total = Number(result?.total || 0);
+    setDirectorSchoolLunchTotalText(
+      `Total for Lunch: $${total.toFixed(2)} - check payable to Ashley High School Band Boosters`
+    );
+  } catch (error) {
+    console.error("refreshDirectorSchoolLunchTotal failed", error);
+    if (state.director.lunchTotalLoadVersion !== version) return;
+    setDirectorSchoolLunchTotalText("");
   }
 }
 
@@ -672,10 +806,22 @@ export function renderAdminSchoolsDirectory() {
 }
 
 export function refreshSchoolDropdowns() {
+  const logisticsCurrentSchoolValue = els.adminLogisticsCurrentSchoolSelect?.value || "";
+  const logisticsNextSchoolValue = els.adminLogisticsNextSchoolSelect?.value || "";
   renderSchoolOptions(els.directorSchoolSelect, "Select a school");
   renderSchoolOptions(els.directorAttachSelect, "Select a school");
   renderSchoolOptions(els.provisionSchoolSelect, "Select a school (optional)");
   renderSchoolOptions(els.scheduleSchoolSelect, "Select a school");
+  renderSchoolOptions(els.adminLogisticsCurrentSchoolSelect, "Select a school");
+  renderSchoolOptions(els.adminLogisticsNextSchoolSelect, "Select a school");
+  if (els.adminLogisticsCurrentSchoolSelect) {
+    const exists = state.admin.schoolsList.some((school) => school.id === logisticsCurrentSchoolValue);
+    els.adminLogisticsCurrentSchoolSelect.value = exists ? logisticsCurrentSchoolValue : "";
+  }
+  if (els.adminLogisticsNextSchoolSelect) {
+    const exists = state.admin.schoolsList.some((school) => school.id === logisticsNextSchoolValue);
+    els.adminLogisticsNextSchoolSelect.value = exists ? logisticsNextSchoolValue : "";
+  }
 }
 
 export function openAuthModal() {
@@ -863,7 +1009,7 @@ export function updateConnectivityUI() {
       }
     }
   }
-  updateTranscribeState();
+  updateOpenSubmitState();
 }
 
 export function setAuthView(view) {
@@ -1269,6 +1415,7 @@ function updateTabUI(tabName, role) {
     els.directorCard.style.display = showDirector ? "grid" : "none";
   }
   if (showJudgeOpen) {
+    refreshOpenEventDefaultsState();
     updateOpenEmptyState();
     updateOpenSubmitState();
     if (!els.judgeOpenCaptionForm?.children?.length) {
@@ -1290,15 +1437,84 @@ export function setTab(tabName, { force } = {}) {
   return result;
 }
 
+function renderEventScheduleDetail(event) {
+  const isAdmin = getEffectiveRole(state.auth.userProfile) === "admin";
+  const pdfUrl = event?.schedulePdfUrl || "";
+  const pdfName = event?.schedulePdfName || "Schedule PDF";
+
+  if (els.eventScheduleAdminControls) {
+    els.eventScheduleAdminControls.style.display = isAdmin ? "flex" : "none";
+  }
+  if (els.eventScheduleStatus) {
+    els.eventScheduleStatus.textContent = "";
+  }
+  if (els.eventScheduleLinkRow) {
+    els.eventScheduleLinkRow.style.display = pdfUrl ? "flex" : "none";
+  }
+  if (els.eventScheduleLink) {
+    els.eventScheduleLink.href = pdfUrl || "#";
+    els.eventScheduleLink.textContent = pdfUrl ? `Open ${pdfName}` : "Open Schedule PDF";
+  }
+  if (els.eventScheduleFrame) {
+    if (pdfUrl) {
+      els.eventScheduleFrame.src = pdfUrl;
+      els.eventScheduleFrame.style.display = "block";
+    } else {
+      els.eventScheduleFrame.removeAttribute("src");
+      els.eventScheduleFrame.style.display = "none";
+    }
+  }
+  if (els.eventScheduleEmpty) {
+    els.eventScheduleEmpty.style.display = pdfUrl ? "none" : "block";
+  }
+}
+
+async function uploadEventSchedulePdf(eventId, file) {
+  if (!eventId) throw new Error("Missing eventId.");
+  if (!file) throw new Error("Select a PDF file.");
+  if (file.type && file.type !== "application/pdf") {
+    throw new Error("Schedule must be a PDF.");
+  }
+  const ext = file.name.toLowerCase().endsWith(".pdf") ? "pdf" : "pdf";
+  const objectPath = `event_schedules/${eventId}/schedule.${ext}`;
+  const storageRef = ref(storage, objectPath);
+  await uploadBytes(storageRef, file, { contentType: file.type || "application/pdf" });
+  const url = await getDownloadURL(storageRef);
+  const eventRef = doc(db, "events", eventId);
+  await updateDoc(eventRef, {
+    schedulePdfUrl: url,
+    schedulePdfPath: objectPath,
+    schedulePdfName: file.name || "schedule.pdf",
+    updatedAt: serverTimestamp(),
+  });
+  const localEvent = state.event.list.find((item) => item.id === eventId);
+  if (localEvent) {
+    localEvent.schedulePdfUrl = url;
+    localEvent.schedulePdfPath = objectPath;
+    localEvent.schedulePdfName = file.name || "schedule.pdf";
+  }
+  if (state.event.active?.id === eventId) {
+    state.event.active = {
+      ...state.event.active,
+      schedulePdfUrl: url,
+      schedulePdfPath: objectPath,
+      schedulePdfName: file.name || "schedule.pdf",
+    };
+  }
+  return { url, objectPath };
+}
+
 export function showEventDetail(eventId) {
   if (!els.eventDetailPage) return;
   const event = state.event.list.find((item) => item.id === eventId);
+  els.eventDetailPage.dataset.eventId = eventId || "";
   if (els.eventDetailTitle) {
     els.eventDetailTitle.textContent = event?.name || "Event Details";
   }
   if (els.eventDetailMeta) {
     els.eventDetailMeta.textContent = event ? getEventLabel(event) : "Event not found.";
   }
+  renderEventScheduleDetail(event);
   els.eventDetailPage.classList.remove("is-hidden");
   if (els.adminCard) els.adminCard.style.display = "none";
   if (els.judgeCard) els.judgeCard.style.display = "none";
@@ -1495,22 +1711,38 @@ export function startWatchers() {
   watchEvents(() => {
     renderEventList();
     renderDirectorEventOptions();
+    if (els.eventDetailPage && !els.eventDetailPage.classList.contains("is-hidden")) {
+      const detailEventId = els.eventDetailPage.dataset.eventId || "";
+      if (detailEventId) {
+        showEventDetail(detailEventId);
+      }
+    }
   });
   watchActiveEvent(() => {
+    const activeEventId = state.event.active?.id || "";
+    if (state.admin.logisticsEntriesCacheEventId !== activeEventId) {
+      state.admin.logisticsEntriesCacheEventId = activeEventId;
+      state.admin.logisticsEntriesCache.clear();
+    }
+    invalidateDirectorSchoolLunchTotalCache({
+      eventId: state.director.selectedEventId || state.event.active?.id || null,
+      schoolId: getDirectorSchoolId() || null,
+    });
     renderActiveEventDisplay();
     updateAdminEmptyState();
     renderDirectorEventOptions();
     renderAdminReadiness();
+    refreshOpenEventDefaultsState();
+    refreshJudgeOpenDirectorReference({ persistToPacket: true });
+    refreshAdminLogisticsEntry();
+    startActiveAssignmentsWatcher();
   });
+  startActiveAssignmentsWatcher();
   watchRoster((entries) => {
     renderAdminScheduleList(entries);
   });
-  watchAssignments((data) => {
-    if (data.assignments) {
-      setStageJudgeSelectValues(data.assignments);
-    }
-  });
   watchSchools(() => {
+    state.admin.logisticsEnsemblesCache.clear();
     renderAdminSchoolsDirectory();
     if (
       state.admin.schoolEditId &&
@@ -1519,15 +1751,40 @@ export function startWatchers() {
       resetAdminSchoolForm();
     }
     refreshSchoolDropdowns();
+    if (!els.adminLogisticsCurrentSchoolSelect?.value) {
+      state.admin.logisticsCurrentEnsembles = [];
+      renderAdminLogisticsEnsembleOptions(els.adminLogisticsCurrentEnsembleSelect, []);
+    }
+    if (!els.adminLogisticsNextSchoolSelect?.value) {
+      state.admin.logisticsNextEnsembles = [];
+      renderAdminLogisticsEnsembleOptions(els.adminLogisticsNextEnsembleSelect, []);
+    }
+    refreshAdminLogisticsEntry();
     if (canUseOpenJudge(state.auth.userProfile)) {
-      fetchOpenEnsembleIndex(state.admin.schoolsList).then((items) => {
-        state.judgeOpen.existingEnsembles = items;
-        renderOpenExistingOptions(items);
-      });
+      const key = JSON.stringify(
+        (state.admin.schoolsList || [])
+          .map((school) => [school.id || "", school.name || ""])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      );
+      if (key !== state.judgeOpen.existingEnsembleIndexKey) {
+        state.judgeOpen.existingEnsembleIndexKey = key;
+        const loadVersion = (state.judgeOpen.existingEnsembleIndexLoadVersion || 0) + 1;
+        state.judgeOpen.existingEnsembleIndexLoadVersion = loadVersion;
+        fetchOpenEnsembleIndex(state.admin.schoolsList)
+          .then((items) => {
+            if (state.judgeOpen.existingEnsembleIndexLoadVersion !== loadVersion) return;
+            state.judgeOpen.existingEnsembles = items;
+            renderOpenExistingOptions(items);
+          })
+          .catch((error) => {
+            console.error("fetchOpenEnsembleIndex failed", error);
+          });
+      }
     }
   });
 
   refreshDirectorWatchers();
+  refreshOpenEventDefaultsState();
   if (canUseOpenJudge(state.auth.userProfile)) {
     state.subscriptions.openPackets = watchOpenPackets((packets) => {
       renderOpenPacketOptions(packets || []);
@@ -1551,6 +1808,7 @@ function refreshDirectorWatchers() {
   });
   watchDirectorSchool((name) => {
     setDirectorSchoolName(name);
+    refreshDirectorSchoolLunchTotal();
   });
   watchDirectorSchoolDirectors((directors) => {
     renderDirectorSchoolDirectors(directors || []);
@@ -1558,6 +1816,7 @@ function refreshDirectorWatchers() {
   watchDirectorEnsembles((ensembles) => {
     renderDirectorEnsembles(ensembles || []);
     updateDirectorActiveEnsembleLabel();
+    refreshDirectorSchoolLunchTotal();
     loadDirectorEntry({
       onUpdate: applyDirectorEntryUpdate,
       onClear: applyDirectorEntryClear,
@@ -1595,8 +1854,9 @@ export function initTabs() {
 }
 
 export function updateAdminEmptyState() {
-  if (!els.adminEmpty) return;
-  els.adminEmpty.style.display = state.event.active ? "none" : "block";
+  if (els.adminEmpty) {
+    els.adminEmpty.style.display = state.event.active ? "none" : "block";
+  }
   if (els.adminStatusBadge) {
     els.adminStatusBadge.textContent = state.event.active
       ? "Active event"
@@ -1617,11 +1877,20 @@ export function renderEventList() {
   }
   state.event.list.forEach((event) => {
     const li = document.createElement("li");
+    const isEditing = state.admin.eventEditId === event.id;
     const title = document.createElement("div");
-    title.textContent = getEventCardLabel(event);
-    const meta = document.createElement("div");
-    meta.className = "hint";
-    meta.textContent = getEventLabel(event);
+    if (isEditing) {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = state.admin.eventEditName || event.name || "";
+      input.placeholder = "Event name";
+      input.addEventListener("input", () => {
+        state.admin.eventEditName = input.value;
+      });
+      title.appendChild(input);
+    } else {
+      title.textContent = getEventCardLabel(event);
+    }
     const actions = document.createElement("div");
     actions.className = "actions";
 
@@ -1633,8 +1902,17 @@ export function renderEventList() {
     activateBtn.className = "ghost";
     activateBtn.textContent = event.isActive ? "Active" : "Set Active";
     activateBtn.disabled = Boolean(event.isActive);
+    activateBtn.style.display = event.isActive ? "none" : "inline-flex";
     activateBtn.addEventListener("click", async () => {
       await setActiveEvent(event.id);
+    });
+
+    const deactivateBtn = document.createElement("button");
+    deactivateBtn.className = "ghost";
+    deactivateBtn.textContent = "Deactivate";
+    deactivateBtn.style.display = event.isActive ? "inline-flex" : "none";
+    deactivateBtn.addEventListener("click", async () => {
+      await setActiveEvent("");
     });
 
     const detailBtn = document.createElement("button");
@@ -1643,6 +1921,53 @@ export function renderEventList() {
     detailBtn.addEventListener("click", () => {
       window.location.hash = `#event/${event.id}`;
     });
+
+    const editBtn = document.createElement("button");
+    editBtn.className = "ghost";
+    editBtn.textContent = isEditing ? "Save" : "Edit";
+    editBtn.addEventListener("click", async () => {
+      if (!isEditing) {
+        state.admin.eventEditId = event.id;
+        state.admin.eventEditName = event.name || "";
+        renderEventList();
+        return;
+      }
+      const trimmed = String(state.admin.eventEditName || "").trim();
+      if (!trimmed) {
+        alertUser("Event name cannot be empty.");
+        return;
+      }
+      if (trimmed !== (event.name || "")) {
+        await renameEvent({ eventId: event.id, name: trimmed });
+        const localEvent = state.event.list.find((item) => item.id === event.id);
+        if (localEvent) {
+          localEvent.name = trimmed;
+        }
+        if (state.event.active?.id === event.id) {
+          state.event.active = {
+            ...state.event.active,
+            name: trimmed,
+          };
+          renderActiveEventDisplay();
+          refreshOpenEventDefaultsState();
+        }
+      }
+      state.admin.eventEditId = null;
+      state.admin.eventEditName = "";
+      renderEventList();
+    });
+
+    if (isEditing) {
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "ghost";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.addEventListener("click", () => {
+        state.admin.eventEditId = null;
+        state.admin.eventEditName = "";
+        renderEventList();
+      });
+      actions.appendChild(cancelBtn);
+    }
 
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "ghost";
@@ -1654,11 +1979,12 @@ export function renderEventList() {
 
     actions.appendChild(activeBadge);
     actions.appendChild(activateBtn);
+    actions.appendChild(deactivateBtn);
+    actions.appendChild(editBtn);
     actions.appendChild(detailBtn);
     actions.appendChild(deleteBtn);
 
     li.appendChild(title);
-    li.appendChild(meta);
     li.appendChild(actions);
     els.eventList.appendChild(li);
   });
@@ -1761,7 +2087,7 @@ function renderOpenPacketCards(packets) {
       "Unknown judge";
     card.innerHTML = `
       <div class="packet-card-header">
-        <div class="packet-card-title">${packet.schoolName || "Unknown school"} • ${packet.ensembleName || "Unknown ensemble"}</div>
+        <div class="packet-card-title">${packet.schoolName || "Unknown school"} - ${packet.ensembleName || "Unknown ensemble"}</div>
         <span class="status-badge">${status}</span>
       </div>
       <div class="packet-card-meta">Judge: ${creator}</div>
@@ -1776,7 +2102,7 @@ function renderOpenPacketCards(packets) {
     deleteBtn.textContent = "Delete";
     deleteBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
-      const label = `${packet.schoolName || "Unknown school"} • ${packet.ensembleName || "Unknown ensemble"}`;
+      const label = `${packet.schoolName || "Unknown school"} - ${packet.ensembleName || "Unknown ensemble"}`;
       if (!confirmUser(`Delete open packet for ${label}? This removes packet audio and sessions.`)) {
         return;
       }
@@ -1786,6 +2112,12 @@ function renderOpenPacketCards(packets) {
         await deleteOpenPacket({ packetId: packet.id });
         if (state.judgeOpen.currentPacketId === packet.id) {
           resetJudgeOpenState();
+          setJudgeOpenDirectorReferenceState(
+            "not-linked",
+            "Link an existing ensemble to load Director repertoire/instrumentation.",
+            null
+          );
+          renderJudgeOpenDirectorReference();
           if (els.judgeOpenPacketSelect) els.judgeOpenPacketSelect.value = "";
           if (els.judgeOpenExistingSelect) els.judgeOpenExistingSelect.value = "";
           if (els.judgeOpenSchoolNameInput) els.judgeOpenSchoolNameInput.value = "";
@@ -1833,7 +2165,7 @@ function updateOpenHeader() {
   const ensemble = packet.ensembleName || "Ensemble";
   const statusRaw = String(packet.status || "draft");
   const statusLabel = statusRaw ? statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1) : "Draft";
-  const title = `${school} • ${ensemble}`;
+  const title = `${school} - ${ensemble}`;
   els.judgeOpenHeaderTitle.textContent = title;
   els.judgeOpenHeaderSub.textContent = statusLabel;
   if (els.judgeOpenSummaryTitle) {
@@ -1847,7 +2179,7 @@ function updateOpenHeader() {
       ? "Sight Reading"
       : "Stage";
     const segments = Number(packet.segmentCount || packet.audioSessionCount || 0);
-    els.judgeOpenSummaryMeta.textContent = `${formLabel} packet • ${segments} segment${segments === 1 ? "" : "s"}`;
+    els.judgeOpenSummaryMeta.textContent = `${formLabel} packet - ${segments} segment${segments === 1 ? "" : "s"}`;
   }
   if (els.judgeOpenSummaryHint) {
     if (!state.judgeOpen.currentPacketId) {
@@ -1860,6 +2192,239 @@ function updateOpenHeader() {
       els.judgeOpenSummaryHint.textContent = "Complete the steps below, then submit the packet.";
     }
   }
+}
+
+function setJudgeOpenDirectorReferenceState(status, message = "", snapshot = null) {
+  state.judgeOpen.directorEntryReferenceStatus = status;
+  state.judgeOpen.directorEntryReferenceMessage = message || "";
+  state.judgeOpen.directorEntryReference = snapshot || null;
+}
+
+function renderJudgeOpenDirectorReference() {
+  if (!els.judgeOpenDirectorRefStatus || !els.judgeOpenDirectorRefContent) return;
+  const status = state.judgeOpen.directorEntryReferenceStatus || "idle";
+  const message = state.judgeOpen.directorEntryReferenceMessage || "";
+  const snapshot = state.judgeOpen.directorEntryReference || null;
+  els.judgeOpenDirectorRefStatus.textContent =
+    message ||
+    (status === "loading"
+      ? "Loading Director repertoire/instrumentation..."
+      : "Link an existing ensemble to load Director repertoire/instrumentation.");
+  els.judgeOpenDirectorRefContent.innerHTML = "";
+
+  if (!snapshot || status !== "loaded") return;
+
+  const sourceRow = document.createElement("div");
+  sourceRow.className = "note";
+  const sourceName = snapshot.source?.eventName || snapshot.source?.eventId || "Active Event";
+  sourceRow.textContent = `Loaded from Director entry for ${sourceName}`;
+  els.judgeOpenDirectorRefContent.appendChild(sourceRow);
+
+  const repPanel = document.createElement("div");
+  repPanel.className = "panel";
+  const repTitle = document.createElement("strong");
+  repTitle.textContent = "Repertoire";
+  repPanel.appendChild(repTitle);
+  const repList = document.createElement("div");
+  repList.className = "stack";
+  const rep = snapshot.repertoire || {};
+  const gradeText = snapshot.performanceGrade
+    ? `${snapshot.performanceGrade}${snapshot.performanceGradeFlex ? "-Flex" : ""}`
+    : "N/A";
+  [
+    ["Performance Grade", gradeText],
+    ["March", [rep.march?.title, rep.march?.composer].filter(Boolean).join(" - ") || "Not provided"],
+    [
+      "Selection #1",
+      [
+        rep.selection1?.grade || "",
+        rep.selection1?.title || "",
+        rep.selection1?.composer || "",
+      ]
+        .filter(Boolean)
+        .join(" - ") || "Not provided",
+    ],
+    [
+      "Selection #2",
+      [
+        rep.selection2?.grade || "",
+        rep.selection2?.title || "",
+        rep.selection2?.composer || "",
+      ]
+        .filter(Boolean)
+        .join(" - ") || "Not provided",
+    ],
+    [
+      "Masterwork Exception",
+      rep.repertoireRuleMode === "masterwork" ? "Yes" : "No",
+    ],
+  ].forEach(([label, value]) => {
+    const row = document.createElement("div");
+    row.className = "note";
+    row.textContent = `${label}: ${value}`;
+    repList.appendChild(row);
+  });
+  repPanel.appendChild(repList);
+  els.judgeOpenDirectorRefContent.appendChild(repPanel);
+
+  const instrumentation = snapshot.instrumentation || {};
+  const instPanel = document.createElement("div");
+  instPanel.className = "panel";
+  const instTitle = document.createElement("strong");
+  instTitle.textContent = "Instrumentation";
+  instPanel.appendChild(instTitle);
+  const instList = document.createElement("div");
+  instList.className = "stack";
+  const standardCounts = instrumentation.standardCounts || {};
+  const leftColumnKeys = [
+    "flute",
+    "oboe",
+    "bassoon",
+    "clarinet",
+    "bassClarinet",
+    "altoSax",
+    "tenorSax",
+    "bariSax",
+  ];
+  const rightColumnKeys = [
+    "trumpetCornet",
+    "horn",
+    "trombone",
+    "euphoniumBaritone",
+    "tuba",
+  ];
+  const labelsByKey = Object.fromEntries(
+    STANDARD_INSTRUMENTS.map((item) => [item.key, item.label])
+  );
+  const grid = document.createElement("div");
+  grid.style.display = "grid";
+  grid.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+  grid.style.gap = "8px 16px";
+  const col1 = document.createElement("div");
+  col1.className = "stack";
+  col1.style.gap = "4px";
+  const col2 = document.createElement("div");
+  col2.className = "stack";
+  col2.style.gap = "4px";
+  const addCountRow = (parent, label, count) => {
+    const row = document.createElement("div");
+    row.className = "note";
+    row.textContent = `${label}: ${Number(count || 0)}`;
+    parent.appendChild(row);
+  };
+  leftColumnKeys.forEach((key) => {
+    addCountRow(col1, labelsByKey[key] || key, standardCounts[key]);
+  });
+  rightColumnKeys.forEach((key) => {
+    addCountRow(col2, labelsByKey[key] || key, standardCounts[key]);
+  });
+  addCountRow(col2, "Percussion", instrumentation.totalPercussion);
+  grid.appendChild(col1);
+  grid.appendChild(col2);
+  instList.appendChild(grid);
+  if (Array.isArray(instrumentation.nonStandard) && instrumentation.nonStandard.length) {
+    const nonStandardRow = document.createElement("div");
+    nonStandardRow.className = "note";
+    nonStandardRow.textContent = `Non-standard: ${instrumentation.nonStandard
+      .filter((row) => row?.instrumentName)
+      .map((row) => `${row.instrumentName}${Number(row.count || 0) ? ` (${Number(row.count || 0)})` : ""}`)
+      .join(" - ")}`;
+    instList.appendChild(nonStandardRow);
+  }
+  if (instrumentation.otherInstrumentationNotes) {
+    const noteRow = document.createElement("div");
+    noteRow.className = "note";
+    noteRow.textContent = `Notes: ${instrumentation.otherInstrumentationNotes}`;
+    instList.appendChild(noteRow);
+  }
+  instPanel.appendChild(instList);
+  els.judgeOpenDirectorRefContent.appendChild(instPanel);
+}
+
+async function refreshJudgeOpenDirectorReference({ persistToPacket = true } = {}) {
+  if (!els.judgeOpenDirectorRefStatus || !els.judgeOpenDirectorRefContent) return;
+  const existing = state.judgeOpen.selectedExisting;
+  if (!existing?.schoolId || !existing?.ensembleId) {
+    setJudgeOpenDirectorReferenceState(
+      "not-linked",
+      "Link an existing ensemble to load Director repertoire/instrumentation.",
+      null
+    );
+    renderJudgeOpenDirectorReference();
+    if (persistToPacket) {
+      syncOpenDirectorEntrySnapshotDraft(null);
+    }
+    return;
+  }
+  const activeEvent = state.event.active || null;
+  if (!activeEvent?.id) {
+    setJudgeOpenDirectorReferenceState(
+      "no-active-event",
+      "No active event. Director repertoire/instrumentation unavailable.",
+      null
+    );
+    renderJudgeOpenDirectorReference();
+    if (persistToPacket) {
+      syncOpenDirectorEntrySnapshotDraft(null);
+    }
+    return;
+  }
+
+  const version = (state.judgeOpen.directorEntryReferenceLoadVersion || 0) + 1;
+  state.judgeOpen.directorEntryReferenceLoadVersion = version;
+  setJudgeOpenDirectorReferenceState("loading", "Loading Director repertoire/instrumentation...", null);
+  renderJudgeOpenDirectorReference();
+  try {
+    const result = await loadDirectorEntrySnapshotForJudge({
+      eventId: activeEvent.id,
+      ensembleId: existing.ensembleId,
+    });
+    if (state.judgeOpen.directorEntryReferenceLoadVersion !== version) return;
+    if (!result?.ok) {
+      const message =
+        result?.reason === "not-found"
+          ? "No Director entry found for this ensemble in the active event."
+          : result?.reason === "no-event"
+            ? "No active event. Director repertoire/instrumentation unavailable."
+            : (result?.message || "Unable to load Director entry reference.");
+      setJudgeOpenDirectorReferenceState(result?.reason || "error", message, null);
+      renderJudgeOpenDirectorReference();
+      if (persistToPacket) {
+        syncOpenDirectorEntrySnapshotDraft(null);
+      }
+      return;
+    }
+    setJudgeOpenDirectorReferenceState("loaded", "", result.snapshot);
+    renderJudgeOpenDirectorReference();
+    if (persistToPacket) {
+      syncOpenDirectorEntrySnapshotDraft(result.snapshot);
+    }
+  } catch (error) {
+    console.error("refreshJudgeOpenDirectorReference failed", error);
+    if (state.judgeOpen.directorEntryReferenceLoadVersion !== version) return;
+    setJudgeOpenDirectorReferenceState("error", "Unable to load Director entry reference.", null);
+    renderJudgeOpenDirectorReference();
+  }
+}
+
+function areDirectorEntrySnapshotsEqual(a, b) {
+  return JSON.stringify(a || null) === JSON.stringify(b || null);
+}
+
+function syncOpenDirectorEntrySnapshotDraft(nextSnapshot) {
+  const currentPacket = state.judgeOpen.currentPacket || {};
+  const currentSnapshot = currentPacket.directorEntrySnapshot || null;
+  if (areDirectorEntrySnapshotsEqual(currentSnapshot, nextSnapshot || null)) {
+    return;
+  }
+  state.judgeOpen.currentPacket = {
+    ...currentPacket,
+    directorEntrySnapshot: nextSnapshot || null,
+  };
+  if (!state.judgeOpen.currentPacketId) return;
+  updateOpenPacketDraft({ directorEntrySnapshot: nextSnapshot || null }).catch((error) => {
+    console.error("Failed syncing open packet director snapshot", error);
+  });
 }
 
 function updateRoleTabBar(role) {
@@ -1937,6 +2502,13 @@ async function openJudgeOpenPacket(packetId) {
       els.judgeOpenTranscriptInput.value =
         result.packet.transcriptFull || result.packet.transcript || "";
     }
+    if (result.packet.directorEntrySnapshot) {
+      setJudgeOpenDirectorReferenceState("loaded", "", result.packet.directorEntrySnapshot);
+    } else {
+      setJudgeOpenDirectorReferenceState("idle", "", null);
+    }
+    renderJudgeOpenDirectorReference();
+    refreshJudgeOpenDirectorReference({ persistToPacket: false });
     renderOpenCaptionForm();
     updateOpenHeader();
     updateOpenEmptyState();
@@ -1992,19 +2564,27 @@ export function renderOpenCaptionForm() {
     wrapper.className = "caption-card";
     wrapper.dataset.key = key;
     wrapper.innerHTML = `
-      <div class="caption-title">${label}</div>
-      <div class="caption-segments" data-grade-group>
-        <button type="button" data-grade="A">A</button>
-        <button type="button" data-grade="B">B</button>
-        <button type="button" data-grade="C">C</button>
-        <button type="button" data-grade="D">D</button>
-        <button type="button" data-grade="F">F</button>
+      <div class="caption-body">
+        <div class="caption-main">
+          <div class="caption-header-row">
+            <div class="caption-title">${label}</div>
+            <div class="caption-segments" data-grade-group>
+              <button type="button" data-grade="A">A</button>
+              <button type="button" data-grade="B">B</button>
+              <button type="button" data-grade="C">C</button>
+              <button type="button" data-grade="D">D</button>
+              <button type="button" data-grade="F">F</button>
+            </div>
+          </div>
+          <textarea rows="2" data-comment></textarea>
+        </div>
+        <div class="caption-grade-rail">
+          <div class="caption-modifiers" data-modifier-group>
+            <button type="button" data-modifier="+">+</button>
+            <button type="button" data-modifier="-">-</button>
+          </div>
+        </div>
       </div>
-      <div class="caption-modifiers" data-modifier-group>
-        <button type="button" data-modifier="+">+</button>
-        <button type="button" data-modifier="-">-</button>
-      </div>
-      <textarea rows="2" data-comment></textarea>
     `;
     els.judgeOpenCaptionForm.appendChild(wrapper);
   });
@@ -2086,9 +2666,9 @@ export function renderOpenSegments(sessions) {
     const duration = formatDuration(Number(session.durationSec || 0));
     const transcriptStatus = session.transcriptStatus || "idle";
     const startedAtLabel = session.startedAt ? formatPerformanceAt(session.startedAt) : "";
-    const startedText = startedAtLabel ? ` • ${startedAtLabel}` : "";
-    hint.textContent = `${status} • ${duration}${startedText} • transcript ${transcriptStatus}${
-      session.needsUpload ? " • needs upload" : ""
+    const startedText = startedAtLabel ? ` - ${startedAtLabel}` : "";
+    hint.textContent = `${status} - ${duration}${startedText} - transcript ${transcriptStatus}${
+      session.needsUpload ? " - needs upload" : ""
     }`;
     meta.appendChild(title);
     meta.appendChild(hint);
@@ -2172,6 +2752,12 @@ export async function restoreOpenPacketFromPrefs() {
   if (!canUseOpenJudge(state.auth.userProfile)) return;
   const local = loadOpenPrefs();
   const prefs = state.auth.userProfile?.preferences || {};
+  state.judgeOpen.useActiveEventDefaults =
+    typeof prefs.judgeOpenUseActiveEventDefaults === "boolean"
+      ? prefs.judgeOpenUseActiveEventDefaults
+      : local.useActiveEventDefaults !== false;
+  syncOpenEventDefaultsUI();
+  refreshOpenEventDefaultsState();
   const defaultFormType = prefs.judgeOpenDefaultFormType || local.defaultFormType || "stage";
   const lastFormType = prefs.lastJudgeOpenFormType || local.lastFormType || defaultFormType;
   state.judgeOpen.formType = lastFormType || "stage";
@@ -2180,6 +2766,7 @@ export async function restoreOpenPacketFromPrefs() {
   }
   syncOpenFormTypeSegmented();
   renderOpenCaptionForm();
+  applyOpenEventAssignmentDefaults();
 
   const lastPacketId = prefs.lastJudgeOpenPacketId || local.lastPacketId;
   if (!lastPacketId) {
@@ -2207,6 +2794,13 @@ export async function restoreOpenPacketFromPrefs() {
       els.judgeOpenTranscriptInput.value =
         result.packet.transcriptFull || result.packet.transcript || "";
     }
+    if (result.packet.directorEntrySnapshot) {
+      setJudgeOpenDirectorReferenceState("loaded", "", result.packet.directorEntrySnapshot);
+    } else {
+      setJudgeOpenDirectorReferenceState("idle", "", null);
+    }
+    renderJudgeOpenDirectorReference();
+    refreshJudgeOpenDirectorReference({ persistToPacket: false });
     renderOpenCaptionForm();
     updateOpenHeader();
     showOpenDetailView();
@@ -2304,16 +2898,63 @@ export function renderAdminOpenPackets(packets) {
       packet.createdByJudgeEmail ||
       packet.createdByJudgeUid ||
       "Unknown judge";
-    title.textContent = `${school} • ${ensemble}`;
+    const assignmentEventId = packet.assignmentEventId || "";
+    const linkedEvent = assignmentEventId
+      ? state.event.list.find((event) => event.id === assignmentEventId)
+      : null;
+    const eventLabel = linkedEvent?.name || assignmentEventId || "Open (no event)";
+    title.textContent = `${school} - ${ensemble}`;
     const detail = document.createElement("div");
     detail.className = "note";
-    detail.textContent = `Status: ${packet.status || "draft"} • Judge: ${creator}`;
+    const judgePositionLabel =
+      JUDGE_POSITION_LABELS[packet.judgePosition] || (packet.judgePosition ? packet.judgePosition : "Unassigned");
+    detail.textContent =
+      `Status: ${packet.status || "draft"} - Judge: ${creator} - Slot: ${judgePositionLabel} - Event: ${eventLabel}`;
     meta.appendChild(title);
     meta.appendChild(detail);
     item.appendChild(meta);
 
     const actions = document.createElement("div");
     actions.className = "actions";
+
+    const slotSelect = document.createElement("select");
+    slotSelect.className = "ghost";
+    [
+      { value: "", label: "No Slot" },
+      { value: JUDGE_POSITIONS.stage1, label: "Stage 1" },
+      { value: JUDGE_POSITIONS.stage2, label: "Stage 2" },
+      { value: JUDGE_POSITIONS.stage3, label: "Stage 3" },
+      { value: JUDGE_POSITIONS.sight, label: "Sight" },
+    ].forEach(({ value, label }) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      slotSelect.appendChild(option);
+    });
+    slotSelect.value = packet.judgePosition || "";
+    actions.appendChild(slotSelect);
+
+    const slotBtn = document.createElement("button");
+    slotBtn.className = "ghost";
+    slotBtn.textContent = "Save Slot";
+    slotBtn.disabled = packet.status === "released";
+    if (packet.status === "released") {
+      slotBtn.title = "Revoke packet before changing judge slot.";
+    }
+    slotBtn.addEventListener("click", async () => {
+      try {
+        await setOpenPacketJudgePosition({
+          packetId: packet.id,
+          judgePosition: slotSelect.value || "",
+          assignmentEventId: state.event.active?.id || packet.assignmentEventId || "",
+        });
+      } catch (error) {
+        console.error("Set open packet judge slot failed", error);
+        alertUser(error?.message || "Unable to update judge slot.");
+      }
+    });
+    actions.appendChild(slotBtn);
+
     const lockBtn = document.createElement("button");
     const isLocked = Boolean(packet.locked);
     lockBtn.textContent = isLocked ? "Unlock" : "Lock";
@@ -2365,7 +3006,7 @@ export function renderAdminOpenPackets(packets) {
     deleteBtn.className = "ghost";
     deleteBtn.textContent = "Delete";
     deleteBtn.addEventListener("click", async () => {
-      const label = `${school} • ${ensemble}`;
+      const label = `${school} - ${ensemble}`;
       if (!confirmUser(`Delete open packet for ${label}? This removes packet audio and sessions.`)) {
         return;
       }
@@ -2485,6 +3126,17 @@ export function renderRepertoireFields() {
     state.director.entryDraft.repertoire = {};
   }
   const repertoire = state.director.entryDraft.repertoire;
+  if (!repertoire.repertoireRuleMode) {
+    repertoire.repertoireRuleMode = "standard";
+  }
+  const flexCheckboxes = [];
+  const syncRepertoireFlexCheckboxes = () => {
+    const checked = Boolean(state.director.entryDraft?.performanceGradeFlex);
+    flexCheckboxes.forEach((cb) => {
+      cb.checked = checked;
+    });
+  };
+
   REPERTOIRE_FIELDS.forEach((piece) => {
     const wrapper = document.createElement("div");
     wrapper.className = "stack";
@@ -2566,6 +3218,11 @@ export function renderRepertoireFields() {
     const list = document.createElement("div");
     list.className = "mpa-combobox-list";
     list.hidden = true;
+    let suggestionRenderVersion = 0;
+    const closeSuggestions = () => {
+      suggestionRenderVersion += 1;
+      list.hidden = true;
+    };
     combo.appendChild(titleInput);
     combo.appendChild(list);
     titleLabel.appendChild(combo);
@@ -2598,6 +3255,45 @@ export function renderRepertoireFields() {
     composerRow.appendChild(composerEditBtn);
     wrapper.appendChild(composerRow);
 
+    if (piece.key === "selection1" || piece.key === "selection2") {
+      const flexRow = document.createElement("label");
+      flexRow.className = "director-flex-row";
+      const flexCheckbox = document.createElement("input");
+      flexCheckbox.type = "checkbox";
+      flexCheckbox.checked = Boolean(state.director.entryDraft.performanceGradeFlex);
+      flexCheckbox.addEventListener("change", () => {
+        state.director.entryDraft.performanceGradeFlex = Boolean(flexCheckbox.checked);
+        syncRepertoireFlexCheckboxes();
+        setDirectorPerformanceGradeValue(state.director.entryDraft.performanceGrade || "");
+        applyDirectorDirty("repertoire");
+      });
+      flexCheckboxes.push(flexCheckbox);
+      const flexText = document.createElement("span");
+      flexText.textContent = "Flex";
+      flexRow.appendChild(flexCheckbox);
+      flexRow.appendChild(flexText);
+      wrapper.appendChild(flexRow);
+    }
+
+    if (piece.key === "selection2") {
+      const masterworkWrap = document.createElement("label");
+      masterworkWrap.className = "row";
+      masterworkWrap.style.alignItems = "center";
+      const masterworkCheckbox = document.createElement("input");
+      masterworkCheckbox.type = "checkbox";
+      masterworkCheckbox.checked = repertoire.repertoireRuleMode === "masterwork";
+      masterworkCheckbox.addEventListener("change", () => {
+        repertoire.repertoireRuleMode = masterworkCheckbox.checked ? "masterwork" : "standard";
+        applyDirectorDirty("repertoire");
+      });
+      const masterworkText = document.createElement("span");
+      masterworkText.textContent =
+        "Masterwork Exception (Selection #2 optional if Selection #1 is a Masterwork)";
+      masterworkWrap.appendChild(masterworkCheckbox);
+      masterworkWrap.appendChild(masterworkText);
+      wrapper.appendChild(masterworkWrap);
+    }
+
     const preview = document.createElement("div");
     preview.className = "hint";
     preview.dataset.previewKey = piece.key;
@@ -2622,6 +3318,7 @@ export function renderRepertoireFields() {
     };
 
     const renderSuggestions = async () => {
+      const renderVersion = ++suggestionRenderVersion;
       list.innerHTML = "";
       const grade = pieceData.grade;
       if (!grade) {
@@ -2638,6 +3335,7 @@ export function renderRepertoireFields() {
       loading.textContent = "Loading titles...";
       list.appendChild(loading);
       const options = await getMpaRepertoireForGrade(grade);
+      if (renderVersion !== suggestionRenderVersion) return;
       const queryText = titleInput.value.trim().toLowerCase();
       const filtered = options.filter((item) => {
         const hay = item.titleLower || item.title.toLowerCase();
@@ -2656,7 +3354,8 @@ export function renderRepertoireFields() {
         const option = document.createElement("button");
         option.type = "button";
         option.className = "mpa-combobox-option";
-        option.textContent = `${item.title}${item.composer ? ` - ${item.composer}` : ""}`;
+        const masterworkBadge = item.isMasterwork ? " [Masterwork]" : "";
+        option.textContent = `${item.title}${item.composer ? ` - ${item.composer}` : ""}${masterworkBadge}`;
         option.addEventListener("click", () => {
           pieceData.pieceId = item.id;
           pieceData.grade = grade;
@@ -2666,7 +3365,7 @@ export function renderRepertoireFields() {
           composerInput.value = pieceData.composer;
           composerInput.readOnly = true;
           composerEditBtn.textContent = "Edit";
-          list.hidden = true;
+          closeSuggestions();
           applyDirectorDirty("repertoire");
           updatePerformanceGrade();
           updateRepertoirePreview(wrapper, piece.key);
@@ -2686,7 +3385,7 @@ export function renderRepertoireFields() {
         composerInput.value = "";
         composerInput.readOnly = false;
         composerEditBtn.textContent = "Edit";
-        list.hidden = true;
+        closeSuggestions();
         list.innerHTML = "";
       }
       applyDirectorDirty("repertoire");
@@ -2713,7 +3412,7 @@ export function renderRepertoireFields() {
 
     titleInput.addEventListener("blur", () => {
       window.setTimeout(() => {
-        list.hidden = true;
+        closeSuggestions();
       }, 120);
     });
 
@@ -2723,8 +3422,36 @@ export function renderRepertoireFields() {
       updateRepertoirePreview(wrapper, piece.key);
     });
 
+    const selectedMeta = document.createElement("div");
+    selectedMeta.className = "hint";
+    const updateSelectedMeta = async () => {
+      const selection = state.director.entryDraft.repertoire?.[piece.key] || {};
+      const grade = normalizeGrade(selection.grade);
+      if (!selection.pieceId || !grade) {
+        selectedMeta.textContent = "";
+        return;
+      }
+      const options = await getMpaRepertoireForGrade(grade);
+      const match = options.find((item) => item.id === selection.pieceId);
+      if (!match) {
+        selectedMeta.textContent = "";
+        return;
+      }
+      const tags = [];
+      if (match.isMasterwork || `${match.specialInstructions || ""} ${match.status || ""} ${(match.tags || []).join(" ")}`.toLowerCase().includes("masterwork")) {
+        tags.push("Masterwork");
+      }
+      if (match.grade === "VI") {
+        tags.push("Grade VI");
+      }
+      selectedMeta.textContent = tags.length ? `Tags: ${tags.join(" - ")}` : "";
+    };
+    wrapper.appendChild(selectedMeta);
+    updateSelectedMeta();
+
     els.repertoireFields.appendChild(wrapper);
   });
+  syncRepertoireFlexCheckboxes();
 }
 
 export function renderInstrumentationStandard() {
@@ -3183,6 +3910,248 @@ export function updateDirectorActiveEnsembleLabel() {
   }
 }
 
+function renderAdminLogisticsEnsembleOptions(select, ensembles = []) {
+  if (!select) return;
+  const previous = select.value || "";
+  select.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = ensembles.length ? "Select an ensemble" : "No ensembles available";
+  select.appendChild(placeholder);
+  ensembles.forEach((ensemble) => {
+    const option = document.createElement("option");
+    option.value = ensemble.id;
+    option.textContent = ensemble.name || ensemble.id;
+    select.appendChild(option);
+  });
+  if (previous && ensembles.some((ensemble) => ensemble.id === previous)) {
+    select.value = previous;
+  }
+}
+
+function setAdminLogisticsStatus(message) {
+  if (!els.adminLogisticsStatus) return;
+  els.adminLogisticsStatus.textContent = message || "";
+}
+
+function clearAdminLogisticsContent() {
+  if (!els.adminLogisticsContent) return;
+  els.adminLogisticsContent.innerHTML = "";
+}
+
+function buildAdminLogisticsEntryPanel(entry, titleText) {
+  const seating = entry.seating || {};
+  const seatingRows = Array.isArray(seating.rows) ? seating.rows : [];
+  const percussionNeeds = entry.percussionNeeds || {};
+  const selectedPercussion = Array.isArray(percussionNeeds.selected)
+    ? percussionNeeds.selected.filter(Boolean)
+    : [];
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "panel stack";
+  const title = document.createElement("strong");
+  title.textContent = titleText;
+  wrapper.appendChild(title);
+
+  const seatingHeading = document.createElement("div");
+  seatingHeading.className = "note";
+  seatingHeading.textContent = "Seating Chart";
+  wrapper.appendChild(seatingHeading);
+  const seatingBody = document.createElement("div");
+  seatingBody.className = "stack";
+  if (!seatingRows.length) {
+    const empty = document.createElement("div");
+    empty.className = "note";
+    empty.textContent = "No seating rows entered.";
+    seatingBody.appendChild(empty);
+  } else {
+    seatingRows.forEach((row, index) => {
+      const line = document.createElement("div");
+      line.className = "note";
+      line.textContent = `Row ${index + 1}: Chairs ${Number(row?.chairs || 0)} - Stands ${Number(
+        row?.stands || 0
+      )}`;
+      seatingBody.appendChild(line);
+    });
+  }
+  if (seating.notes) {
+    const notes = document.createElement("div");
+    notes.className = "note";
+    notes.textContent = `Notes: ${seating.notes}`;
+    seatingBody.appendChild(notes);
+  }
+  wrapper.appendChild(seatingBody);
+
+  const percussionTitle = document.createElement("div");
+  percussionTitle.className = "note";
+  percussionTitle.textContent = "Percussion";
+  wrapper.appendChild(percussionTitle);
+  const percussionBody = document.createElement("div");
+  percussionBody.className = "stack";
+  const requested = document.createElement("div");
+  requested.className = "note";
+  requested.textContent = selectedPercussion.length
+    ? `Requested: ${selectedPercussion.join(" - ")}`
+    : "Requested: None selected";
+  percussionBody.appendChild(requested);
+  if (percussionNeeds.notes) {
+    const notes = document.createElement("div");
+    notes.className = "note";
+    notes.textContent = `Notes: ${percussionNeeds.notes}`;
+    percussionBody.appendChild(notes);
+  }
+  wrapper.appendChild(percussionBody);
+  return wrapper;
+}
+
+function formatSignedDiff(value) {
+  const n = Number(value || 0);
+  if (n > 0) return `+${n}`;
+  if (n < 0) return `${n}`;
+  return "0";
+}
+
+function buildAdminLogisticsDiffPanel(currentEntry, nextEntry) {
+  const panel = document.createElement("div");
+  panel.className = "panel stack";
+  const title = document.createElement("strong");
+  title.textContent = "Changeover Diff (Next Band - Band On Stage)";
+  panel.appendChild(title);
+
+  const currentRows = Array.isArray(currentEntry?.seating?.rows) ? currentEntry.seating.rows : [];
+  const nextRows = Array.isArray(nextEntry?.seating?.rows) ? nextEntry.seating.rows : [];
+  const rowCount = Math.max(currentRows.length, nextRows.length, SEATING_ROWS);
+  const seatingHeading = document.createElement("div");
+  seatingHeading.className = "note";
+  seatingHeading.textContent = "Seating";
+  panel.appendChild(seatingHeading);
+  for (let i = 0; i < rowCount; i += 1) {
+    const currentRow = currentRows[i] || {};
+    const nextRow = nextRows[i] || {};
+    const currentChairs = Number(currentRow.chairs || 0);
+    const nextChairs = Number(nextRow.chairs || 0);
+    const currentStands = Number(currentRow.stands || 0);
+    const nextStands = Number(nextRow.stands || 0);
+    const line = document.createElement("div");
+    line.className = "note";
+    line.textContent =
+      `Row ${i + 1}: Chairs ${currentChairs} -> ${nextChairs} (${formatSignedDiff(nextChairs - currentChairs)}), ` +
+      `Stands ${currentStands} -> ${nextStands} (${formatSignedDiff(nextStands - currentStands)})`;
+    panel.appendChild(line);
+  }
+
+  const percussionHeading = document.createElement("div");
+  percussionHeading.className = "note";
+  percussionHeading.textContent = "Percussion";
+  panel.appendChild(percussionHeading);
+  const currentPerc = new Set(
+    Array.isArray(currentEntry?.percussionNeeds?.selected)
+      ? currentEntry.percussionNeeds.selected.filter(Boolean)
+      : []
+  );
+  const nextPerc = new Set(
+    Array.isArray(nextEntry?.percussionNeeds?.selected)
+      ? nextEntry.percussionNeeds.selected.filter(Boolean)
+      : []
+  );
+  const added = Array.from(nextPerc).filter((item) => !currentPerc.has(item));
+  const removed = Array.from(currentPerc).filter((item) => !nextPerc.has(item));
+  const addedRow = document.createElement("div");
+  addedRow.className = "note";
+  addedRow.textContent = `Add: ${added.length ? added.join(" - ") : "None"}`;
+  panel.appendChild(addedRow);
+  const removedRow = document.createElement("div");
+  removedRow.className = "note";
+  removedRow.textContent = `Remove: ${removed.length ? removed.join(" - ") : "None"}`;
+  panel.appendChild(removedRow);
+
+  return panel;
+}
+
+async function fetchAdminLogisticsEnsembles(schoolId) {
+  if (!schoolId) return [];
+  if (state.admin.logisticsEnsemblesCache.has(schoolId)) {
+    return state.admin.logisticsEnsemblesCache.get(schoolId);
+  }
+  const snap = await getDocs(
+    query(collection(db, COLLECTIONS.schools, schoolId, COLLECTIONS.ensembles), orderBy("name"))
+  );
+  const items = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+  state.admin.logisticsEnsemblesCache.set(schoolId, items);
+  return items;
+}
+
+async function loadAdminLogisticsEntry(eventId, ensembleId) {
+  if (!eventId || !ensembleId) return null;
+  if (state.admin.logisticsEntriesCacheEventId !== eventId) {
+    state.admin.logisticsEntriesCacheEventId = eventId;
+    state.admin.logisticsEntriesCache.clear();
+  }
+  const cacheKey = `${eventId}:${ensembleId}`;
+  const cached = state.admin.logisticsEntriesCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - cached.cachedAt < 15000) {
+    return cached.value;
+  }
+  const snap = await getDoc(doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId));
+  const value = snap.exists() ? (snap.data() || {}) : null;
+  state.admin.logisticsEntriesCache.set(cacheKey, { cachedAt: now, value });
+  return value;
+}
+
+async function refreshAdminLogisticsEntry() {
+  if (!els.adminLogisticsStatus || !els.adminLogisticsContent) return;
+  if (!state.event.active?.id) {
+    setAdminLogisticsStatus("Set an active event first.");
+    clearAdminLogisticsContent();
+    return;
+  }
+  const currentSchoolId = els.adminLogisticsCurrentSchoolSelect?.value || "";
+  const currentEnsembleId = els.adminLogisticsCurrentEnsembleSelect?.value || "";
+  const nextSchoolId = els.adminLogisticsNextSchoolSelect?.value || "";
+  const nextEnsembleId = els.adminLogisticsNextEnsembleSelect?.value || "";
+  if (!currentSchoolId || !nextSchoolId) {
+    setAdminLogisticsStatus("Choose schools for Band On Stage and Next Band.");
+    clearAdminLogisticsContent();
+    return;
+  }
+  if (!currentEnsembleId || !nextEnsembleId) {
+    setAdminLogisticsStatus("Choose ensembles for Band On Stage and Next Band.");
+    clearAdminLogisticsContent();
+    return;
+  }
+  setAdminLogisticsStatus("Loading logistics from Director entry...");
+  const loadVersion = (state.admin.logisticsLoadVersion || 0) + 1;
+  state.admin.logisticsLoadVersion = loadVersion;
+  try {
+    const [currentEntry, nextEntry] = await Promise.all([
+      loadAdminLogisticsEntry(state.event.active.id, currentEnsembleId),
+      loadAdminLogisticsEntry(state.event.active.id, nextEnsembleId),
+    ]);
+    if (state.admin.logisticsLoadVersion !== loadVersion) return;
+    if (!currentEntry || !nextEntry) {
+      const missing = [];
+      if (!currentEntry) missing.push("Band On Stage");
+      if (!nextEntry) missing.push("Next Band");
+      setAdminLogisticsStatus(
+        `No Director entry found for ${missing.join(" and ")} in the active event.`
+      );
+      clearAdminLogisticsContent();
+      return;
+    }
+    clearAdminLogisticsContent();
+    els.adminLogisticsContent.appendChild(buildAdminLogisticsEntryPanel(currentEntry, "Band On Stage"));
+    els.adminLogisticsContent.appendChild(buildAdminLogisticsEntryPanel(nextEntry, "Next Band"));
+    els.adminLogisticsContent.appendChild(buildAdminLogisticsDiffPanel(currentEntry, nextEntry));
+    setAdminLogisticsStatus(`Loaded from ${state.event.active.name || state.event.active.id}.`);
+  } catch (error) {
+    console.error("refreshAdminLogisticsEntry failed", error);
+    if (state.admin.logisticsLoadVersion !== loadVersion) return;
+    setAdminLogisticsStatus("Unable to load logistics.");
+    clearAdminLogisticsContent();
+  }
+}
+
 export function renderJudgeOptions(judges) {
   const selects = [
     els.stage1JudgeSelect,
@@ -3394,9 +4363,9 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
   const judgeTitle = submission.judgeTitle || "";
   const judgeAffiliation = submission.judgeAffiliation || "";
   const judgeLabel = judgeName && judgeEmail
-    ? `${judgeName} • ${judgeEmail}`
+    ? `${judgeName} - ${judgeEmail}`
     : judgeName || judgeEmail || "Unknown judge";
-  judgeInfo.textContent = `${judgeLabel}${judgeTitle ? ` • ${judgeTitle}` : ""}${judgeAffiliation ? ` • ${judgeAffiliation}` : ""}`;
+  judgeInfo.textContent = `${judgeLabel}${judgeTitle ? ` - ${judgeTitle}` : ""}${judgeAffiliation ? ` - ${judgeAffiliation}` : ""}`;
 
   const audio = document.createElement("audio");
   audio.controls = true;
@@ -3412,7 +4381,7 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
 
   const footer = document.createElement("div");
   footer.className = "note";
-  footer.textContent = `Caption Total: ${submission.captionScoreTotal || 0} • Final Rating: ${submission.computedFinalRatingLabel || "N/A"}`;
+  footer.textContent = `Caption Total: ${submission.captionScoreTotal || 0} - Final Rating: ${submission.computedFinalRatingLabel || "N/A"}`;
 
   card.appendChild(header);
   card.appendChild(judgeInfo);
@@ -3569,6 +4538,59 @@ export function renderDirectorPackets(groups) {
     const wrapper = document.createElement("div");
     wrapper.className = "packet";
 
+    if (group.type === "open-assembled") {
+      const header = document.createElement("div");
+      header.className = "packet-header";
+      const ensembleRow = document.createElement("div");
+      const ensembleLabel = document.createElement("strong");
+      ensembleLabel.textContent = "Open Judge Packet Set:";
+      ensembleRow.appendChild(ensembleLabel);
+      ensembleRow.appendChild(
+        document.createTextNode(` ${group.ensembleName || group.ensembleId || "Unknown ensemble"}`)
+      );
+      const schoolRow = document.createElement("div");
+      schoolRow.className = "note";
+      schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
+      const eventRow = document.createElement("div");
+      eventRow.className = "note";
+      eventRow.textContent = `Event: ${group.eventId || "Unassigned"}`;
+      const directorRow = document.createElement("div");
+      directorRow.className = "note";
+      directorRow.textContent = `Director: ${group.directorName || "Unknown"}`;
+      const gradeRow = document.createElement("div");
+      gradeRow.className = "note";
+      gradeRow.textContent = `Grade: ${group.grade || "Unknown"}`;
+      const overallRow = document.createElement("div");
+      overallRow.className = "note";
+      overallRow.textContent = `Overall: ${group.overall?.label || "N/A"}`;
+      header.appendChild(ensembleRow);
+      header.appendChild(schoolRow);
+      header.appendChild(eventRow);
+      header.appendChild(directorRow);
+      header.appendChild(gradeRow);
+      header.appendChild(overallRow);
+      if (group.hasConflicts) {
+        const conflictRow = document.createElement("div");
+        conflictRow.className = "note";
+        conflictRow.textContent = `Conflict: duplicate packet(s) for ${group.conflicts.join(", ")}`;
+        header.appendChild(conflictRow);
+      }
+
+      const grid = document.createElement("div");
+      grid.className = "packet-grid";
+      Object.values(JUDGE_POSITIONS).forEach((position) => {
+        const submission = group.submissions[position];
+        if (submission && submission.status === STATUSES.released) {
+          grid.appendChild(renderSubmissionCard(submission, position, { showTranscript: false }));
+        }
+      });
+
+      wrapper.appendChild(header);
+      wrapper.appendChild(grid);
+      els.directorPackets.appendChild(wrapper);
+      continue;
+    }
+
     if (group.type === "open") {
       const header = document.createElement("div");
       header.className = "packet-header";
@@ -3585,9 +4607,16 @@ export function renderDirectorPackets(groups) {
       const ratingRow = document.createElement("div");
       ratingRow.className = "note";
       ratingRow.textContent = `Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
+      const slotRow = document.createElement("div");
+      slotRow.className = "note";
+      slotRow.textContent = `Slot: ${
+        JUDGE_POSITION_LABELS[group.judgePosition] ||
+        (group.judgePosition ? group.judgePosition : "Unassigned")
+      }`;
       header.appendChild(ensembleRow);
       header.appendChild(schoolRow);
       header.appendChild(ensembleNameRow);
+      header.appendChild(slotRow);
       header.appendChild(ratingRow);
 
       const grid = document.createElement("div");
@@ -3613,7 +4642,7 @@ export function renderDirectorPackets(groups) {
       judgeInfo.className = "note";
       judgeInfo.textContent =
         group.judgeName && group.judgeEmail
-          ? `${group.judgeName} • ${group.judgeEmail}`
+          ? `${group.judgeName} - ${group.judgeEmail}`
           : group.judgeName || group.judgeEmail || "Unknown judge";
 
       const captionSummary = renderPacketCaptionSummary(
@@ -3630,7 +4659,7 @@ export function renderDirectorPackets(groups) {
       const scoringFooter = document.createElement("div");
       scoringFooter.className = "note";
       scoringFooter.textContent =
-        `Caption Total: ${group.captionScoreTotal || 0} • Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
+        `Caption Total: ${group.captionScoreTotal || 0} - Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
 
       scoringCard.appendChild(scoringHeader);
       scoringCard.appendChild(judgeInfo);
@@ -3786,21 +4815,22 @@ export function bindAdminHandlers() {
   if (adminHandlersBound) return;
   adminHandlersBound = true;
 
+  renderAdminLogisticsEnsembleOptions(els.adminLogisticsCurrentEnsembleSelect, []);
+  renderAdminLogisticsEnsembleOptions(els.adminLogisticsNextEnsembleSelect, []);
+  refreshAdminLogisticsEntry();
+
   if (els.createEventBtn) {
     els.createEventBtn.addEventListener("click", async () => {
       const name = els.eventNameInput?.value.trim() || "";
-      const startValue = els.eventStartAtInput?.value || "";
-      const endValue = els.eventEndAtInput?.value || "";
-      if (!name || !startValue || !endValue) {
-        alertUser("Enter a name, start time, and end time.");
+      if (!name) {
+        alertUser("Enter an event name.");
         return;
       }
-      const startAtDate = new Date(startValue);
-      const endAtDate = new Date(endValue);
+      const now = new Date();
+      const startAtDate = new Date(now);
+      const endAtDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
       await createEvent({ name, startAtDate, endAtDate });
       if (els.eventNameInput) els.eventNameInput.value = "";
-      if (els.eventStartAtInput) els.eventStartAtInput.value = "";
-      if (els.eventEndAtInput) els.eventEndAtInput.value = "";
     });
   }
 
@@ -3860,6 +4890,66 @@ export function bindAdminHandlers() {
 
   if (els.performanceAtInput) {
     els.performanceAtInput.addEventListener("change", updateScheduleSubmitState);
+  }
+
+  if (els.adminLogisticsCurrentSchoolSelect) {
+    els.adminLogisticsCurrentSchoolSelect.addEventListener("change", async () => {
+      const schoolId = els.adminLogisticsCurrentSchoolSelect?.value || "";
+      if (!schoolId) {
+        state.admin.logisticsCurrentEnsembles = [];
+        renderAdminLogisticsEnsembleOptions(els.adminLogisticsCurrentEnsembleSelect, []);
+        refreshAdminLogisticsEntry();
+        return;
+      }
+      try {
+        state.admin.logisticsCurrentEnsembles = await fetchAdminLogisticsEnsembles(schoolId);
+        renderAdminLogisticsEnsembleOptions(
+          els.adminLogisticsCurrentEnsembleSelect,
+          state.admin.logisticsCurrentEnsembles
+        );
+      } catch (error) {
+        console.error("Load current logistics ensembles failed", error);
+        state.admin.logisticsCurrentEnsembles = [];
+        renderAdminLogisticsEnsembleOptions(els.adminLogisticsCurrentEnsembleSelect, []);
+      }
+      refreshAdminLogisticsEntry();
+    });
+  }
+
+  if (els.adminLogisticsNextSchoolSelect) {
+    els.adminLogisticsNextSchoolSelect.addEventListener("change", async () => {
+      const schoolId = els.adminLogisticsNextSchoolSelect?.value || "";
+      if (!schoolId) {
+        state.admin.logisticsNextEnsembles = [];
+        renderAdminLogisticsEnsembleOptions(els.adminLogisticsNextEnsembleSelect, []);
+        refreshAdminLogisticsEntry();
+        return;
+      }
+      try {
+        state.admin.logisticsNextEnsembles = await fetchAdminLogisticsEnsembles(schoolId);
+        renderAdminLogisticsEnsembleOptions(
+          els.adminLogisticsNextEnsembleSelect,
+          state.admin.logisticsNextEnsembles
+        );
+      } catch (error) {
+        console.error("Load next logistics ensembles failed", error);
+        state.admin.logisticsNextEnsembles = [];
+        renderAdminLogisticsEnsembleOptions(els.adminLogisticsNextEnsembleSelect, []);
+      }
+      refreshAdminLogisticsEntry();
+    });
+  }
+
+  if (els.adminLogisticsCurrentEnsembleSelect) {
+    els.adminLogisticsCurrentEnsembleSelect.addEventListener("change", () => {
+      refreshAdminLogisticsEntry();
+    });
+  }
+
+  if (els.adminLogisticsNextEnsembleSelect) {
+    els.adminLogisticsNextEnsembleSelect.addEventListener("change", () => {
+      refreshAdminLogisticsEntry();
+    });
   }
 
   if (els.scheduleForm) {
@@ -4092,6 +5182,12 @@ export function bindJudgeOpenHandlers() {
       state.judgeOpen.currentPacketId = null;
       state.judgeOpen.currentPacket = null;
       state.judgeOpen.selectedExisting = null;
+      setJudgeOpenDirectorReferenceState(
+        "not-linked",
+        "Link an existing ensemble to load Director repertoire/instrumentation.",
+        null
+      );
+      renderJudgeOpenDirectorReference();
       if (els.judgeOpenPacketSelect) {
         els.judgeOpenPacketSelect.value = "";
       }
@@ -4133,6 +5229,34 @@ export function bindJudgeOpenHandlers() {
     });
   }
 
+  if (els.judgeOpenUseEventDefaultsToggle) {
+    els.judgeOpenUseEventDefaultsToggle.addEventListener("change", () => {
+      state.judgeOpen.useActiveEventDefaults = Boolean(els.judgeOpenUseEventDefaultsToggle.checked);
+      syncOpenEventDefaultsUI();
+      refreshOpenEventDefaultsState();
+      if (state.judgeOpen.useActiveEventDefaults) {
+        setOpenPacketHint("Active event defaults enabled.");
+      } else {
+        setOpenPacketHint("Open mode enabled.");
+      }
+    });
+  }
+
+  if (els.judgeOpenSaveEventDefaultsBtn) {
+    els.judgeOpenSaveEventDefaultsBtn.addEventListener("click", async () => {
+      const enabled = getOpenEventDefaultsPreference();
+      saveOpenPrefs({ useActiveEventDefaults: enabled });
+      await saveOpenPrefsToServer({ judgeOpenUseActiveEventDefaults: enabled });
+      if (state.auth.userProfile) {
+        state.auth.userProfile.preferences = {
+          ...(state.auth.userProfile.preferences || {}),
+          judgeOpenUseActiveEventDefaults: enabled,
+        };
+      }
+      setOpenPacketHint("Judge mode default saved.");
+    });
+  }
+
   if (els.judgeOpenExistingSelect) {
     els.judgeOpenExistingSelect.addEventListener("change", () => {
       const option = els.judgeOpenExistingSelect.selectedOptions?.[0];
@@ -4164,6 +5288,7 @@ export function bindJudgeOpenHandlers() {
           ensembleSnapshot: buildOpenEnsembleSnapshot(),
         });
       }
+      refreshJudgeOpenDirectorReference({ persistToPacket: true });
     });
   }
 
@@ -4214,6 +5339,13 @@ export function bindJudgeOpenHandlers() {
           ensembleSnapshot: null,
         });
       }
+      setJudgeOpenDirectorReferenceState(
+        "not-linked",
+        "Link an existing ensemble to load Director repertoire/instrumentation.",
+        null
+      );
+      renderJudgeOpenDirectorReference();
+      syncOpenDirectorEntrySnapshotDraft(null);
       updateOpenHeader();
     });
   }
@@ -4233,6 +5365,13 @@ export function bindJudgeOpenHandlers() {
           ensembleSnapshot: null,
         });
       }
+      setJudgeOpenDirectorReferenceState(
+        "not-linked",
+        "Link an existing ensemble to load Director repertoire/instrumentation.",
+        null
+      );
+      renderJudgeOpenDirectorReference();
+      syncOpenDirectorEntrySnapshotDraft(null);
       updateOpenHeader();
     });
   }
@@ -4388,11 +5527,7 @@ export function bindJudgeOpenHandlers() {
         setOpenPacketHint(result?.message || "Unable to submit packet.");
         return;
       }
-      if (result.status === "released") {
-        setOpenPacketHint("Submitted and released to school results.");
-      } else {
-        setOpenPacketHint("Submitted and locked.");
-      }
+      setOpenPacketHint("Submitted and locked. Admin must release to Director.");
       const refreshed = await selectOpenPacket(state.judgeOpen.currentPacketId, {
         onSessions: renderOpenSegments,
       });
@@ -4414,6 +5549,10 @@ function gatherOpenPacketMeta() {
     schoolId: existing.schoolId || "",
     ensembleId: existing.ensembleId || "",
     ensembleSnapshot: buildOpenEnsembleSnapshot(),
+    directorEntrySnapshot:
+      state.judgeOpen.directorEntryReferenceStatus === "loaded"
+        ? state.judgeOpen.directorEntryReference
+        : null,
     formType: els.judgeOpenFormTypeSelect?.value || "stage",
   };
 }
@@ -4454,6 +5593,19 @@ function applyOpenCaptionDraft({ captions = {}, overwrite = false } = {}) {
 
 function updateOpenRecordingStatus() {
   if (!els.judgeOpenRecordingStatus) return;
+  const setMicDebug = () => {
+    if (!els.judgeOpenMicSettingsDebug) return;
+    const s = state.judgeOpen.micTrackSettings;
+    if (!s) {
+      els.judgeOpenMicSettingsDebug.textContent = "";
+      return;
+    }
+    const ec = s.echoCancellation;
+    const ns = s.noiseSuppression;
+    const agc = s.autoGainControl;
+    els.judgeOpenMicSettingsDebug.textContent =
+      `Mic settings: EC=${String(ec)} - NS=${String(ns)} - AGC=${String(agc)}`;
+  };
   const recorder = state.judgeOpen.mediaRecorder;
   if (recorder && recorder.state === "recording") {
     els.judgeOpenRecordingStatus.textContent = "Recording...";
@@ -4470,6 +5622,7 @@ function updateOpenRecordingStatus() {
     if (els.judgeOpenRecordBtn) els.judgeOpenRecordBtn.disabled = true;
     if (els.judgeOpenStopBtn) els.judgeOpenStopBtn.disabled = false;
     startOpenLevelMeter(recorder.stream);
+    setMicDebug();
     updateOpenSubmitState();
     return;
   }
@@ -4489,6 +5642,7 @@ function updateOpenRecordingStatus() {
   } else {
     els.judgeOpenRecordingStatus.textContent = "Recording saved.";
   }
+  setMicDebug();
   if (els.judgeOpenRecordBtn) els.judgeOpenRecordBtn.disabled = false;
   if (els.judgeOpenStopBtn) els.judgeOpenStopBtn.disabled = true;
   updateOpenSubmitState();
@@ -4595,6 +5749,7 @@ export function bindDirectorHandlers() {
         : await createDirectorEnsemble(name);
       if (result?.ok) {
         if (editingEnsembleId) {
+          discardDirectorDraftChanges();
           state.director.ensemblesCache = state.director.ensemblesCache.map((ensemble) =>
             ensemble.id === editingEnsembleId ? { ...ensemble, name } : ensemble
           );
@@ -4771,7 +5926,46 @@ export function bindDirectorHandlers() {
 
   if (els.eventDetailBackBtn) {
     els.eventDetailBackBtn.addEventListener("click", () => {
-      window.location.hash = "#director";
+      window.location.hash = `#${state.app.currentTab || "admin"}`;
+    });
+  }
+
+  if (els.eventScheduleUploadBtn) {
+    els.eventScheduleUploadBtn.addEventListener("click", async () => {
+      const eventId = els.eventDetailPage?.dataset?.eventId || "";
+      const file = els.eventScheduleFileInput?.files?.[0] || null;
+      if (!eventId) {
+        alertUser("Open an event detail page first.");
+        return;
+      }
+      if (!file) {
+        alertUser("Select a PDF to upload.");
+        return;
+      }
+      els.eventScheduleUploadBtn.dataset.loadingLabel = "Uploading...";
+      els.eventScheduleUploadBtn.dataset.spinner = "true";
+      await withLoading(els.eventScheduleUploadBtn, async () => {
+        try {
+          if (els.eventScheduleStatus) {
+            els.eventScheduleStatus.textContent = "Uploading schedule PDF...";
+          }
+          await uploadEventSchedulePdf(eventId, file);
+          const event = state.event.list.find((item) => item.id === eventId) || null;
+          renderEventScheduleDetail(event);
+          if (els.eventScheduleStatus) {
+            els.eventScheduleStatus.textContent = "Schedule PDF uploaded.";
+          }
+          if (els.eventScheduleFileInput) {
+            els.eventScheduleFileInput.value = "";
+          }
+        } catch (error) {
+          console.error("Event schedule upload failed", error);
+          if (els.eventScheduleStatus) {
+            els.eventScheduleStatus.textContent =
+              error?.message || "Unable to upload schedule PDF.";
+          }
+        }
+      });
     });
   }
 

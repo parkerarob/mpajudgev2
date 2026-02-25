@@ -55,12 +55,12 @@
         <div class="ios-nav mobile-only">
           <div class="ios-subtitle">Admin</div>
           <h2 class="ios-title">Home</h2>
-          <div class="ios-subtitle">Manage open packets, directories, and settings.</div>
+          <div class="ios-subtitle">Manage event defaults, open packets, directories, and settings.</div>
         </div>
         <div class="tab-header desktop-only">
           <div>
             <h2>Admin Tools</h2>
-            <div class="tab-subtitle">Manage open packets, directories, and settings.</div>
+            <div class="tab-subtitle">Manage event defaults, open packets, directories, and settings.</div>
           </div>
           <div class="tab-header-actions">
             <span class="badge" id="adminStatusBadge">No active event</span>
@@ -69,11 +69,91 @@
         </div>
         <div class="ios-screen">
         <div class="stack">
+          <div class="panel" id="adminEventsSection">
+            <h3>Event Defaults</h3>
+            <p class="hint">Create an event name and assign Stage 1/2/3/Sight judges. Open Judge still works without this.</p>
+            <div class="stack">
+              <div>
+                <h4>Create Event</h4>
+                <label>
+                  Event Name
+                  <input type="text" id="eventNameInput" placeholder="Eastern District MPA" />
+                </label>
+                <div class="row">
+                  <button type="button" id="createEventBtn">Create Event</button>
+                </div>
+                <div class="note" id="activeEventDisplay">No active event.</div>
+              </div>
+              <div>
+                <h4>Events</h4>
+                <ul id="eventList" class="list"></ul>
+              </div>
+              <div>
+                <h4>Judge Assignments</h4>
+                <form id="assignmentsForm" class="stack">
+                  <label>
+                    Stage 1
+                    <select id="stage1JudgeSelect"></select>
+                  </label>
+                  <label>
+                    Stage 2
+                    <select id="stage2JudgeSelect"></select>
+                  </label>
+                  <label>
+                    Stage 3
+                    <select id="stage3JudgeSelect"></select>
+                  </label>
+                  <label>
+                    Sight Reading
+                    <select id="sightJudgeSelect"></select>
+                  </label>
+                  <button type="submit">Save Assignments</button>
+                </form>
+                <div class="note" id="assignmentsError"></div>
+              </div>
+            </div>
+          </div>
+
           <div class="panel" id="adminOpenPacketsSection">
             <h3>Open Packets</h3>
             <p class="hint">Manage open judge packets (no schedule required).</p>
             <div class="note" id="adminOpenPacketsHint"></div>
             <ul id="adminOpenPacketsList" class="list"></ul>
+          </div>
+
+          <div class="panel" id="adminLogisticsSection">
+            <h3>Stage Setup Logistics</h3>
+            <p class="hint">View seating chart and percussion needs from the Director entry for the active event.</p>
+            <div class="stack">
+              <div class="stack">
+                <strong>Band On Stage</strong>
+                <div class="row">
+                  <label class="grow">
+                    School
+                    <select id="adminLogisticsCurrentSchoolSelect"></select>
+                  </label>
+                  <label class="grow">
+                    Ensemble
+                    <select id="adminLogisticsCurrentEnsembleSelect"></select>
+                  </label>
+                </div>
+              </div>
+              <div class="stack">
+                <strong>Next Band</strong>
+                <div class="row">
+                  <label class="grow">
+                    School
+                    <select id="adminLogisticsNextSchoolSelect"></select>
+                  </label>
+                  <label class="grow">
+                    Ensemble
+                    <select id="adminLogisticsNextEnsembleSelect"></select>
+                  </label>
+                </div>
+              </div>
+              <div class="note" id="adminLogisticsStatus">Set an active event, then choose Band On Stage and Next Band.</div>
+              <div class="stack" id="adminLogisticsContent"></div>
+            </div>
           </div>
 
           <div class="panel" id="adminSchoolsSection">
@@ -200,7 +280,7 @@
               <div class="detail-header">
                 <button type="button" class="ghost" id="judgeOpenBackBtn">Back</button>
                 <div class="detail-title">
-                  <div class="detail-title-main" id="judgeOpenHeaderTitle">School • Ensemble</div>
+                  <div class="detail-title-main" id="judgeOpenHeaderTitle">School - Ensemble</div>
                   <div class="detail-title-sub" id="judgeOpenHeaderSub">Draft</div>
                 </div>
               </div>
@@ -208,7 +288,7 @@
               <div class="panel stack judge-open-summary-panel" id="judgeOpenSummaryPanel">
                 <div class="row">
                   <div class="event-meta">
-                    <div class="event-meta-name" id="judgeOpenSummaryTitle">School • Ensemble</div>
+                    <div class="event-meta-name" id="judgeOpenSummaryTitle">School - Ensemble</div>
                     <div class="event-meta-detail" id="judgeOpenSummaryMeta">Draft packet</div>
                   </div>
                   <span class="badge" id="judgeOpenSummaryStatus">Draft</span>
@@ -220,6 +300,18 @@
                 <div class="step-heading">
                   <span class="badge">Step 1</span>
                   <strong>Identify Ensemble</strong>
+                </div>
+                <label class="row" style="align-items:center;">
+                  <input type="checkbox" id="judgeOpenUseEventDefaultsToggle" />
+                  <span>Use active event defaults when available</span>
+                </label>
+                <div class="note" id="judgeOpenEventDefaultsStatus">
+                  Open mode: no active event assignment.
+                </div>
+                <div class="row">
+                  <button type="button" id="judgeOpenSaveEventDefaultsBtn" class="ghost">
+                    Save Mode Default
+                  </button>
                 </div>
                 <label>
                   Select existing ensemble (prefills School/Ensemble)
@@ -249,6 +341,17 @@
                 </div>
               </div>
 
+              <div class="panel stack judge-open-step-card" id="judgeOpenDirectorRefPanel">
+                <div class="step-heading">
+                  <span class="badge">Reference</span>
+                  <strong>Director Entry</strong>
+                </div>
+                <div class="note" id="judgeOpenDirectorRefStatus">
+                  Link an existing ensemble to load Director repertoire/instrumentation.
+                </div>
+                <div class="stack" id="judgeOpenDirectorRefContent"></div>
+              </div>
+
               <div class="panel stack judge-open-step-card">
                 <div class="step-heading">
                   <span class="badge">Step 2</span>
@@ -262,6 +365,7 @@
                   <button type="button" id="judgeOpenStopBtn" class="btn--secondary" disabled>Stop</button>
                   <div class="recording-meta">
                     <span id="judgeOpenRecordingStatus" class="hint"></span>
+                    <div class="hint" id="judgeOpenMicSettingsDebug"></div>
                     <div class="level-meter" id="judgeOpenLevelMeter" aria-hidden="true">
                       <div class="level-meter-fill" id="judgeOpenLevelMeterFill"></div>
                     </div>
@@ -386,6 +490,7 @@
             <h3>Event Entry</h3>
             <div class="row">
               <div class="note">Status: <span id="directorEntryStatus">Incomplete</span></div>
+              <div class="note" id="directorSchoolLunchTotal"></div>
               <div class="note" id="directorSaveStatus"></div>
               <span class="autosave-indicator" id="directorAutosaveIndicator">Autosaved</span>
             </div>
@@ -403,10 +508,7 @@
                 Performance Grade (auto-derived from repertoire grades)
                 <input type="text" id="directorPerformanceGradeInput" placeholder="Auto-derived" readonly />
               </label>
-              <label class="director-flex-row">
-                <input type="checkbox" id="directorPerformanceGradeFlex" />
-                Flex
-              </label>
+              <input type="checkbox" id="directorPerformanceGradeFlex" hidden />
               <div class="error" id="performanceGradeError"></div>
               <details class="panel accordion-card" open>
                 <summary>
@@ -587,7 +689,22 @@
         <div class="note" id="eventDetailMeta"></div>
         <div class="panel">
           <h3>Event Schedule</h3>
-          <div class="empty">Schedule coming soon.</div>
+          <div class="stack">
+            <div class="row" id="eventScheduleAdminControls">
+              <input type="file" id="eventScheduleFileInput" accept="application/pdf" />
+              <button type="button" class="ghost" id="eventScheduleUploadBtn">Upload PDF</button>
+            </div>
+            <div class="note" id="eventScheduleStatus"></div>
+            <div class="row" id="eventScheduleLinkRow">
+              <a id="eventScheduleLink" href="#" target="_blank" rel="noopener">Open Schedule PDF</a>
+            </div>
+            <iframe
+              id="eventScheduleFrame"
+              title="Event Schedule PDF"
+              style="width:100%; min-height:70vh; border:1px solid var(--border); border-radius:8px; display:none;"
+            ></iframe>
+            <div class="empty" id="eventScheduleEmpty">No schedule PDF uploaded yet.</div>
+          </div>
         </div>
       </section>
     </main>

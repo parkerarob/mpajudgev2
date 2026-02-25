@@ -20,7 +20,7 @@ import {
 } from "./firestore.js";
 import { COLLECTIONS, FIELDS, state } from "../state.js";
 import { db, functions } from "../firebase.js";
-import { computePacketSummary } from "./judge.js";
+import { computePacketSummary } from "./judge-shared.js";
 import { getDirectorNameForSchool } from "./director.js";
 import { getSchoolNameById } from "./utils.js";
 
@@ -116,17 +116,27 @@ export async function provisionUser(payload) {
   return response.data || {};
 }
 
+export async function renameEvent({ eventId, name }) {
+  if (!eventId) throw new Error("eventId required");
+  const eventRef = doc(db, COLLECTIONS.events, eventId);
+  return updateDoc(eventRef, {
+    name: String(name || "").trim(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
 export async function deleteEvent(eventId) {
   const deleteEventFn = httpsCallable(functions, "deleteEvent");
   return deleteEventFn({ eventId });
 }
 
 export async function setActiveEvent(eventId) {
+  const targetId = String(eventId || "").trim();
   const eventsSnap = await getDocs(collection(db, COLLECTIONS.events));
   const batch = writeBatch(db);
   eventsSnap.forEach((eventDoc) => {
     batch.update(eventDoc.ref, {
-      isActive: eventDoc.id === eventId,
+      isActive: Boolean(targetId) && eventDoc.id === targetId,
       updatedAt: serverTimestamp(),
     });
   });
@@ -165,6 +175,26 @@ export function watchActiveEvent(callback) {
   });
 }
 
+export function watchAssignmentsForActiveEvent(callback) {
+  if (state.subscriptions.assignments) state.subscriptions.assignments();
+  if (!state.event.active?.id) {
+    state.event.assignments = null;
+    callback?.(null);
+    return;
+  }
+  const assignmentsRef = doc(
+    db,
+    COLLECTIONS.events,
+    state.event.active.id,
+    COLLECTIONS.assignments,
+    "positions"
+  );
+  state.subscriptions.assignments = onSnapshot(assignmentsRef, (snapshot) => {
+    state.event.assignments = snapshot.exists() ? snapshot.data() : null;
+    callback?.(state.event.assignments);
+  });
+}
+
 export function watchSchools(callback) {
   if (state.subscriptions.schools) state.subscriptions.schools();
   const schoolsQuery = query(collection(db, COLLECTIONS.schools), orderBy("name"));
@@ -188,7 +218,7 @@ export function watchJudges(callback) {
       const data = docSnap.data();
       const name = data.displayName || "";
       const email = data.email || "";
-      const label = name && email ? `${name} — ${email}` : name || email || "Unknown judge";
+      const label = name && email ? `${name} - ${email}` : name || email || "Unknown judge";
       return { uid: docSnap.id, label };
     });
     judges.sort((a, b) => a.label.localeCompare(b.label));
@@ -342,6 +372,11 @@ export async function unreleaseOpenPacket({ packetId }) {
 export async function linkOpenPacketToEnsemble({ packetId, schoolId, ensembleId }) {
   const linkFn = httpsCallable(functions, "linkOpenPacketToEnsemble");
   return linkFn({ packetId, schoolId, ensembleId });
+}
+
+export async function setOpenPacketJudgePosition({ packetId, judgePosition, assignmentEventId }) {
+  const setFn = httpsCallable(functions, "setOpenPacketJudgePosition");
+  return setFn({ packetId, judgePosition, assignmentEventId });
 }
 
 export async function deleteOpenPacket({ packetId }) {

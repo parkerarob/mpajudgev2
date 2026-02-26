@@ -2990,17 +2990,35 @@ export function renderAdminOpenPackets(packets) {
     });
     actions.appendChild(releaseBtn);
 
-    const linkBtn = document.createElement("button");
-    linkBtn.className = "ghost";
-    linkBtn.textContent = "Link Ensemble";
-    linkBtn.addEventListener("click", async () => {
-      const schoolId = window.prompt("School ID to link:");
-      if (!schoolId) return;
-      const ensembleId = window.prompt("Ensemble ID to link:");
-      if (!ensembleId) return;
-      await linkOpenPacketToEnsemble({ packetId: packet.id, schoolId, ensembleId });
+    const packetPanel = document.createElement("div");
+    packetPanel.className = "packet-panel is-hidden";
+
+    const canViewPacket = Boolean(packet.ensembleId);
+    const viewBtn = document.createElement("button");
+    viewBtn.className = "ghost";
+    viewBtn.textContent = "View Packet";
+    if (!canViewPacket) {
+      viewBtn.disabled = true;
+      viewBtn.title = "Link this packet to an ensemble before viewing.";
+    }
+    const packetEntry = {
+      ensembleId: packet.ensembleId || "",
+      schoolId: packet.schoolId || "",
+    };
+    const packetEventId = packet.assignmentEventId || state.event.active?.id || "";
+    viewBtn.addEventListener("click", async () => {
+      if (!canViewPacket || !packetEventId) return;
+      const isHidden = packetPanel.classList.contains("is-hidden");
+      if (isHidden) {
+        packetPanel.classList.remove("is-hidden");
+        viewBtn.textContent = "Hide Packet";
+        await loadAdminPacketView(packetEntry, packetPanel, packetEventId);
+      } else {
+        packetPanel.classList.add("is-hidden");
+        viewBtn.textContent = "View Packet";
+      }
     });
-    actions.appendChild(linkBtn);
+    actions.appendChild(viewBtn);
 
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "ghost";
@@ -3018,8 +3036,8 @@ export function renderAdminOpenPackets(packets) {
       }
     });
     actions.appendChild(deleteBtn);
-
     item.appendChild(actions);
+    item.appendChild(packetPanel);
     els.adminOpenPacketsList.appendChild(item);
   });
 }
@@ -4447,16 +4465,17 @@ function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) 
   return captionSummary;
 }
 
-export async function loadAdminPacketView(entry, packetPanel) {
+export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
   if (!packetPanel) return;
   packetPanel.innerHTML = "Loading packet...";
-  if (!state.event.active) {
+  const eventId = eventIdOverride || state.event.active?.id;
+  if (!eventId) {
     packetPanel.textContent = "No active event.";
     return;
   }
   try {
     const { grade, directorName, submissions, summary } = await getPacketData({
-      eventId: state.event.active.id,
+      eventId,
       entry,
     });
     packetPanel.innerHTML = "";
@@ -4476,9 +4495,9 @@ export async function loadAdminPacketView(entry, packetPanel) {
     releaseBtn.disabled = shouldRelease ? !summary?.requiredComplete : false;
     releaseBtn.addEventListener("click", async () => {
       if (shouldRelease) {
-        await releasePacket({ eventId: state.event.active.id, ensembleId: entry.ensembleId });
-      } else {
-        await unreleasePacket({ eventId: state.event.active.id, ensembleId: entry.ensembleId });
+      await releasePacket({ eventId, ensembleId: entry.ensembleId });
+    } else {
+        await unreleasePacket({ eventId, ensembleId: entry.ensembleId });
       }
     });
     actionRow.appendChild(releaseBtn);
@@ -4501,13 +4520,13 @@ export async function loadAdminPacketView(entry, packetPanel) {
         lockBtn.addEventListener("click", async () => {
           if (isLocked) {
             await unlockSubmission({
-              eventId: state.event.active.id,
+              eventId,
               ensembleId: entry.ensembleId,
               judgePosition: position,
             });
           } else {
             await lockSubmission({
-              eventId: state.event.active.id,
+              eventId,
               ensembleId: entry.ensembleId,
               judgePosition: position,
             });

@@ -156,6 +156,31 @@
             </div>
           </div>
 
+          <div class="panel" id="adminDutiesSection">
+            <h3>Ensemble Admin Checkoffs</h3>
+            <p class="hint">Track Signature Form and fee collection status for each ensemble in the active event.</p>
+            <div class="stack">
+              <div class="row">
+                <label class="grow">
+                  School
+                  <select id="adminDutiesSchoolSelect"></select>
+                </label>
+                <label class="grow">
+                  Search Ensemble
+                  <input type="search" id="adminDutiesSearchInput" placeholder="Type ensemble name" />
+                </label>
+              </div>
+              <div class="stack">
+                <strong>All Schools Overview</strong>
+                <div class="note" id="adminDutiesOverviewStatus">Set an active event to load the overview.</div>
+                <div class="stack" id="adminDutiesOverviewList"></div>
+              </div>
+              <div class="note" id="adminDutiesSummary"></div>
+              <div class="note" id="adminDutiesStatus">Set an active event, then choose a school.</div>
+              <div class="stack" id="adminDutiesList"></div>
+            </div>
+          </div>
+
           <div class="panel" id="adminSchoolsSection">
             <h3>Directory</h3>
             <div class="stack">
@@ -490,6 +515,7 @@
             <h3>Event Entry</h3>
             <div class="row">
               <div class="note">Status: <span id="directorEntryStatus">Incomplete</span></div>
+              <div class="note" id="directorAdminDutiesStatus">Admin Checkoffs: Not recorded yet</div>
               <div class="note" id="directorSchoolLunchTotal"></div>
               <div class="note" id="directorSaveStatus"></div>
               <span class="autosave-indicator" id="directorAutosaveIndicator">Autosaved</span>
@@ -690,20 +716,120 @@
         <div class="panel">
           <h3>Event Schedule</h3>
           <div class="stack">
-            <div class="row" id="eventScheduleAdminControls">
-              <input type="file" id="eventScheduleFileInput" accept="application/pdf" />
-              <button type="button" class="ghost" id="eventScheduleUploadBtn">Upload PDF</button>
+            <div class="panel" id="eventScheduleBuilderPanel">
+              <div class="row">
+                <strong>Schedule Builder (Optional)</strong>
+                <div class="note" id="eventSchedulePublishedMeta"></div>
+              </div>
+              <div class="row">
+                <button type="button" class="ghost" id="eventSchedulePublishBtn">Publish Schedule</button>
+                <button type="button" class="ghost" id="eventScheduleUnpublishBtn">Unpublish</button>
+                <div class="note" id="eventScheduleDraftStatus"></div>
+              </div>
+              <div class="stack">
+                <strong>Add Schedule Row</strong>
+                <div class="row">
+                  <label class="grow">
+                    School
+                    <select id="eventScheduleAddSchoolSelect"></select>
+                  </label>
+                  <label class="grow">
+                    Ensemble
+                    <select id="eventScheduleAddEnsembleSelect"></select>
+                  </label>
+                  <label>
+                    Order
+                    <input type="number" id="eventScheduleAddOrderInput" min="1" step="1" placeholder="1" />
+                  </label>
+                </div>
+                <div class="row">
+                  <label class="grow">
+                    Holding
+                    <input type="datetime-local" id="eventScheduleAddHoldingInput" />
+                  </label>
+                  <label class="grow">
+                    Warm-up
+                    <input type="datetime-local" id="eventScheduleAddWarmupInput" />
+                  </label>
+                  <label class="grow">
+                    Performance
+                    <input type="datetime-local" id="eventScheduleAddPerformanceInput" />
+                  </label>
+                  <label class="grow">
+                    Sight-reading (optional)
+                    <input type="datetime-local" id="eventScheduleAddSightInput" />
+                  </label>
+                  <label>
+                    &nbsp;
+                    <button type="button" id="eventScheduleAddRowBtn">Add Row</button>
+                  </label>
+                </div>
+              </div>
+              <div class="empty" id="eventScheduleDraftEmpty">No schedule rows yet. Add rows to build a schedule.</div>
+              <div id="eventScheduleDraftTableWrap" style="display:none; overflow:auto;">
+                <table style="width:100%; border-collapse:collapse;">
+                  <thead>
+                    <tr>
+                      <th style="text-align:left;">Order</th>
+                      <th style="text-align:left;">School</th>
+                      <th style="text-align:left;">Ensemble</th>
+                      <th style="text-align:left;">Holding</th>
+                      <th style="text-align:left;">Warm-up</th>
+                      <th style="text-align:left;">Performance</th>
+                      <th style="text-align:left;">Sight</th>
+                      <th style="text-align:left;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="eventScheduleDraftBody"></tbody>
+                </table>
+              </div>
             </div>
-            <div class="note" id="eventScheduleStatus"></div>
-            <div class="row" id="eventScheduleLinkRow">
-              <a id="eventScheduleLink" href="#" target="_blank" rel="noopener">Open Schedule PDF</a>
+
+            <div class="panel" id="eventSchedulePublishedSection">
+              <div class="row">
+                <strong>Published Schedule (Director View)</strong>
+                <div class="note" id="eventSchedulePublishedStatus"></div>
+              </div>
+              <div class="empty" id="eventSchedulePublishedEmpty">Schedule not published yet.</div>
+              <div id="eventSchedulePublishedTableWrap" style="display:none; overflow:auto;">
+                <table style="width:100%; border-collapse:collapse;">
+                  <thead>
+                    <tr>
+                      <th style="text-align:left;">Order</th>
+                      <th style="text-align:left;">School</th>
+                      <th style="text-align:left;">Ensemble</th>
+                      <th style="text-align:left;">Holding</th>
+                      <th style="text-align:left;">Warm-up</th>
+                      <th style="text-align:left;">Performance</th>
+                      <th style="text-align:left;">Sight</th>
+                    </tr>
+                  </thead>
+                  <tbody id="eventSchedulePublishedBody"></tbody>
+                </table>
+              </div>
             </div>
-            <iframe
-              id="eventScheduleFrame"
-              title="Event Schedule PDF"
-              style="width:100%; min-height:70vh; border:1px solid var(--border); border-radius:8px; display:none;"
-            ></iframe>
-            <div class="empty" id="eventScheduleEmpty">No schedule PDF uploaded yet.</div>
+
+            <details class="panel">
+              <summary>
+                <strong>Legacy PDF Schedule (Optional)</strong>
+              </summary>
+              <div class="stack" style="margin-top:8px;">
+                <div class="row" id="eventScheduleAdminControls">
+                  <input type="file" id="eventScheduleFileInput" accept="application/pdf" />
+                  <button type="button" class="ghost" id="eventScheduleUploadBtn">Upload PDF</button>
+                </div>
+                <div class="note" id="eventScheduleStatus"></div>
+                <div class="row" id="eventScheduleLinkRow">
+                  <a id="eventScheduleLink" href="#" target="_blank" rel="noopener">Open Schedule PDF</a>
+                </div>
+                <iframe
+                  id="eventScheduleFrame"
+                  title="Event Schedule PDF"
+                  style="width:100%; min-height:70vh; border:1px solid var(--border); border-radius:8px; display:none;"
+                ></iframe>
+                <div class="empty" id="eventScheduleEmpty">No schedule PDF uploaded yet.</div>
+              </div>
+            </details>
           </div>
         </div>
       </section>

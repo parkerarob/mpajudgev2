@@ -152,6 +152,15 @@ service cloud.firestore {
         allow read: if (isAdmin() || isJudge()) && isActiveEvent(eventId);
         allow create, update: if isAdmin()
           && request.resource.data.performanceAt is timestamp
+          && (!("holdingAt" in request.resource.data)
+            || request.resource.data.holdingAt == null
+            || request.resource.data.holdingAt is timestamp)
+          && (!("warmupAt" in request.resource.data)
+            || request.resource.data.warmupAt == null
+            || request.resource.data.warmupAt is timestamp)
+          && (request.resource.data.sightReadingAt == null
+            || request.resource.data.sightReadingAt is timestamp)
+          && (!("sortOrder" in request.resource.data) || request.resource.data.sortOrder is number)
           && request.resource.data.schoolId is string
           && request.resource.data.ensembleId is string
           && schoolExists(request.resource.data.schoolId)
@@ -160,6 +169,11 @@ service cloud.firestore {
             request.resource.data.ensembleId
           );
         allow delete: if isAdmin();
+      }
+
+      match /publishedSchedule/{rowId} {
+        allow read: if isSignedIn();
+        allow write: if isAdmin();
       }
 
       match /entries/{ensembleId} {

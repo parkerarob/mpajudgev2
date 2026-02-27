@@ -8,6 +8,7 @@ import {
   fetchEnsembleGrade,
   fetchPacketSubmissions,
   getDocs,
+  increment,
   onSnapshot,
   orderBy,
   query,
@@ -43,8 +44,13 @@ export async function createScheduleEntry({
   ensembleId,
   ensembleName,
 }) {
+  const perfTs = Timestamp.fromDate(performanceAtDate);
   return addDoc(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule), {
-    performanceAt: Timestamp.fromDate(performanceAtDate),
+    performanceAt: perfTs,
+    holdingAt: perfTs,
+    warmupAt: perfTs,
+    sightReadingAt: null,
+    sortOrder: Math.trunc(performanceAtDate.getTime() / 1000),
     schoolId,
     ensembleId,
     schoolName: getSchoolNameById(state.admin.schoolsList, schoolId),
@@ -302,6 +308,255 @@ export async function updateScheduleEntryTime({ eventId, entryId, nextDate }) {
 
 export async function deleteScheduleEntry({ eventId, entryId }) {
   return deleteDoc(doc(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule, entryId));
+}
+
+export async function createEventScheduleRow({
+  eventId,
+  schoolId,
+  ensembleId,
+  ensembleName,
+  sortOrder,
+  holdingAtDate,
+  warmupAtDate,
+  performanceAtDate,
+  sightReadingAtDate = null,
+}) {
+  if (!eventId) throw new Error("eventId required");
+  if (!schoolId || !ensembleId) throw new Error("School and ensemble are required.");
+  if (!(holdingAtDate instanceof Date) || Number.isNaN(holdingAtDate.getTime())) {
+    throw new Error("Holding time is required.");
+  }
+  if (!(warmupAtDate instanceof Date) || Number.isNaN(warmupAtDate.getTime())) {
+    throw new Error("Warm-up time is required.");
+  }
+  if (!(performanceAtDate instanceof Date) || Number.isNaN(performanceAtDate.getTime())) {
+    throw new Error("Performance time is required.");
+  }
+  const orderValue = Number(sortOrder);
+  return addDoc(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule), {
+    schoolId,
+    schoolName: getSchoolNameById(state.admin.schoolsList, schoolId),
+    ensembleId,
+    ensembleName: ensembleName || ensembleId,
+    sortOrder: Number.isFinite(orderValue) && orderValue > 0 ? Math.trunc(orderValue) : 9999,
+    holdingAt: Timestamp.fromDate(holdingAtDate),
+    warmupAt: Timestamp.fromDate(warmupAtDate),
+    performanceAt: Timestamp.fromDate(performanceAtDate),
+    sightReadingAt:
+      sightReadingAtDate instanceof Date && !Number.isNaN(sightReadingAtDate.getTime())
+        ? Timestamp.fromDate(sightReadingAtDate)
+        : null,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateEventScheduleRow({
+  eventId,
+  rowId,
+  sortOrder,
+  holdingAtDate,
+  warmupAtDate,
+  performanceAtDate,
+  sightReadingAtDate,
+}) {
+  if (!eventId || !rowId) throw new Error("Missing schedule row.");
+  const patch = {
+    updatedAt: serverTimestamp(),
+  };
+  if (sortOrder !== undefined) {
+    const orderValue = Number(sortOrder);
+    patch.sortOrder = Number.isFinite(orderValue) ? Math.trunc(orderValue) : 9999;
+  }
+  if (holdingAtDate !== undefined) {
+    patch.holdingAt =
+      holdingAtDate instanceof Date && !Number.isNaN(holdingAtDate.getTime())
+        ? Timestamp.fromDate(holdingAtDate)
+        : null;
+  }
+  if (warmupAtDate !== undefined) {
+    patch.warmupAt =
+      warmupAtDate instanceof Date && !Number.isNaN(warmupAtDate.getTime())
+        ? Timestamp.fromDate(warmupAtDate)
+        : null;
+  }
+  if (performanceAtDate !== undefined) {
+    patch.performanceAt =
+      performanceAtDate instanceof Date && !Number.isNaN(performanceAtDate.getTime())
+        ? Timestamp.fromDate(performanceAtDate)
+        : null;
+  }
+  if (sightReadingAtDate !== undefined) {
+    patch.sightReadingAt =
+      sightReadingAtDate instanceof Date && !Number.isNaN(sightReadingAtDate.getTime())
+        ? Timestamp.fromDate(sightReadingAtDate)
+        : null;
+  }
+  return updateDoc(doc(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule, rowId), patch);
+}
+
+export async function deleteEventScheduleRow({ eventId, rowId }) {
+  if (!eventId || !rowId) throw new Error("Missing schedule row.");
+  return deleteDoc(doc(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule, rowId));
+}
+
+export function watchEventScheduleRows(eventId, callback) {
+  if (!eventId) {
+    callback?.([]);
+    return () => {};
+  }
+  const q = query(
+    collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule),
+    orderBy("performanceAt", "asc")
+  );
+  return onSnapshot(q, (snapshot) => {
+    const rows = snapshot.docs
+      .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+      .sort((a, b) => {
+        const aSort = Number(a.sortOrder || 9999);
+        const bSort = Number(b.sortOrder || 9999);
+        if (aSort !== bSort) return aSort - bSort;
+        const aTime = a.performanceAt?.toMillis ? a.performanceAt.toMillis() : 0;
+        const bTime = b.performanceAt?.toMillis ? b.performanceAt.toMillis() : 0;
+        return aTime - bTime;
+      });
+    callback?.(rows);
+  });
+}
+
+export function watchPublishedEventScheduleRows(eventId, callback) {
+  if (!eventId) {
+    callback?.([]);
+    return () => {};
+  }
+  const q = query(
+    collection(db, COLLECTIONS.events, eventId, "publishedSchedule"),
+    orderBy("performanceAt", "asc")
+  );
+  return onSnapshot(q, (snapshot) => {
+    const rows = snapshot.docs
+      .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+      .sort((a, b) => {
+        const aSort = Number(a.sortOrder || 9999);
+        const bSort = Number(b.sortOrder || 9999);
+        if (aSort !== bSort) return aSort - bSort;
+        const aTime = a.performanceAt?.toMillis ? a.performanceAt.toMillis() : 0;
+        const bTime = b.performanceAt?.toMillis ? b.performanceAt.toMillis() : 0;
+        return aTime - bTime;
+      });
+    callback?.(rows);
+  });
+}
+
+export async function publishEventSchedule({ eventId }) {
+  if (!eventId) throw new Error("eventId required");
+  const eventRef = doc(db, COLLECTIONS.events, eventId);
+  const draftSnap = await getDocs(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule));
+  const rows = draftSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+  if (!rows.length) {
+    throw new Error("Add at least one schedule row before publishing.");
+  }
+  rows.forEach((row) => {
+    if (!row.schoolId || !row.ensembleId) throw new Error("Every schedule row needs school and ensemble.");
+    if (!row.holdingAt) throw new Error("Every row needs holding time.");
+    if (!row.warmupAt) throw new Error("Every row needs warm-up time.");
+    if (!row.performanceAt) throw new Error("Every row needs performance time.");
+  });
+  const duplicateKeys = new Set();
+  rows.forEach((row) => {
+    const key = `${row.schoolId || ""}::${row.ensembleId || ""}`;
+    if (duplicateKeys.has(key)) {
+      throw new Error("Duplicate school/ensemble schedule rows found. Remove duplicates before publishing.");
+    }
+    duplicateKeys.add(key);
+  });
+
+  const existingPublished = await getDocs(collection(db, COLLECTIONS.events, eventId, "publishedSchedule"));
+  const eventSnap = await getDoc(eventRef);
+  const currentVersion = Number(eventSnap.data()?.schedulePublishedVersion || 0);
+  const nextVersion = currentVersion + 1;
+  const batch = writeBatch(db);
+  existingPublished.docs.forEach((docSnap) => {
+    batch.delete(docSnap.ref);
+  });
+  rows.forEach((row) => {
+    const publishedRef = doc(db, COLLECTIONS.events, eventId, "publishedSchedule", row.id);
+    batch.set(publishedRef, {
+      ...row,
+      publishedVersion: nextVersion,
+      publishedAt: serverTimestamp(),
+    });
+  });
+  batch.update(eventRef, {
+    schedulePublished: true,
+    schedulePublishedAt: serverTimestamp(),
+    schedulePublishedVersion: increment(1),
+    updatedAt: serverTimestamp(),
+  });
+  await batch.commit();
+}
+
+export async function unpublishEventSchedule({ eventId }) {
+  if (!eventId) throw new Error("eventId required");
+  const publishedSnap = await getDocs(collection(db, COLLECTIONS.events, eventId, "publishedSchedule"));
+  const eventRef = doc(db, COLLECTIONS.events, eventId);
+  const batch = writeBatch(db);
+  publishedSnap.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+  batch.set(
+    eventRef,
+    {
+      schedulePublished: false,
+      schedulePublishedAt: null,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await batch.commit();
+}
+
+export async function loadAdminDutiesEntriesForSchool({ eventId, schoolId }) {
+  if (!eventId || !schoolId) return [];
+  const entriesQuery = query(
+    collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries),
+    where("schoolId", "==", schoolId)
+  );
+  const snapshot = await getDocs(entriesQuery);
+  return snapshot.docs.map((docSnap) => ({
+    id: docSnap.id,
+    ...docSnap.data(),
+  }));
+}
+
+export async function loadAdminDutiesEntriesForEvent({ eventId }) {
+  if (!eventId) return [];
+  const snapshot = await getDocs(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries));
+  return snapshot.docs.map((docSnap) => ({
+    id: docSnap.id,
+    ...docSnap.data(),
+  }));
+}
+
+export async function saveAdminDutiesForEnsemble({
+  eventId,
+  schoolId,
+  ensembleId,
+  adminDuties,
+}) {
+  if (!eventId || !schoolId || !ensembleId) {
+    throw new Error("Missing event, school, or ensemble.");
+  }
+  const entryRef = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId);
+  return setDoc(
+    entryRef,
+    {
+      eventId,
+      schoolId,
+      ensembleId,
+      adminDuties: adminDuties || {},
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 export async function getPacketData({ eventId, entry }) {

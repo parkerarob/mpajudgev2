@@ -222,6 +222,16 @@ export function buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid 
       cheeseQty: 0,
       notes: "",
     },
+    adminDuties: {
+      signatureFormReceived: false,
+      feeReceived: false,
+      payment: {
+        method: "",
+        amount: null,
+        checkNumber: "",
+      },
+      adminNote: "",
+    },
   };
 }
 
@@ -321,6 +331,25 @@ export function normalizeEntryData(data, defaults) {
     ...defaults.lunchOrder,
     ...(data?.lunchOrder || {}),
   };
+  base.adminDuties = {
+    ...defaults.adminDuties,
+    ...(data?.adminDuties || {}),
+  };
+  base.adminDuties.payment = {
+    ...(defaults.adminDuties?.payment || {}),
+    ...(data?.adminDuties?.payment || {}),
+  };
+  base.adminDuties.signatureFormReceived = Boolean(base.adminDuties.signatureFormReceived);
+  base.adminDuties.feeReceived = Boolean(base.adminDuties.feeReceived);
+  base.adminDuties.payment.method =
+    base.adminDuties.payment.method === "check" || base.adminDuties.payment.method === "cash"
+      ? base.adminDuties.payment.method
+      : "";
+  const parsedAmount = Number(base.adminDuties.payment.amount);
+  base.adminDuties.payment.amount =
+    Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : null;
+  base.adminDuties.payment.checkNumber = String(base.adminDuties.payment.checkNumber || "").trim();
+  base.adminDuties.adminNote = String(base.adminDuties.adminNote || "");
   return base;
 }
 

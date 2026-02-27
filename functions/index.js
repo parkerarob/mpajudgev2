@@ -199,9 +199,15 @@ async function resolveActiveEventAssignmentForUser(uid) {
   const activeSnap = await db
       .collection(COLLECTIONS.events)
       .where(FIELDS.events.isActive, "==", true)
-      .limit(1)
+      .limit(2)
       .get();
   if (activeSnap.empty) return null;
+  if (activeSnap.size > 1) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Multiple active events found. Set exactly one active event.",
+    );
+  }
   const eventDoc = activeSnap.docs[0];
   const assignmentsSnap = await db
       .collection(COLLECTIONS.events)
@@ -347,7 +353,69 @@ function isSubmissionReady(submission) {
   if (Object.keys(submission.captions).length < 7) return false;
   if (typeof submission.captionScoreTotal !== "number") return false;
   if (typeof submission.computedFinalRatingJudge !== "number") return false;
+  if (!isSubmissionFormTypeValid(submission)) return false;
+  const scoreCheck = validateSubmissionScoreConsistency(submission);
+  if (!scoreCheck.ok) return false;
   return true;
+}
+
+function normalizeCaptionGradeLetter(letter) {
+  const value = String(letter || "").trim().toUpperCase();
+  if (!value) return "";
+  return value.replace(/[+-]/g, "");
+}
+
+function isSubmissionFormTypeValid(submission) {
+  const judgePosition = String(submission?.judgePosition || "");
+  const formType = String(submission?.formType || "");
+  if (judgePosition === JUDGE_POSITIONS.sight) {
+    return formType === FORM_TYPES.sight;
+  }
+  if ([
+    JUDGE_POSITIONS.stage1,
+    JUDGE_POSITIONS.stage2,
+    JUDGE_POSITIONS.stage3,
+  ].includes(judgePosition)) {
+    return formType === FORM_TYPES.stage;
+  }
+  return false;
+}
+
+function validateSubmissionScoreConsistency(submission) {
+  const captions = submission?.captions;
+  if (!captions || typeof captions !== "object") {
+    return {ok: false, reason: "captions missing"};
+  }
+  const captionValues = Object.values(captions);
+  if (captionValues.length !== 7) {
+    return {ok: false, reason: "caption count invalid"};
+  }
+
+  const recomputedTotal = captionValues.reduce((sum, caption) => {
+    const letter = normalizeCaptionGradeLetter(caption?.gradeLetter);
+    const score = GRADE_VALUES[letter] || 0;
+    return sum + score;
+  }, 0);
+
+  if (recomputedTotal < 7 || recomputedTotal > 35) {
+    return {ok: false, reason: "caption total out of range"};
+  }
+  if (submission.captionScoreTotal !== recomputedTotal) {
+    return {ok: false, reason: "caption total mismatch"};
+  }
+
+  const recomputedRating = computeFinalRatingFromTotal(recomputedTotal);
+  if (recomputedRating.value == null) {
+    return {ok: false, reason: "rating unresolved"};
+  }
+  if (submission.computedFinalRatingJudge !== recomputedRating.value) {
+    return {ok: false, reason: "judge rating mismatch"};
+  }
+  const currentLabel = String(submission.computedFinalRatingLabel || "").trim();
+  if (currentLabel && currentLabel !== recomputedRating.label) {
+    return {ok: false, reason: "judge label mismatch"};
+  }
+  return {ok: true};
 }
 
 function calculateCaptionTotal(captions = {}) {
@@ -1577,6 +1645,32 @@ exports.lockSubmission = onCall(async (request) => {
     [FIELDS.submissions.locked]: true,
   });
   return {locked: true};
+});
+
+exports.setActiveEvent = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const targetEventId = String(data.eventId || "").trim();
+  const db = admin.firestore();
+
+  if (targetEventId) {
+    const targetRef = db.collection(COLLECTIONS.events).doc(targetEventId);
+    const targetSnap = await targetRef.get();
+    if (!targetSnap.exists) {
+      throw new HttpsError("not-found", "Event not found.");
+    }
+  }
+
+  const eventsSnap = await db.collection(COLLECTIONS.events).get();
+  const batch = db.batch();
+  eventsSnap.forEach((eventDoc) => {
+    batch.update(eventDoc.ref, {
+      [FIELDS.events.isActive]: Boolean(targetEventId) && eventDoc.id === targetEventId,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+  await batch.commit();
+  return {ok: true, activeEventId: targetEventId || null};
 });
 
 exports.provisionUser = onCall(async (request) => {

@@ -60,6 +60,81 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/schools/$(schoolId)/ensembles/$(ensembleId));
     }
 
+    function isJudgePosition(position) {
+      return position == "stage1"
+        || position == "stage2"
+        || position == "stage3"
+        || position == "sight";
+    }
+
+    function isValidSubmissionFormType(data) {
+      return (
+          data.judgePosition == "sight"
+          && data.formType == "sight"
+        ) || (
+          (data.judgePosition == "stage1"
+            || data.judgePosition == "stage2"
+            || data.judgePosition == "stage3")
+          && data.formType == "stage"
+        );
+    }
+
+    function submissionIdMatchesData(data, submissionId) {
+      return data.eventId is string
+        && data.ensembleId is string
+        && data.judgePosition is string
+        && submissionId == data.eventId + "_" + data.ensembleId + "_" + data.judgePosition;
+    }
+
+    function isAssignedJudgeForPosition(data) {
+      let assignments = get(
+        /databases/$(database)/documents/events/$(data.eventId)/assignments/positions
+      ).data;
+      return (
+          data.judgePosition == "stage1"
+          && assignments.stage1Uid == request.auth.uid
+        ) || (
+          data.judgePosition == "stage2"
+          && assignments.stage2Uid == request.auth.uid
+        ) || (
+          data.judgePosition == "stage3"
+          && assignments.stage3Uid == request.auth.uid
+        ) || (
+          data.judgePosition == "sight"
+          && assignments.sightUid == request.auth.uid
+        );
+    }
+
+    function isValidJudgeRatingForTotal(total, rating) {
+      return (
+          total >= 7 && total <= 10 && rating == 1
+        ) || (
+          total >= 11 && total <= 17 && rating == 2
+        ) || (
+          total >= 18 && total <= 24 && rating == 3
+        ) || (
+          total >= 25 && total <= 31 && rating == 4
+        ) || (
+          total >= 32 && total <= 35 && rating == 5
+        );
+    }
+
+    function hasValidSubmissionEnvelope(data, submissionId) {
+      return submissionIdMatchesData(data, submissionId)
+        && isJudgePosition(data.judgePosition)
+        && isValidSubmissionFormType(data)
+        && data.judgeUid == request.auth.uid
+        && data.audioUrl is string
+        && data.captions is map
+        && data.captionScoreTotal is number
+        && data.captionScoreTotal >= 7
+        && data.captionScoreTotal <= 35
+        && data.computedFinalRatingJudge is number
+        && isValidJudgeRatingForTotal(data.captionScoreTotal, data.computedFinalRatingJudge)
+        && isActiveEvent(data.eventId)
+        && isAssignedJudgeForPosition(data);
+    }
+
     match /users/{userId} {
       allow read: if isAdmin()
         || request.auth.uid == userId
@@ -152,6 +227,15 @@ service cloud.firestore {
         allow read: if (isAdmin() || isJudge()) && isActiveEvent(eventId);
         allow create, update: if isAdmin()
           && request.resource.data.performanceAt is timestamp
+          && (!("holdingAt" in request.resource.data)
+            || request.resource.data.holdingAt == null
+            || request.resource.data.holdingAt is timestamp)
+          && (!("warmupAt" in request.resource.data)
+            || request.resource.data.warmupAt == null
+            || request.resource.data.warmupAt is timestamp)
+          && (request.resource.data.sightReadingAt == null
+            || request.resource.data.sightReadingAt is timestamp)
+          && (!("sortOrder" in request.resource.data) || request.resource.data.sortOrder is number)
           && request.resource.data.schoolId is string
           && request.resource.data.ensembleId is string
           && schoolExists(request.resource.data.schoolId)
@@ -160,6 +244,11 @@ service cloud.firestore {
             request.resource.data.ensembleId
           );
         allow delete: if isAdmin();
+      }
+
+      match /publishedSchedule/{rowId} {
+        allow read: if isSignedIn();
+        allow write: if isAdmin();
       }
 
       match /entries/{ensembleId} {
@@ -193,12 +282,13 @@ service cloud.firestore {
           && resource.data.status == "released");
 
       allow create: if isJudge()
-        && request.resource.data.judgeUid == request.auth.uid
+        && hasValidSubmissionEnvelope(request.resource.data, submissionId)
         && request.resource.data.status == "submitted"
         && request.resource.data.locked == true;
 
       allow update: if isAdmin()
         || (isJudge()
+          && hasValidSubmissionEnvelope(request.resource.data, submissionId)
           && resource.data.judgeUid == request.auth.uid
           && resource.data.locked == false
           && resource.data.status == "submitted"
@@ -207,6 +297,7 @@ service cloud.firestore {
           && request.resource.data.eventId == resource.data.eventId
           && request.resource.data.ensembleId == resource.data.ensembleId
           && request.resource.data.judgePosition == resource.data.judgePosition
+          && request.resource.data.formType == resource.data.formType
           && request.resource.data.status == resource.data.status);
 
       allow delete: if isAdmin();

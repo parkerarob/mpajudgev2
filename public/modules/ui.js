@@ -2993,26 +2993,15 @@ export function renderAdminOpenPackets(packets) {
     const packetPanel = document.createElement("div");
     packetPanel.className = "packet-panel is-hidden";
 
-    const canViewPacket = Boolean(packet.ensembleId);
     const viewBtn = document.createElement("button");
     viewBtn.className = "ghost";
     viewBtn.textContent = "View Packet";
-    if (!canViewPacket) {
-      viewBtn.disabled = true;
-      viewBtn.title = "Link this packet to an ensemble before viewing.";
-    }
-    const packetEntry = {
-      ensembleId: packet.ensembleId || "",
-      schoolId: packet.schoolId || "",
-    };
-    const packetEventId = packet.assignmentEventId || state.event.active?.id || "";
     viewBtn.addEventListener("click", async () => {
-      if (!canViewPacket || !packetEventId) return;
       const isHidden = packetPanel.classList.contains("is-hidden");
       if (isHidden) {
         packetPanel.classList.remove("is-hidden");
         viewBtn.textContent = "Hide Packet";
-        await loadAdminPacketView(packetEntry, packetPanel, packetEventId);
+        renderAdminOpenPacketPreview(packet, packetPanel);
       } else {
         packetPanel.classList.add("is-hidden");
         viewBtn.textContent = "View Packet";
@@ -3040,6 +3029,90 @@ export function renderAdminOpenPackets(packets) {
     item.appendChild(packetPanel);
     els.adminOpenPacketsList.appendChild(item);
   });
+}
+
+function renderAdminOpenPacketPreview(packet, packetPanel) {
+  if (!packetPanel) return;
+  packetPanel.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.className = "packet-header";
+  const slotLabel =
+    JUDGE_POSITION_LABELS[packet.judgePosition] ||
+    (packet.judgePosition ? packet.judgePosition : "Unassigned");
+  header.textContent = `Open Packet - ${slotLabel} - Final Rating: ${packet.computedFinalRatingLabel || "N/A"}`;
+  packetPanel.appendChild(header);
+
+  const grid = document.createElement("div");
+  grid.className = "packet-grid";
+
+  const scoringCard = document.createElement("div");
+  scoringCard.className = "packet-card";
+  const scoringHeader = document.createElement("div");
+  scoringHeader.className = "row";
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = "Judge";
+  const status = document.createElement("span");
+  status.className = "note";
+  status.textContent = `Status: ${packet.status || "draft"}`;
+  const locked = document.createElement("span");
+  locked.className = "note";
+  locked.textContent = `Locked: ${packet.locked ? "yes" : "no"}`;
+  scoringHeader.appendChild(badge);
+  scoringHeader.appendChild(status);
+  scoringHeader.appendChild(locked);
+
+  const judgeInfo = document.createElement("div");
+  judgeInfo.className = "note";
+  judgeInfo.textContent =
+    packet.createdByJudgeName && packet.createdByJudgeEmail
+      ? `${packet.createdByJudgeName} - ${packet.createdByJudgeEmail}`
+      : packet.createdByJudgeName || packet.createdByJudgeEmail || "Unknown judge";
+
+  const captionSummary = renderPacketCaptionSummary(
+    packet.captions || {},
+    packet.formType || FORM_TYPES.stage
+  );
+  if (!Object.keys(packet.captions || {}).length) {
+    const emptyCaptions = document.createElement("div");
+    emptyCaptions.className = "note";
+    emptyCaptions.textContent = "No captions available.";
+    captionSummary.appendChild(emptyCaptions);
+  }
+
+  const footer = document.createElement("div");
+  footer.className = "note";
+  footer.textContent =
+    `Caption Total: ${packet.captionScoreTotal || 0} - Final Rating: ${packet.computedFinalRatingLabel || "N/A"}`;
+
+  scoringCard.appendChild(scoringHeader);
+  scoringCard.appendChild(judgeInfo);
+  scoringCard.appendChild(captionSummary);
+  scoringCard.appendChild(footer);
+  grid.appendChild(scoringCard);
+
+  const audioCard = document.createElement("div");
+  audioCard.className = "packet-card";
+  const audioBadge = document.createElement("div");
+  audioBadge.className = "badge";
+  audioBadge.textContent = "Audio";
+  audioCard.appendChild(audioBadge);
+  if (packet.latestAudioUrl) {
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.className = "audio";
+    audio.src = packet.latestAudioUrl;
+    audioCard.appendChild(audio);
+  } else {
+    const noAudio = document.createElement("div");
+    noAudio.className = "note";
+    noAudio.textContent = "No audio available.";
+    audioCard.appendChild(noAudio);
+  }
+  grid.appendChild(audioCard);
+
+  packetPanel.appendChild(grid);
 }
 
 export function setStageJudgeSelectValues({

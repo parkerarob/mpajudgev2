@@ -7,7 +7,6 @@ import {
   getDoc,
   fetchEnsembleGrade,
   fetchPacketSubmissions,
-  getDocs,
   onSnapshot,
   orderBy,
   query,
@@ -131,16 +130,9 @@ export async function deleteEvent(eventId) {
 }
 
 export async function setActiveEvent(eventId) {
+  const setActiveEventFn = httpsCallable(functions, "setActiveEvent");
   const targetId = String(eventId || "").trim();
-  const eventsSnap = await getDocs(collection(db, COLLECTIONS.events));
-  const batch = writeBatch(db);
-  eventsSnap.forEach((eventDoc) => {
-    batch.update(eventDoc.ref, {
-      isActive: Boolean(targetId) && eventDoc.id === targetId,
-      updatedAt: serverTimestamp(),
-    });
-  });
-  await batch.commit();
+  return setActiveEventFn({ eventId: targetId });
 }
 
 export function watchEvents(callback) {

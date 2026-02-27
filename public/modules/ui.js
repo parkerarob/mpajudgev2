@@ -17,12 +17,16 @@ import {
 import {
   bulkImportSchools,
   createEvent,
+  createEventScheduleRow,
   createScheduleEntry,
   deleteEvent,
+  deleteEventScheduleRow,
   deleteOpenPacket,
   deleteSchool,
   deleteScheduleEntry,
+  loadAdminDutiesEntriesForEvent,
   getPacketData,
+  loadAdminDutiesEntriesForSchool,
   renameEvent,
   lockSubmission,
   lockOpenPacket,
@@ -32,13 +36,19 @@ import {
   releasePacket,
   releaseOpenPacket,
   saveAssignments,
+  saveAdminDutiesForEnsemble,
   saveSchool,
   setActiveEvent,
+  publishEventSchedule,
   unreleasePacket,
+  unpublishEventSchedule,
   unlockOpenPacket,
   unlockSubmission,
   unreleaseOpenPacket,
+  updateEventScheduleRow,
   updateScheduleEntryTime,
+  watchEventScheduleRows,
+  watchPublishedEventScheduleRows,
   watchOpenPacketsAdmin,
   watchAssignmentsForActiveEvent,
   watchActiveEvent,
@@ -347,6 +357,7 @@ function applyDirectorEntryUpdate({
   setPerformanceGradeError("");
   renderDirectorChecklist(entry, completionState);
   updateDirectorReadyControlsFromState(completionState);
+  renderDirectorAdminDutiesSummary(entry || null);
   if (updatedAt) {
     setDirectorEntryHint(`Last updated ${updatedAt.toLocaleString()}`);
   } else {
@@ -363,6 +374,7 @@ function applyDirectorEntryClear({ hint, status, readyStatus } = {}) {
   setDirectorPerformanceGradeValue("");
   setPerformanceGradeError("");
   renderDirectorChecklist(null, computeDirectorCompletionState(null));
+  renderDirectorAdminDutiesSummary(null);
   invalidateDirectorSchoolLunchTotalCache({
     eventId: state.director.selectedEventId || state.event.active?.id || null,
     schoolId: getDirectorSchoolId() || null,
@@ -808,12 +820,16 @@ export function renderAdminSchoolsDirectory() {
 export function refreshSchoolDropdowns() {
   const logisticsCurrentSchoolValue = els.adminLogisticsCurrentSchoolSelect?.value || "";
   const logisticsNextSchoolValue = els.adminLogisticsNextSchoolSelect?.value || "";
+  const dutiesSchoolValue = els.adminDutiesSchoolSelect?.value || "";
+  const eventScheduleSchoolValue = els.eventScheduleAddSchoolSelect?.value || "";
   renderSchoolOptions(els.directorSchoolSelect, "Select a school");
   renderSchoolOptions(els.directorAttachSelect, "Select a school");
   renderSchoolOptions(els.provisionSchoolSelect, "Select a school (optional)");
   renderSchoolOptions(els.scheduleSchoolSelect, "Select a school");
   renderSchoolOptions(els.adminLogisticsCurrentSchoolSelect, "Select a school");
   renderSchoolOptions(els.adminLogisticsNextSchoolSelect, "Select a school");
+  renderSchoolOptions(els.adminDutiesSchoolSelect, "Select a school");
+  renderSchoolOptions(els.eventScheduleAddSchoolSelect, "Select a school");
   if (els.adminLogisticsCurrentSchoolSelect) {
     const exists = state.admin.schoolsList.some((school) => school.id === logisticsCurrentSchoolValue);
     els.adminLogisticsCurrentSchoolSelect.value = exists ? logisticsCurrentSchoolValue : "";
@@ -821,6 +837,14 @@ export function refreshSchoolDropdowns() {
   if (els.adminLogisticsNextSchoolSelect) {
     const exists = state.admin.schoolsList.some((school) => school.id === logisticsNextSchoolValue);
     els.adminLogisticsNextSchoolSelect.value = exists ? logisticsNextSchoolValue : "";
+  }
+  if (els.adminDutiesSchoolSelect) {
+    const exists = state.admin.schoolsList.some((school) => school.id === dutiesSchoolValue);
+    els.adminDutiesSchoolSelect.value = exists ? dutiesSchoolValue : "";
+  }
+  if (els.eventScheduleAddSchoolSelect) {
+    const exists = state.admin.schoolsList.some((school) => school.id === eventScheduleSchoolValue);
+    els.eventScheduleAddSchoolSelect.value = exists ? eventScheduleSchoolValue : "";
   }
 }
 
@@ -1438,9 +1462,34 @@ export function setTab(tabName, { force } = {}) {
 }
 
 function renderEventScheduleDetail(event) {
+  const eventId = event?.id || els.eventDetailPage?.dataset?.eventId || "";
   const isAdmin = getEffectiveRole(state.auth.userProfile) === "admin";
   const pdfUrl = event?.schedulePdfUrl || "";
   const pdfName = event?.schedulePdfName || "Schedule PDF";
+  const publishedVersion = Number(event?.schedulePublishedVersion || 0);
+  const publishedAtDate = event?.schedulePublishedAt?.toDate?.() || null;
+
+  if (els.eventScheduleBuilderPanel) {
+    els.eventScheduleBuilderPanel.style.display = isAdmin ? "block" : "none";
+  }
+  if (els.eventSchedulePublishBtn) {
+    els.eventSchedulePublishBtn.style.display = isAdmin ? "inline-flex" : "none";
+    els.eventSchedulePublishBtn.disabled = !eventId;
+  }
+  if (els.eventScheduleUnpublishBtn) {
+    els.eventScheduleUnpublishBtn.style.display = isAdmin ? "inline-flex" : "none";
+    els.eventScheduleUnpublishBtn.disabled = !eventId || !Boolean(event?.schedulePublished);
+  }
+  if (els.eventSchedulePublishedMeta) {
+    els.eventSchedulePublishedMeta.textContent = event?.schedulePublished
+      ? `Published${publishedVersion ? ` v${publishedVersion}` : ""}${
+          publishedAtDate ? ` • ${publishedAtDate.toLocaleString()}` : ""
+        }`
+      : "Not published";
+  }
+  renderEventScheduleAddRowControls(isAdmin);
+  renderEventScheduleDraftRows(eventId, isAdmin);
+  renderEventSchedulePublishedRows(event);
 
   if (els.eventScheduleAdminControls) {
     els.eventScheduleAdminControls.style.display = isAdmin ? "flex" : "none";
@@ -1467,6 +1516,273 @@ function renderEventScheduleDetail(event) {
   if (els.eventScheduleEmpty) {
     els.eventScheduleEmpty.style.display = pdfUrl ? "none" : "block";
   }
+}
+
+function stopEventDetailScheduleWatchers() {
+  if (state.subscriptions.eventDetailScheduleDraft) {
+    state.subscriptions.eventDetailScheduleDraft();
+    state.subscriptions.eventDetailScheduleDraft = null;
+  }
+  if (state.subscriptions.eventDetailSchedulePublished) {
+    state.subscriptions.eventDetailSchedulePublished();
+    state.subscriptions.eventDetailSchedulePublished = null;
+  }
+}
+
+function parseLocalDateTime(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function toLocalDateTimeInput(value) {
+  const date = value?.toDate?.() || (value instanceof Date ? value : null);
+  if (!date || Number.isNaN(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function formatScheduleCellTime(value) {
+  const date = value?.toDate?.() || (value instanceof Date ? value : null);
+  if (!date || Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString();
+}
+
+function renderEventScheduleAddEnsembleOptions(ensembles = []) {
+  if (!els.eventScheduleAddEnsembleSelect) return;
+  const previous = els.eventScheduleAddEnsembleSelect.value || "";
+  els.eventScheduleAddEnsembleSelect.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = ensembles.length ? "Select ensemble" : "No ensembles";
+  els.eventScheduleAddEnsembleSelect.appendChild(placeholder);
+  ensembles.forEach((ensemble) => {
+    const option = document.createElement("option");
+    option.value = ensemble.id;
+    option.textContent = ensemble.name || ensemble.id;
+    option.dataset.ensembleName = ensemble.name || ensemble.id;
+    els.eventScheduleAddEnsembleSelect.appendChild(option);
+  });
+  if (previous && ensembles.some((ensemble) => ensemble.id === previous)) {
+    els.eventScheduleAddEnsembleSelect.value = previous;
+  }
+}
+
+async function refreshEventScheduleAddEnsembles() {
+  const schoolId = els.eventScheduleAddSchoolSelect?.value || "";
+  if (!schoolId) {
+    state.admin.eventDetailScheduleAddEnsembles = [];
+    renderEventScheduleAddEnsembleOptions([]);
+    return;
+  }
+  try {
+    const ensembles = await fetchAdminLogisticsEnsembles(schoolId);
+    if ((els.eventScheduleAddSchoolSelect?.value || "") !== schoolId) return;
+    state.admin.eventDetailScheduleAddEnsembles = ensembles;
+    renderEventScheduleAddEnsembleOptions(ensembles);
+  } catch (error) {
+    console.error("refreshEventScheduleAddEnsembles failed", error);
+    state.admin.eventDetailScheduleAddEnsembles = [];
+    renderEventScheduleAddEnsembleOptions([]);
+  }
+}
+
+function renderEventScheduleAddRowControls(isAdmin) {
+  if (!els.eventScheduleAddSchoolSelect) return;
+  const wrapControls = [
+    els.eventScheduleAddSchoolSelect,
+    els.eventScheduleAddEnsembleSelect,
+    els.eventScheduleAddOrderInput,
+    els.eventScheduleAddHoldingInput,
+    els.eventScheduleAddWarmupInput,
+    els.eventScheduleAddPerformanceInput,
+    els.eventScheduleAddSightInput,
+    els.eventScheduleAddRowBtn,
+  ].filter(Boolean);
+  wrapControls.forEach((el) => {
+    el.disabled = !isAdmin;
+  });
+  if (!isAdmin) {
+    return;
+  }
+  renderSchoolOptions(els.eventScheduleAddSchoolSelect, "Select a school");
+  const currentSchoolId = els.eventScheduleAddSchoolSelect.value || "";
+  if (!currentSchoolId && state.admin.schoolsList.length) {
+    els.eventScheduleAddSchoolSelect.value = state.admin.schoolsList[0].id || "";
+  }
+  refreshEventScheduleAddEnsembles();
+}
+
+function renderEventScheduleDraftRows(eventId, isAdmin) {
+  const rows = Array.isArray(state.admin.eventDetailDraftScheduleRows)
+    ? state.admin.eventDetailDraftScheduleRows
+    : [];
+  if (els.eventScheduleDraftEmpty) {
+    els.eventScheduleDraftEmpty.style.display = rows.length ? "none" : "block";
+  }
+  if (els.eventScheduleDraftTableWrap) {
+    els.eventScheduleDraftTableWrap.style.display = rows.length ? "block" : "none";
+  }
+  if (!els.eventScheduleDraftBody) return;
+  els.eventScheduleDraftBody.innerHTML = "";
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    const orderTd = document.createElement("td");
+    const orderInput = document.createElement("input");
+    orderInput.type = "number";
+    orderInput.min = "1";
+    orderInput.step = "1";
+    orderInput.value = String(Number(row.sortOrder || 0) || "");
+    orderInput.disabled = !isAdmin;
+    orderTd.appendChild(orderInput);
+
+    const schoolTd = document.createElement("td");
+    schoolTd.textContent = row.schoolName || row.schoolId || "";
+    const ensembleTd = document.createElement("td");
+    ensembleTd.textContent = row.ensembleName || row.ensembleId || "";
+
+    const makeTimeCell = (field) => {
+      const td = document.createElement("td");
+      const input = document.createElement("input");
+      input.type = "datetime-local";
+      input.value = toLocalDateTimeInput(row[field]);
+      input.disabled = !isAdmin;
+      td.appendChild(input);
+      return { td, input };
+    };
+    const holding = makeTimeCell("holdingAt");
+    const warmup = makeTimeCell("warmupAt");
+    const performance = makeTimeCell("performanceAt");
+    const sight = makeTimeCell("sightReadingAt");
+
+    const actionsTd = document.createElement("td");
+    if (isAdmin) {
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "ghost";
+      saveBtn.textContent = "Save";
+      saveBtn.addEventListener("click", async () => {
+        const holdingAtDate = parseLocalDateTime(holding.input.value);
+        const warmupAtDate = parseLocalDateTime(warmup.input.value);
+        const performanceAtDate = parseLocalDateTime(performance.input.value);
+        const sightReadingAtDate = sight.input.value ? parseLocalDateTime(sight.input.value) : null;
+        if (!holdingAtDate || !warmupAtDate || !performanceAtDate) {
+          alertUser("Holding, warm-up, and performance times are required.");
+          return;
+        }
+        try {
+          await updateEventScheduleRow({
+            eventId,
+            rowId: row.id,
+            sortOrder: Number(orderInput.value || row.sortOrder || 9999),
+            holdingAtDate,
+            warmupAtDate,
+            performanceAtDate,
+            sightReadingAtDate,
+          });
+          if (els.eventScheduleDraftStatus) {
+            els.eventScheduleDraftStatus.textContent = "Schedule row saved.";
+          }
+        } catch (error) {
+          console.error("updateEventScheduleRow failed", error);
+          alertUser(error?.message || "Unable to save schedule row.");
+        }
+      });
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "ghost";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", async () => {
+        if (!confirmUser(`Delete schedule row for ${row.ensembleName || row.ensembleId || "ensemble"}?`)) {
+          return;
+        }
+        try {
+          await deleteEventScheduleRow({ eventId, rowId: row.id });
+        } catch (error) {
+          console.error("deleteEventScheduleRow failed", error);
+          alertUser(error?.message || "Unable to delete schedule row.");
+        }
+      });
+      actionsTd.appendChild(saveBtn);
+      actionsTd.appendChild(document.createTextNode(" "));
+      actionsTd.appendChild(deleteBtn);
+    } else {
+      actionsTd.textContent = "—";
+    }
+
+    [
+      orderTd,
+      schoolTd,
+      ensembleTd,
+      holding.td,
+      warmup.td,
+      performance.td,
+      sight.td,
+      actionsTd,
+    ].forEach((cell) => tr.appendChild(cell));
+    els.eventScheduleDraftBody.appendChild(tr);
+  });
+}
+
+function renderEventSchedulePublishedRows(event) {
+  const rows = Array.isArray(state.admin.eventDetailPublishedScheduleRows)
+    ? state.admin.eventDetailPublishedScheduleRows
+    : [];
+  if (els.eventSchedulePublishedSection) {
+    els.eventSchedulePublishedSection.style.display = "block";
+  }
+  if (els.eventSchedulePublishedEmpty) {
+    els.eventSchedulePublishedEmpty.style.display = rows.length ? "none" : "block";
+  }
+  if (els.eventSchedulePublishedTableWrap) {
+    els.eventSchedulePublishedTableWrap.style.display = rows.length ? "block" : "none";
+  }
+  if (els.eventSchedulePublishedStatus) {
+    const publishedAtDate = event?.schedulePublishedAt?.toDate?.() || null;
+    els.eventSchedulePublishedStatus.textContent = event?.schedulePublished
+      ? `Published${publishedAtDate ? ` • ${publishedAtDate.toLocaleString()}` : ""}`
+      : "Not published";
+  }
+  if (!els.eventSchedulePublishedBody) return;
+  els.eventSchedulePublishedBody.innerHTML = "";
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    [
+      String(Number(row.sortOrder || 0) || ""),
+      row.schoolName || row.schoolId || "",
+      row.ensembleName || row.ensembleId || "",
+      formatScheduleCellTime(row.holdingAt),
+      formatScheduleCellTime(row.warmupAt),
+      formatScheduleCellTime(row.performanceAt),
+      formatScheduleCellTime(row.sightReadingAt),
+    ].forEach((value) => {
+      const td = document.createElement("td");
+      td.textContent = value || "—";
+      tr.appendChild(td);
+    });
+    els.eventSchedulePublishedBody.appendChild(tr);
+  });
+}
+
+function startEventDetailScheduleWatchers(eventId) {
+  stopEventDetailScheduleWatchers();
+  const event = state.event.list.find((item) => item.id === eventId) || null;
+  const isAdmin = getEffectiveRole(state.auth.userProfile) === "admin";
+  if (isAdmin) {
+    state.subscriptions.eventDetailScheduleDraft = watchEventScheduleRows(eventId, (rows) => {
+      state.admin.eventDetailDraftScheduleRows = rows || [];
+      renderEventScheduleDraftRows(eventId, true);
+    });
+  } else {
+    state.admin.eventDetailDraftScheduleRows = [];
+    renderEventScheduleDraftRows(eventId, false);
+  }
+  state.subscriptions.eventDetailSchedulePublished = watchPublishedEventScheduleRows(eventId, (rows) => {
+    state.admin.eventDetailPublishedScheduleRows = rows || [];
+    const latestEvent = state.event.list.find((item) => item.id === eventId) || event;
+    renderEventSchedulePublishedRows(latestEvent);
+  });
 }
 
 async function uploadEventSchedulePdf(eventId, file) {
@@ -1514,6 +1830,9 @@ export function showEventDetail(eventId) {
   if (els.eventDetailMeta) {
     els.eventDetailMeta.textContent = event ? getEventLabel(event) : "Event not found.";
   }
+  state.admin.eventDetailDraftScheduleRows = [];
+  state.admin.eventDetailPublishedScheduleRows = [];
+  startEventDetailScheduleWatchers(eventId);
   renderEventScheduleDetail(event);
   els.eventDetailPage.classList.remove("is-hidden");
   if (els.adminCard) els.adminCard.style.display = "none";
@@ -1523,6 +1842,7 @@ export function showEventDetail(eventId) {
 
 export function hideEventDetail() {
   if (!els.eventDetailPage) return;
+  stopEventDetailScheduleWatchers();
   els.eventDetailPage.classList.add("is-hidden");
   if (state.app.currentTab) {
     updateTabUI(state.app.currentTab, state.auth.userProfile?.role || null);
@@ -1687,6 +2007,8 @@ export function stopWatchers() {
   if (state.subscriptions.openPackets) state.subscriptions.openPackets();
   if (state.subscriptions.openSessions) state.subscriptions.openSessions();
   if (state.subscriptions.openPacketsAdmin) state.subscriptions.openPacketsAdmin();
+  if (state.subscriptions.eventDetailScheduleDraft) state.subscriptions.eventDetailScheduleDraft();
+  if (state.subscriptions.eventDetailSchedulePublished) state.subscriptions.eventDetailSchedulePublished();
   state.subscriptions.events = null;
   state.subscriptions.activeEvent = null;
   state.subscriptions.roster = null;
@@ -1704,6 +2026,8 @@ export function stopWatchers() {
   state.subscriptions.openPackets = null;
   state.subscriptions.openSessions = null;
   state.subscriptions.openPacketsAdmin = null;
+  state.subscriptions.eventDetailScheduleDraft = null;
+  state.subscriptions.eventDetailSchedulePublished = null;
 }
 
 export function startWatchers() {
@@ -1724,6 +2048,8 @@ export function startWatchers() {
       state.admin.logisticsEntriesCacheEventId = activeEventId;
       state.admin.logisticsEntriesCache.clear();
     }
+    state.admin.dutiesEntriesByEnsembleId.clear();
+    state.admin.dutiesRows = [];
     invalidateDirectorSchoolLunchTotalCache({
       eventId: state.director.selectedEventId || state.event.active?.id || null,
       schoolId: getDirectorSchoolId() || null,
@@ -1735,11 +2061,14 @@ export function startWatchers() {
     refreshOpenEventDefaultsState();
     refreshJudgeOpenDirectorReference({ persistToPacket: true });
     refreshAdminLogisticsEntry();
+    refreshAdminDutiesPanel();
+    refreshAdminDutiesOverview();
     startActiveAssignmentsWatcher();
   });
   startActiveAssignmentsWatcher();
   watchRoster((entries) => {
     renderAdminScheduleList(entries);
+    renderAdminDutiesRows();
   });
   watchSchools(() => {
     state.admin.logisticsEnsemblesCache.clear();
@@ -1751,6 +2080,9 @@ export function startWatchers() {
       resetAdminSchoolForm();
     }
     refreshSchoolDropdowns();
+    if (els.adminDutiesSchoolSelect && !els.adminDutiesSchoolSelect.value && state.admin.schoolsList.length) {
+      els.adminDutiesSchoolSelect.value = state.admin.schoolsList[0].id || "";
+    }
     if (!els.adminLogisticsCurrentSchoolSelect?.value) {
       state.admin.logisticsCurrentEnsembles = [];
       renderAdminLogisticsEnsembleOptions(els.adminLogisticsCurrentEnsembleSelect, []);
@@ -1760,6 +2092,11 @@ export function startWatchers() {
       renderAdminLogisticsEnsembleOptions(els.adminLogisticsNextEnsembleSelect, []);
     }
     refreshAdminLogisticsEntry();
+    refreshAdminDutiesPanel();
+    refreshAdminDutiesOverview();
+    if (els.eventDetailPage && !els.eventDetailPage.classList.contains("is-hidden")) {
+      refreshEventScheduleAddEnsembles();
+    }
     if (canUseOpenJudge(state.auth.userProfile)) {
       const key = JSON.stringify(
         (state.admin.schoolsList || [])
@@ -2885,150 +3222,209 @@ export function renderAdminOpenPackets(packets) {
   if (els.adminOpenPacketsHint) {
     els.adminOpenPacketsHint.textContent = "";
   }
+  const groups = new Map();
   packets.forEach((packet) => {
-    const item = document.createElement("li");
-    item.className = "list-item";
-    const meta = document.createElement("div");
-    meta.className = "stack";
-    const title = document.createElement("strong");
-    const school = packet.schoolName || packet.schoolId || "Unknown school";
-    const ensemble = packet.ensembleName || packet.ensembleId || "Unknown ensemble";
-    const creator =
-      packet.createdByJudgeName ||
-      packet.createdByJudgeEmail ||
-      packet.createdByJudgeUid ||
-      "Unknown judge";
-    const assignmentEventId = packet.assignmentEventId || "";
-    const linkedEvent = assignmentEventId
-      ? state.event.list.find((event) => event.id === assignmentEventId)
-      : null;
-    const eventLabel = linkedEvent?.name || assignmentEventId || "Open (no event)";
-    title.textContent = `${school} - ${ensemble}`;
-    const detail = document.createElement("div");
-    detail.className = "note";
-    const judgePositionLabel =
-      JUDGE_POSITION_LABELS[packet.judgePosition] || (packet.judgePosition ? packet.judgePosition : "Unassigned");
-    detail.textContent =
-      `Status: ${packet.status || "draft"} - Judge: ${creator} - Slot: ${judgePositionLabel} - Event: ${eventLabel}`;
-    meta.appendChild(title);
-    meta.appendChild(detail);
-    item.appendChild(meta);
-
-    const actions = document.createElement("div");
-    actions.className = "actions";
-
-    const slotSelect = document.createElement("select");
-    slotSelect.className = "ghost";
-    [
-      { value: "", label: "No Slot" },
-      { value: JUDGE_POSITIONS.stage1, label: "Stage 1" },
-      { value: JUDGE_POSITIONS.stage2, label: "Stage 2" },
-      { value: JUDGE_POSITIONS.stage3, label: "Stage 3" },
-      { value: JUDGE_POSITIONS.sight, label: "Sight" },
-    ].forEach(({ value, label }) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      slotSelect.appendChild(option);
-    });
-    slotSelect.value = packet.judgePosition || "";
-    actions.appendChild(slotSelect);
-
-    const slotBtn = document.createElement("button");
-    slotBtn.className = "ghost";
-    slotBtn.textContent = "Save Slot";
-    slotBtn.disabled = packet.status === "released";
-    if (packet.status === "released") {
-      slotBtn.title = "Revoke packet before changing judge slot.";
+    const key = packet.ensembleId
+      ? `${packet.assignmentEventId || "unassigned"}::${packet.ensembleId}`
+      : `packet::${packet.id}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        schoolName: packet.schoolName || packet.schoolId || "Unknown school",
+        ensembleName: packet.ensembleName || packet.ensembleId || "Unknown ensemble",
+        packets: [],
+      });
     }
-    slotBtn.addEventListener("click", async () => {
-      try {
-        await setOpenPacketJudgePosition({
-          packetId: packet.id,
-          judgePosition: slotSelect.value || "",
-          assignmentEventId: state.event.active?.id || packet.assignmentEventId || "",
+    groups.get(key).packets.push(packet);
+  });
+
+  Array.from(groups.values())
+    .sort((a, b) => String(a.ensembleName || "").localeCompare(String(b.ensembleName || "")))
+    .forEach((group) => {
+      const item = document.createElement("li");
+      item.className = "list-item";
+      const details = document.createElement("details");
+      details.className = "stack";
+      const summary = document.createElement("summary");
+      const releasedCount = group.packets.filter((packet) => packet.status === "released").length;
+      const statusLabel = releasedCount === group.packets.length
+        ? "All Released"
+        : releasedCount > 0
+          ? `${releasedCount}/${group.packets.length} Released`
+          : "Not Released";
+      summary.textContent =
+        `${group.ensembleName} (${group.schoolName}) • Judges: ${group.packets.length} • ${statusLabel}`;
+      details.appendChild(summary);
+
+      group.packets
+        .sort((a, b) => String(a.judgePosition || "").localeCompare(String(b.judgePosition || "")))
+        .forEach((packet) => {
+          details.appendChild(buildAdminOpenPacketDetailRow(packet));
         });
-      } catch (error) {
-        console.error("Set open packet judge slot failed", error);
-        alertUser(error?.message || "Unable to update judge slot.");
-      }
-    });
-    actions.appendChild(slotBtn);
 
-    const lockBtn = document.createElement("button");
-    const isLocked = Boolean(packet.locked);
-    lockBtn.textContent = isLocked ? "Unlock" : "Lock";
-    lockBtn.className = "ghost";
-    lockBtn.addEventListener("click", async () => {
-      if (isLocked) {
-        await unlockOpenPacket({ packetId: packet.id });
-      } else {
-        await lockOpenPacket({ packetId: packet.id });
-      }
+      item.appendChild(details);
+      els.adminOpenPacketsList.appendChild(item);
     });
-    actions.appendChild(lockBtn);
+}
 
-    const releaseBtn = document.createElement("button");
-    releaseBtn.className = "ghost";
-    const isReleased = packet.status === "released";
-    releaseBtn.textContent = isReleased ? "Revoke" : "Release";
-    releaseBtn.disabled = !isReleased && !isLocked;
-    if (!isReleased && !isLocked) {
-      releaseBtn.title = "Lock packet before releasing.";
+function buildAdminOpenPacketDetailRow(packet) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "panel stack";
+  const school = packet.schoolName || packet.schoolId || "Unknown school";
+  const ensemble = packet.ensembleName || packet.ensembleId || "Unknown ensemble";
+  const creator =
+    packet.createdByJudgeName ||
+    packet.createdByJudgeEmail ||
+    packet.createdByJudgeUid ||
+    "Unknown judge";
+  const assignmentEventId = packet.assignmentEventId || "";
+  const linkedEvent = assignmentEventId
+    ? state.event.list.find((event) => event.id === assignmentEventId)
+    : null;
+  const eventLabel = linkedEvent?.name || assignmentEventId || "Open (no event)";
+  const judgePositionLabel =
+    JUDGE_POSITION_LABELS[packet.judgePosition] || (packet.judgePosition ? packet.judgePosition : "Unassigned");
+
+  const detail = document.createElement("div");
+  detail.className = "note";
+  detail.textContent =
+    `Status: ${packet.status || "draft"} • Judge: ${creator} • Slot: ${judgePositionLabel} • Event: ${eventLabel}`;
+  wrapper.appendChild(detail);
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+
+  const slotSelect = document.createElement("select");
+  slotSelect.className = "ghost";
+  [
+    { value: "", label: "No Slot" },
+    { value: JUDGE_POSITIONS.stage1, label: "Stage 1" },
+    { value: JUDGE_POSITIONS.stage2, label: "Stage 2" },
+    { value: JUDGE_POSITIONS.stage3, label: "Stage 3" },
+    { value: JUDGE_POSITIONS.sight, label: "Sight" },
+  ].forEach(({ value, label }) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    slotSelect.appendChild(option);
+  });
+  slotSelect.value = packet.judgePosition || "";
+  actions.appendChild(slotSelect);
+
+  const slotBtn = document.createElement("button");
+  slotBtn.className = "ghost";
+  slotBtn.textContent = "Save Slot";
+  slotBtn.disabled = packet.status === "released";
+  if (packet.status === "released") {
+    slotBtn.title = "Revoke packet before changing judge slot.";
+  }
+  slotBtn.addEventListener("click", async () => {
+    try {
+      await setOpenPacketJudgePosition({
+        packetId: packet.id,
+        judgePosition: slotSelect.value || "",
+        assignmentEventId: state.event.active?.id || packet.assignmentEventId || "",
+      });
+    } catch (error) {
+      console.error("Set open packet judge slot failed", error);
+      alertUser(error?.message || "Unable to update judge slot.");
     }
-    releaseBtn.addEventListener("click", async () => {
-      try {
-        if (isReleased) {
-          await unreleaseOpenPacket({ packetId: packet.id });
-          return;
-        }
-        await releaseOpenPacket({ packetId: packet.id });
-      } catch (error) {
-        console.error("Release/revoke open packet failed", error);
-        alertUser(error?.message || "Unable to update packet release state.");
-      }
-    });
-    actions.appendChild(releaseBtn);
+  });
+  actions.appendChild(slotBtn);
 
-    const packetPanel = document.createElement("div");
-    packetPanel.className = "packet-panel is-hidden";
+  const lockBtn = document.createElement("button");
+  const isLocked = Boolean(packet.locked);
+  lockBtn.textContent = isLocked ? "Unlock" : "Lock";
+  lockBtn.className = "ghost";
+  lockBtn.addEventListener("click", async () => {
+    if (isLocked) {
+      await unlockOpenPacket({ packetId: packet.id });
+    } else {
+      await lockOpenPacket({ packetId: packet.id });
+    }
+  });
+  actions.appendChild(lockBtn);
 
-    const viewBtn = document.createElement("button");
-    viewBtn.className = "ghost";
-    viewBtn.textContent = "View Packet";
-    viewBtn.addEventListener("click", async () => {
-      const isHidden = packetPanel.classList.contains("is-hidden");
-      if (isHidden) {
-        packetPanel.classList.remove("is-hidden");
-        viewBtn.textContent = "Hide Packet";
-        renderAdminOpenPacketPreview(packet, packetPanel);
-      } else {
-        packetPanel.classList.add("is-hidden");
-        viewBtn.textContent = "View Packet";
-      }
-    });
-    actions.appendChild(viewBtn);
+  const packetPanel = document.createElement("div");
+  packetPanel.className = "packet-panel is-hidden";
 
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "ghost";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", async () => {
-      const label = `${school} - ${ensemble}`;
-      if (!confirmUser(`Delete open packet for ${label}? This removes packet audio and sessions.`)) {
+  const viewBtn = document.createElement("button");
+  viewBtn.className = "ghost";
+  viewBtn.textContent = "View Packet";
+  viewBtn.addEventListener("click", async () => {
+    const isHidden = packetPanel.classList.contains("is-hidden");
+    if (isHidden) {
+      packetPanel.classList.remove("is-hidden");
+      viewBtn.textContent = "Hide Packet";
+      renderAdminOpenPacketPreview(packet, packetPanel);
+    } else {
+      packetPanel.classList.add("is-hidden");
+      viewBtn.textContent = "View Packet";
+    }
+  });
+  actions.appendChild(viewBtn);
+
+  const releaseBtn = document.createElement("button");
+  releaseBtn.className = "ghost";
+  const isReleased = packet.status === "released";
+  releaseBtn.textContent = isReleased ? "Revoke" : "Release";
+  releaseBtn.disabled = !isReleased && !isLocked;
+  if (!isReleased && !isLocked) {
+    releaseBtn.title = "Lock packet before releasing.";
+  }
+  releaseBtn.addEventListener("click", async () => {
+    try {
+      if (isReleased) {
+        await unreleaseOpenPacket({ packetId: packet.id });
         return;
       }
-      try {
-        await deleteOpenPacket({ packetId: packet.id });
-      } catch (error) {
-        console.error("Delete open packet failed", error);
-        alertUser("Unable to delete open packet. Check console for details.");
-      }
-    });
-    actions.appendChild(deleteBtn);
-    item.appendChild(actions);
-    item.appendChild(packetPanel);
-    els.adminOpenPacketsList.appendChild(item);
+      await releaseOpenPacket({ packetId: packet.id });
+    } catch (error) {
+      console.error("Release/revoke open packet failed", error);
+      alertUser(error?.message || "Unable to update packet release state.");
+    }
   });
+  actions.appendChild(releaseBtn);
+
+  const packetPanel = document.createElement("div");
+  packetPanel.className = "packet-panel is-hidden";
+
+  const viewBtn = document.createElement("button");
+  viewBtn.className = "ghost";
+  viewBtn.textContent = "View";
+  viewBtn.addEventListener("click", () => {
+    const isHidden = packetPanel.classList.contains("is-hidden");
+    if (isHidden) {
+      packetPanel.classList.remove("is-hidden");
+      viewBtn.textContent = "Hide";
+      renderAdminOpenPacketDetail(packet, packetPanel);
+    } else {
+      packetPanel.classList.add("is-hidden");
+      viewBtn.textContent = "View";
+    }
+  });
+  actions.appendChild(viewBtn);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "ghost";
+  deleteBtn.textContent = "Delete";
+  deleteBtn.addEventListener("click", async () => {
+    const label = `${school} - ${ensemble}`;
+    if (!confirmUser(`Delete open packet for ${label}? This removes packet audio and sessions.`)) {
+      return;
+    }
+    try {
+      await deleteOpenPacket({ packetId: packet.id });
+    } catch (error) {
+      console.error("Delete open packet failed", error);
+      alertUser("Unable to delete open packet. Check console for details.");
+    }
+  });
+  actions.appendChild(deleteBtn);
+
+  wrapper.appendChild(actions);
+  wrapper.appendChild(packetPanel);
+  return wrapper;
 }
 
 function renderAdminOpenPacketPreview(packet, packetPanel) {
@@ -4243,6 +4639,525 @@ async function refreshAdminLogisticsEntry() {
   }
 }
 
+function normalizeAdminDutiesValue(adminDuties = {}) {
+  const payment = adminDuties?.payment || {};
+  const method = payment.method === "check" || payment.method === "cash" ? payment.method : "";
+  const parsedAmount = Number(payment.amount);
+  const amount = Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : null;
+  return {
+    signatureFormReceived: Boolean(adminDuties?.signatureFormReceived),
+    feeReceived: Boolean(adminDuties?.feeReceived),
+    payment: {
+      method,
+      amount,
+      checkNumber: String(payment.checkNumber || "").trim(),
+    },
+    adminNote: String(adminDuties?.adminNote || ""),
+  };
+}
+
+function formatCurrency(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "N/A";
+  return `$${amount.toFixed(2)}`;
+}
+
+function setAdminDutiesStatus(message) {
+  if (!els.adminDutiesStatus) return;
+  els.adminDutiesStatus.textContent = message || "";
+}
+
+function setAdminDutiesOverviewStatus(message) {
+  if (!els.adminDutiesOverviewStatus) return;
+  els.adminDutiesOverviewStatus.textContent = message || "";
+}
+
+function setAdminDutiesSummary(message) {
+  if (!els.adminDutiesSummary) return;
+  els.adminDutiesSummary.textContent = message || "";
+}
+
+function clearAdminDutiesOverviewList() {
+  if (!els.adminDutiesOverviewList) return;
+  els.adminDutiesOverviewList.innerHTML = "";
+}
+
+function clearAdminDutiesList() {
+  if (!els.adminDutiesList) return;
+  els.adminDutiesList.innerHTML = "";
+}
+
+function renderDirectorAdminDutiesSummary(entry) {
+  if (!els.directorAdminDutiesStatus) return;
+  const duties = normalizeAdminDutiesValue(entry?.adminDuties || {});
+  const hasAnyValue =
+    duties.signatureFormReceived ||
+    duties.feeReceived ||
+    Boolean(duties.payment.method) ||
+    duties.payment.amount != null ||
+    Boolean(duties.adminNote);
+  if (!entry || !hasAnyValue) {
+    els.directorAdminDutiesStatus.textContent = "Admin Checkoffs: Not recorded yet";
+    return;
+  }
+  const signatureLabel = duties.signatureFormReceived ? "Received" : "Not Received";
+  const feeLabel = duties.feeReceived ? "Received" : "Not Received";
+  let feeDetail = feeLabel;
+  if (duties.feeReceived) {
+    const methodLabel = duties.payment.method === "check" ? "Check" : duties.payment.method === "cash" ? "Cash" : "";
+    const amountLabel = duties.payment.amount != null ? formatCurrency(duties.payment.amount) : "";
+    feeDetail = [feeLabel, methodLabel, amountLabel].filter(Boolean).join(" • ");
+  }
+  els.directorAdminDutiesStatus.textContent = `Admin Checkoffs: Signature ${signatureLabel} | Fee ${feeDetail}`;
+}
+
+function renderAdminDutiesRows() {
+  if (!els.adminDutiesList) return;
+  if (!state.event.active?.id || !state.admin.dutiesSelectedSchoolId) {
+    setAdminDutiesSummary("");
+    return;
+  }
+  clearAdminDutiesList();
+  const search = (state.admin.dutiesSearchQuery || "").trim().toLowerCase();
+  const rows = (state.admin.dutiesRows || []).filter((row) => {
+    if (!search) return true;
+    return (row.ensembleName || row.ensembleId || "").toLowerCase().includes(search);
+  });
+  const summaryCounts = rows.reduce(
+    (acc, row) => {
+      const duties = normalizeAdminDutiesValue(row.adminDuties || {});
+      const hasForm = Boolean(duties.signatureFormReceived);
+      const hasFee = Boolean(duties.feeReceived);
+      if (hasForm && hasFee) acc.complete += 1;
+      else if (!hasForm && !hasFee) acc.missingBoth += 1;
+      else if (!hasForm) acc.missingForm += 1;
+      else if (!hasFee) acc.missingFee += 1;
+      return acc;
+    },
+    { complete: 0, missingForm: 0, missingFee: 0, missingBoth: 0 }
+  );
+  setAdminDutiesSummary(
+    rows.length
+      ? `At a glance — Complete: ${summaryCounts.complete} | Missing form: ${summaryCounts.missingForm} | Missing fee: ${summaryCounts.missingFee} | Missing both: ${summaryCounts.missingBoth}`
+      : ""
+  );
+  if (!rows.length) {
+    setAdminDutiesStatus(search ? "No ensembles match your search." : "No ensembles found for this school.");
+    return;
+  }
+
+  const scheduledKeys = new Set(
+    (state.event.rosterEntries || []).map((entry) => `${entry.schoolId || ""}::${entry.ensembleId || ""}`)
+  );
+  setAdminDutiesStatus(
+    `${rows.length} ensemble${rows.length === 1 ? "" : "s"} shown for ${state.event.active?.name || "active event"}.`
+  );
+
+  rows.forEach((row) => {
+    const duties = normalizeAdminDutiesValue(row.adminDuties || {});
+    const wrapper = document.createElement("div");
+    wrapper.className = "panel stack";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "row";
+    const title = document.createElement("strong");
+    title.textContent = row.ensembleName || row.ensembleId || "Unknown ensemble";
+    const scheduled = document.createElement("span");
+    scheduled.className = "note";
+    scheduled.textContent = `Scheduled: ${
+      scheduledKeys.has(`${row.schoolId || ""}::${row.ensembleId || ""}`) ? "Yes" : "No"
+    }`;
+    titleRow.appendChild(title);
+    titleRow.appendChild(scheduled);
+    wrapper.appendChild(titleRow);
+
+    const meta = document.createElement("div");
+    meta.className = "note";
+    meta.textContent = `School: ${row.schoolName || row.schoolId || "Unknown"}`;
+    wrapper.appendChild(meta);
+
+    const hasForm = Boolean(duties.signatureFormReceived);
+    const hasFee = Boolean(duties.feeReceived);
+    const statusLine = document.createElement("div");
+    statusLine.className = "note";
+    const overallStatus = hasForm && hasFee ? "Complete" : "Needs Follow-up";
+    statusLine.textContent =
+      `Status: ${overallStatus} | Form: ${hasForm ? "Received" : "Missing"} | Fee: ${hasFee ? "Paid" : "Missing"}`;
+    wrapper.appendChild(statusLine);
+
+    const signatureRow = document.createElement("label");
+    signatureRow.className = "row";
+    const signatureCheckbox = document.createElement("input");
+    signatureCheckbox.type = "checkbox";
+    signatureCheckbox.checked = Boolean(duties.signatureFormReceived);
+    signatureRow.appendChild(signatureCheckbox);
+    signatureRow.appendChild(document.createTextNode(" Signature Form received"));
+    wrapper.appendChild(signatureRow);
+
+    const feeRow = document.createElement("label");
+    feeRow.className = "row";
+    const feeCheckbox = document.createElement("input");
+    feeCheckbox.type = "checkbox";
+    feeCheckbox.checked = Boolean(duties.feeReceived);
+    feeRow.appendChild(feeCheckbox);
+    feeRow.appendChild(document.createTextNode(" Fee received"));
+    wrapper.appendChild(feeRow);
+
+    const paymentRow = document.createElement("div");
+    paymentRow.className = "row";
+
+    const methodLabel = document.createElement("label");
+    methodLabel.className = "grow";
+    methodLabel.textContent = "Method";
+    const methodSelect = document.createElement("select");
+    [
+      { value: "", label: "Select method" },
+      { value: "check", label: "Check" },
+      { value: "cash", label: "Cash" },
+    ].forEach((optionData) => {
+      const option = document.createElement("option");
+      option.value = optionData.value;
+      option.textContent = optionData.label;
+      methodSelect.appendChild(option);
+    });
+    methodSelect.value = duties.payment.method || "";
+    methodLabel.appendChild(methodSelect);
+
+    const amountLabel = document.createElement("label");
+    amountLabel.className = "grow";
+    amountLabel.textContent = "Amount";
+    const amountInput = document.createElement("input");
+    amountInput.type = "number";
+    amountInput.min = "0.01";
+    amountInput.step = "0.01";
+    amountInput.placeholder = "0.00";
+    amountInput.value = duties.payment.amount != null ? String(duties.payment.amount) : "";
+    amountLabel.appendChild(amountInput);
+
+    const checkLabel = document.createElement("label");
+    checkLabel.className = "grow";
+    checkLabel.textContent = "Check Number";
+    const checkInput = document.createElement("input");
+    checkInput.type = "text";
+    checkInput.placeholder = "Check #";
+    checkInput.value = duties.payment.checkNumber || "";
+    checkLabel.appendChild(checkInput);
+
+    paymentRow.appendChild(methodLabel);
+    paymentRow.appendChild(amountLabel);
+    paymentRow.appendChild(checkLabel);
+    wrapper.appendChild(paymentRow);
+
+    const noteLabel = document.createElement("label");
+    noteLabel.textContent = "Admin Note (internal)";
+    const noteInput = document.createElement("input");
+    noteInput.type = "text";
+    noteInput.placeholder = "Optional note";
+    noteInput.value = duties.adminNote || "";
+    noteLabel.appendChild(noteInput);
+    wrapper.appendChild(noteLabel);
+
+    const rowStatus = document.createElement("div");
+    rowStatus.className = "note";
+    wrapper.appendChild(rowStatus);
+
+    const syncPaymentControls = () => {
+      const feeReceived = Boolean(feeCheckbox.checked);
+      const method = methodSelect.value || "";
+      methodSelect.disabled = !feeReceived;
+      amountInput.disabled = !feeReceived;
+      checkInput.disabled = !feeReceived || method !== "check";
+      checkLabel.style.display = !feeReceived || method !== "check" ? "none" : "";
+      paymentRow.style.opacity = feeReceived ? "1" : "0.7";
+    };
+    syncPaymentControls();
+    feeCheckbox.addEventListener("change", () => {
+      if (!feeCheckbox.checked) {
+        methodSelect.value = "";
+        amountInput.value = "";
+        checkInput.value = "";
+      }
+      syncPaymentControls();
+    });
+    methodSelect.addEventListener("change", () => {
+      if (methodSelect.value !== "check") {
+        checkInput.value = "";
+      }
+      syncPaymentControls();
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save";
+    saveBtn.addEventListener("click", async () => {
+      if (!state.event.active?.id) {
+        showStatusMessage(rowStatus, "No active event selected.", "error");
+        return;
+      }
+      const signatureFormReceived = Boolean(signatureCheckbox.checked);
+      const feeReceived = Boolean(feeCheckbox.checked);
+      const paymentMethod = (methodSelect.value || "").trim();
+      const rawAmount = (amountInput.value || "").trim();
+      const amountValue = rawAmount ? Number(rawAmount) : null;
+      const checkNumber = (checkInput.value || "").trim();
+      const adminNote = (noteInput.value || "").trim();
+
+      if (feeReceived) {
+        if (paymentMethod !== "check" && paymentMethod !== "cash") {
+          showStatusMessage(rowStatus, "Choose payment method.", "error");
+          return;
+        }
+        if (!Number.isFinite(amountValue) || amountValue <= 0) {
+          showStatusMessage(rowStatus, "Enter a fee amount greater than 0.", "error");
+          return;
+        }
+        if (paymentMethod === "check" && !checkNumber) {
+          showStatusMessage(rowStatus, "Enter check number for check payment.", "error");
+          return;
+        }
+      }
+
+      const payload = normalizeAdminDutiesValue({
+        signatureFormReceived,
+        feeReceived,
+        payment: feeReceived
+          ? {
+              method: paymentMethod,
+              amount: amountValue,
+              checkNumber: paymentMethod === "check" ? checkNumber : "",
+            }
+          : {
+              method: "",
+              amount: null,
+              checkNumber: "",
+            },
+        adminNote,
+      });
+
+      try {
+        saveBtn.disabled = true;
+        await saveAdminDutiesForEnsemble({
+          eventId: state.event.active.id,
+          schoolId: row.schoolId,
+          ensembleId: row.ensembleId,
+          adminDuties: payload,
+        });
+        row.adminDuties = payload;
+        state.admin.dutiesEntriesByEnsembleId.set(row.ensembleId, {
+          id: row.ensembleId,
+          eventId: state.event.active.id,
+          schoolId: row.schoolId,
+          ensembleId: row.ensembleId,
+          adminDuties: payload,
+        });
+        row.isAdminDutiesComplete = Boolean(payload.signatureFormReceived) && Boolean(payload.feeReceived);
+        showStatusMessage(rowStatus, "Saved.");
+        renderAdminDutiesRows();
+        refreshAdminDutiesOverview();
+      } catch (error) {
+        console.error("Save admin duties failed", error);
+        showStatusMessage(rowStatus, error?.message || "Unable to save.", "error");
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+    actions.appendChild(saveBtn);
+    wrapper.appendChild(actions);
+
+    els.adminDutiesList.appendChild(wrapper);
+  });
+}
+
+async function refreshAdminDutiesOverview() {
+  if (!els.adminDutiesOverviewList || !els.adminDutiesOverviewStatus) return;
+  if (!state.event.active?.id) {
+    clearAdminDutiesOverviewList();
+    setAdminDutiesOverviewStatus("Set an active event to load the overview.");
+    return;
+  }
+  const schools = [...(state.admin.schoolsList || [])].sort((a, b) =>
+    String(a?.name || a?.id || "").localeCompare(String(b?.name || b?.id || ""))
+  );
+  if (!schools.length) {
+    clearAdminDutiesOverviewList();
+    setAdminDutiesOverviewStatus("No schools available.");
+    return;
+  }
+
+  const loadVersion = (state.admin.dutiesOverviewLoadVersion || 0) + 1;
+  state.admin.dutiesOverviewLoadVersion = loadVersion;
+  clearAdminDutiesOverviewList();
+  setAdminDutiesOverviewStatus("Loading all schools overview...");
+
+  try {
+    const eventId = state.event.active.id;
+    const [entryDocs, ensemblesBySchool] = await Promise.all([
+      loadAdminDutiesEntriesForEvent({ eventId }),
+      Promise.all(
+        schools.map(async (school) => ({
+          schoolId: school.id,
+          ensembles: await fetchAdminLogisticsEnsembles(school.id),
+        }))
+      ),
+    ]);
+    if (state.admin.dutiesOverviewLoadVersion !== loadVersion) return;
+
+    const entryByKey = new Map();
+    entryDocs.forEach((entryDoc) => {
+      const schoolId = entryDoc.schoolId || "";
+      const ensembleId = entryDoc.ensembleId || entryDoc.id || "";
+      if (!schoolId || !ensembleId) return;
+      entryByKey.set(`${schoolId}::${ensembleId}`, entryDoc);
+    });
+
+    let totalSchools = schools.length;
+    let schoolsWithNoEnsembles = 0;
+    let schoolsFormComplete = 0;
+    let schoolsFeeComplete = 0;
+
+    const tableWrap = document.createElement("div");
+    tableWrap.style.overflow = "auto";
+    const table = document.createElement("table");
+    table.style.width = "100%";
+    table.style.borderCollapse = "collapse";
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["School", "Form Submitted", "Fee Submitted"].forEach((label) => {
+      const th = document.createElement("th");
+      th.textContent = label;
+      th.style.textAlign = "left";
+      th.style.padding = "4px 6px";
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+
+    ensemblesBySchool.forEach(({ schoolId, ensembles }) => {
+      const school = schools.find((item) => item.id === schoolId) || { id: schoolId, name: schoolId };
+      const tr = document.createElement("tr");
+      const schoolCell = document.createElement("td");
+      schoolCell.style.padding = "4px 6px";
+      const schoolLabel = school.name || school.id || "Unknown school";
+
+      let formSubmitted = false;
+      let feeSubmitted = false;
+      if (!Array.isArray(ensembles) || !ensembles.length) {
+        schoolsWithNoEnsembles += 1;
+        schoolCell.textContent = `${schoolLabel} (No Ensembles)`;
+      } else {
+        let formAllComplete = true;
+        let feeAllComplete = true;
+        ensembles.forEach((ensemble) => {
+          const key = `${schoolId}::${ensemble.id}`;
+          const entryDoc = entryByKey.get(key) || null;
+          const duties = normalizeAdminDutiesValue(entryDoc?.adminDuties || {});
+          if (!duties.signatureFormReceived) formAllComplete = false;
+          if (!duties.feeReceived) feeAllComplete = false;
+        });
+        formSubmitted = formAllComplete;
+        feeSubmitted = feeAllComplete;
+        if (formSubmitted) schoolsFormComplete += 1;
+        if (feeSubmitted) schoolsFeeComplete += 1;
+        schoolCell.textContent = schoolLabel;
+      }
+
+      const formCell = document.createElement("td");
+      formCell.style.padding = "4px 6px";
+      formCell.textContent = formSubmitted ? "Yes" : "No";
+      const feeCell = document.createElement("td");
+      feeCell.style.padding = "4px 6px";
+      feeCell.textContent = feeSubmitted ? "Yes" : "No";
+
+      tr.appendChild(schoolCell);
+      tr.appendChild(formCell);
+      tr.appendChild(feeCell);
+      tbody.appendChild(tr);
+    });
+    tableWrap.appendChild(table);
+    els.adminDutiesOverviewList.appendChild(tableWrap);
+
+    setAdminDutiesOverviewStatus(
+      `${totalSchools} schools | Form complete: ${schoolsFormComplete} | Fee complete: ${schoolsFeeComplete} | No ensembles: ${schoolsWithNoEnsembles}`
+    );
+  } catch (error) {
+    console.error("refreshAdminDutiesOverview failed", error);
+    if (state.admin.dutiesOverviewLoadVersion !== loadVersion) return;
+    clearAdminDutiesOverviewList();
+    setAdminDutiesOverviewStatus("Unable to load all schools overview.");
+  }
+}
+
+async function refreshAdminDutiesPanel() {
+  if (!els.adminDutiesList || !els.adminDutiesStatus) return;
+  if (!state.event.active?.id) {
+    state.admin.dutiesRows = [];
+    state.admin.dutiesEntriesByEnsembleId.clear();
+    clearAdminDutiesList();
+    setAdminDutiesSummary("");
+    setAdminDutiesStatus("Set an active event, then choose a school.");
+    return;
+  }
+  const schoolId = els.adminDutiesSchoolSelect?.value || "";
+  state.admin.dutiesSelectedSchoolId = schoolId;
+  if (!schoolId) {
+    state.admin.dutiesRows = [];
+    state.admin.dutiesEntriesByEnsembleId.clear();
+    clearAdminDutiesList();
+    setAdminDutiesSummary("");
+    setAdminDutiesStatus("Choose a school to track ensemble checkoffs.");
+    return;
+  }
+  const loadVersion = (state.admin.dutiesLoadVersion || 0) + 1;
+  state.admin.dutiesLoadVersion = loadVersion;
+  clearAdminDutiesList();
+  setAdminDutiesStatus("Loading ensemble admin checkoffs...");
+  try {
+    const [ensembles, entries] = await Promise.all([
+      fetchAdminLogisticsEnsembles(schoolId),
+      loadAdminDutiesEntriesForSchool({ eventId: state.event.active.id, schoolId }),
+    ]);
+    if (state.admin.dutiesLoadVersion !== loadVersion) return;
+    state.admin.dutiesEntriesByEnsembleId.clear();
+    entries.forEach((entryDoc) => {
+      state.admin.dutiesEntriesByEnsembleId.set(entryDoc.id || entryDoc.ensembleId, entryDoc);
+    });
+    const schoolName = state.admin.schoolsList.find((school) => school.id === schoolId)?.name || schoolId;
+    state.admin.dutiesRows = (ensembles || [])
+      .map((ensemble) => {
+        const entryDoc = state.admin.dutiesEntriesByEnsembleId.get(ensemble.id) || null;
+        const normalizedDuties = normalizeAdminDutiesValue(entryDoc?.adminDuties || {});
+        const isComplete =
+          Boolean(normalizedDuties.signatureFormReceived) && Boolean(normalizedDuties.feeReceived);
+        return {
+          schoolId,
+          schoolName,
+          ensembleId: ensemble.id,
+          ensembleName: ensemble.name || ensemble.id,
+          adminDuties: normalizedDuties,
+          isAdminDutiesComplete: isComplete,
+        };
+      })
+      .sort((a, b) => {
+        if (Boolean(a.isAdminDutiesComplete) !== Boolean(b.isAdminDutiesComplete)) {
+          return a.isAdminDutiesComplete ? 1 : -1;
+        }
+        return (a.ensembleName || "").localeCompare(b.ensembleName || "");
+      });
+    renderAdminDutiesRows();
+  } catch (error) {
+    console.error("refreshAdminDutiesPanel failed", error);
+    if (state.admin.dutiesLoadVersion !== loadVersion) return;
+    state.admin.dutiesRows = [];
+    clearAdminDutiesList();
+    setAdminDutiesSummary("");
+    setAdminDutiesStatus("Unable to load admin checkoffs.");
+  }
+}
+
 export function renderJudgeOptions(judges) {
   const selects = [
     els.stage1JudgeSelect,
@@ -4420,10 +5335,11 @@ export function renderAdminScheduleList(entries) {
 export function renderSubmissionCard(submission, position, { showTranscript = true } = {}) {
   const card = document.createElement("div");
   card.className = "packet-card";
+  const badgeLabel = JUDGE_POSITION_LABELS[position] || position || "Judge";
   if (!submission) {
     const badge = document.createElement("div");
     badge.className = "badge";
-    badge.textContent = JUDGE_POSITION_LABELS[position];
+    badge.textContent = badgeLabel;
     const note = document.createElement("div");
     note.className = "note";
     note.textContent = "No submission yet.";
@@ -4436,7 +5352,7 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
   header.className = "row";
   const badge = document.createElement("span");
   badge.className = "badge";
-  badge.textContent = JUDGE_POSITION_LABELS[position];
+  badge.textContent = badgeLabel;
   const status = document.createElement("span");
   status.className = "note";
   status.textContent = `Status: ${submission.status || "unknown"}`;
@@ -4536,6 +5452,50 @@ function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) 
   });
 
   return captionSummary;
+}
+
+export function renderAdminOpenPacketDetail(packet, packetPanel) {
+  if (!packetPanel) return;
+  packetPanel.innerHTML = "";
+
+  const school = packet.schoolName || packet.schoolId || "Unknown school";
+  const ensemble = packet.ensembleName || packet.ensembleId || "Unknown ensemble";
+  const slotLabel =
+    JUDGE_POSITION_LABELS[packet.judgePosition] || (packet.judgePosition ? packet.judgePosition : "Unassigned");
+  const eventLabel = packet.assignmentEventId || "Open (no event)";
+
+  const header = document.createElement("div");
+  header.className = "packet-header";
+  header.textContent = `${school} • ${ensemble} • Slot: ${slotLabel} • Event: ${eventLabel}`;
+  packetPanel.appendChild(header);
+
+  const grid = document.createElement("div");
+  grid.className = "packet-grid";
+
+  const syntheticSubmission = {
+    id: packet.id,
+    status: packet.status || "draft",
+    locked: Boolean(packet.locked),
+    judgePosition: packet.judgePosition || "",
+    judgeName: packet.createdByJudgeName || "",
+    judgeEmail: packet.createdByJudgeEmail || "",
+    judgeTitle: packet.createdByJudgeTitle || "",
+    judgeAffiliation: packet.createdByJudgeAffiliation || "",
+    formType: packet.formType || FORM_TYPES.stage,
+    captions: packet.captions || {},
+    captionScoreTotal: packet.captionScoreTotal ?? null,
+    computedFinalRatingLabel: packet.computedFinalRatingLabel || "N/A",
+    audioUrl: packet.latestAudioUrl || "",
+    transcript: "",
+    transcriptFull: "",
+  };
+  grid.appendChild(
+    renderSubmissionCard(syntheticSubmission, packet.judgePosition || "Judge", {
+      showTranscript: false,
+    })
+  );
+
+  packetPanel.appendChild(grid);
 }
 
 export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
@@ -5041,6 +6001,19 @@ export function bindAdminHandlers() {
   if (els.adminLogisticsNextEnsembleSelect) {
     els.adminLogisticsNextEnsembleSelect.addEventListener("change", () => {
       refreshAdminLogisticsEntry();
+    });
+  }
+
+  if (els.adminDutiesSchoolSelect) {
+    els.adminDutiesSchoolSelect.addEventListener("change", () => {
+      refreshAdminDutiesPanel();
+    });
+  }
+
+  if (els.adminDutiesSearchInput) {
+    els.adminDutiesSearchInput.addEventListener("input", () => {
+      state.admin.dutiesSearchQuery = els.adminDutiesSearchInput.value || "";
+      renderAdminDutiesRows();
     });
   }
 
@@ -6019,6 +6992,109 @@ export function bindDirectorHandlers() {
   if (els.eventDetailBackBtn) {
     els.eventDetailBackBtn.addEventListener("click", () => {
       window.location.hash = `#${state.app.currentTab || "admin"}`;
+    });
+  }
+
+  if (els.eventScheduleAddSchoolSelect) {
+    els.eventScheduleAddSchoolSelect.addEventListener("change", () => {
+      refreshEventScheduleAddEnsembles();
+    });
+  }
+
+  if (els.eventScheduleAddRowBtn) {
+    els.eventScheduleAddRowBtn.addEventListener("click", async () => {
+      const eventId = els.eventDetailPage?.dataset?.eventId || "";
+      if (!eventId) {
+        alertUser("Open an event detail page first.");
+        return;
+      }
+      const schoolId = els.eventScheduleAddSchoolSelect?.value || "";
+      const ensembleId = els.eventScheduleAddEnsembleSelect?.value || "";
+      const ensembleOption = els.eventScheduleAddEnsembleSelect?.selectedOptions?.[0] || null;
+      const ensembleName = ensembleOption?.dataset?.ensembleName || ensembleOption?.textContent || ensembleId;
+      const sortOrder = Number(els.eventScheduleAddOrderInput?.value || 0);
+      const holdingAtDate = parseLocalDateTime(els.eventScheduleAddHoldingInput?.value || "");
+      const warmupAtDate = parseLocalDateTime(els.eventScheduleAddWarmupInput?.value || "");
+      const performanceAtDate = parseLocalDateTime(els.eventScheduleAddPerformanceInput?.value || "");
+      const sightReadingAtDate = parseLocalDateTime(els.eventScheduleAddSightInput?.value || "");
+
+      if (!schoolId || !ensembleId) {
+        alertUser("Choose a school and ensemble.");
+        return;
+      }
+      if (!holdingAtDate || !warmupAtDate || !performanceAtDate) {
+        alertUser("Holding, warm-up, and performance times are required.");
+        return;
+      }
+      try {
+        els.eventScheduleAddRowBtn.dataset.loadingLabel = "Adding...";
+        els.eventScheduleAddRowBtn.dataset.spinner = "true";
+        await withLoading(els.eventScheduleAddRowBtn, async () => {
+          await createEventScheduleRow({
+            eventId,
+            schoolId,
+            ensembleId,
+            ensembleName,
+            sortOrder: Number.isFinite(sortOrder) && sortOrder > 0 ? sortOrder : 9999,
+            holdingAtDate,
+            warmupAtDate,
+            performanceAtDate,
+            sightReadingAtDate,
+          });
+        });
+        if (els.eventScheduleAddOrderInput) els.eventScheduleAddOrderInput.value = "";
+        if (els.eventScheduleAddHoldingInput) els.eventScheduleAddHoldingInput.value = "";
+        if (els.eventScheduleAddWarmupInput) els.eventScheduleAddWarmupInput.value = "";
+        if (els.eventScheduleAddPerformanceInput) els.eventScheduleAddPerformanceInput.value = "";
+        if (els.eventScheduleAddSightInput) els.eventScheduleAddSightInput.value = "";
+        if (els.eventScheduleDraftStatus) {
+          els.eventScheduleDraftStatus.textContent = "Schedule row added.";
+        }
+      } catch (error) {
+        console.error("createEventScheduleRow failed", error);
+        alertUser(error?.message || "Unable to add schedule row.");
+      }
+    });
+  }
+
+  if (els.eventSchedulePublishBtn) {
+    els.eventSchedulePublishBtn.addEventListener("click", async () => {
+      const eventId = els.eventDetailPage?.dataset?.eventId || "";
+      if (!eventId) return;
+      try {
+        els.eventSchedulePublishBtn.dataset.loadingLabel = "Publishing...";
+        els.eventSchedulePublishBtn.dataset.spinner = "true";
+        await withLoading(els.eventSchedulePublishBtn, async () => {
+          await publishEventSchedule({ eventId });
+        });
+        if (els.eventScheduleDraftStatus) {
+          els.eventScheduleDraftStatus.textContent = "Schedule published.";
+        }
+      } catch (error) {
+        console.error("publishEventSchedule failed", error);
+        alertUser(error?.message || "Unable to publish schedule.");
+      }
+    });
+  }
+
+  if (els.eventScheduleUnpublishBtn) {
+    els.eventScheduleUnpublishBtn.addEventListener("click", async () => {
+      const eventId = els.eventDetailPage?.dataset?.eventId || "";
+      if (!eventId) return;
+      if (!confirmUser("Unpublish schedule for directors?")) return;
+      try {
+        els.eventScheduleUnpublishBtn.dataset.loadingLabel = "Unpublishing...";
+        els.eventScheduleUnpublishBtn.dataset.spinner = "true";
+        await withLoading(els.eventScheduleUnpublishBtn, async () => {
+          await unpublishEventSchedule({ eventId });
+        });
+        if (els.eventScheduleDraftStatus) {
+          els.eventScheduleDraftStatus.textContent = "Schedule unpublished.";
+        }
+      } catch (error) {
+        console.error("unpublishEventSchedule failed", error);
+        alertUser(error?.message || "Unable to unpublish schedule.");
+      }
     });
   }
 

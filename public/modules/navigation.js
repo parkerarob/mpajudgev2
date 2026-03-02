@@ -46,6 +46,14 @@ export function resolveHash(hash) {
   if (value === "#director") return { type: "tab", tab: "director" };
   if (value === "#judge") return { type: "tab", tab: "judge-open" };
   if (value === "#judge-open") return { type: "tab", tab: "judge-open" };
-  if (value === "#admin") return { type: "tab", tab: "admin" };
+  if (value === "#admin" || value.startsWith("#admin/")) {
+    const segment = value.slice("#admin".length).replace(/^\//, "") || "events";
+    const adminView =
+      segment === "chair" ? "chair" :
+      segment === "eventChair" ? "eventChair" :
+      segment === "logistics" ? "logistics" :
+      segment === "directory" ? "directory" : "events";
+    return { type: "tab", tab: "admin", adminView };
+  }
   return { type: "none" };
 }

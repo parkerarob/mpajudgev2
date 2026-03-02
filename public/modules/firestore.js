@@ -54,7 +54,10 @@ export async function fetchEnsembleGrade(eventId, ensembleId) {
     );
     const entrySnap = await getDoc(entryRef);
     if (entrySnap.exists()) {
-      return normalizeGrade(entrySnap.data().performanceGrade);
+      const data = entrySnap.data();
+      const declared = normalizeGrade(data.declaredGradeLevel);
+      const fromRepertoire = normalizeGrade(data.performanceGrade);
+      return declared || fromRepertoire;
     }
   }
   const ensembleRef = doc(db, COLLECTIONS.ensembles, ensembleId);

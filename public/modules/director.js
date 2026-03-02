@@ -142,6 +142,12 @@ export function buildDirectorAutosavePayload() {
   return {
     status: "draft",
     performanceGrade: state.director.entryDraft?.performanceGrade || "",
+    commentsOnly: Boolean(state.director.entryDraft?.commentsOnly),
+    datePreference: String(state.director.entryDraft?.datePreference ?? "").trim(),
+    registrationNote: String(state.director.entryDraft?.registrationNote ?? "").trim(),
+    declaredGradeLevel: normalizeGrade(state.director.entryDraft?.declaredGradeLevel) || "",
+    declaredGradeFlex: Boolean(state.director.entryDraft?.declaredGradeFlex),
+    feeWaiverRequested: Boolean(state.director.entryDraft?.feeWaiverRequested),
     performanceGradeFlex: Boolean(state.director.entryDraft?.performanceGradeFlex),
     repertoire,
     mpaSelections,
@@ -222,6 +228,12 @@ export function buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid 
       cheeseQty: 0,
       notes: "",
     },
+    commentsOnly: false,
+    datePreference: "",
+    registrationNote: "",
+    declaredGradeLevel: "",
+    declaredGradeFlex: false,
+    feeWaiverRequested: false,
   };
 }
 
@@ -321,6 +333,12 @@ export function normalizeEntryData(data, defaults) {
     ...defaults.lunchOrder,
     ...(data?.lunchOrder || {}),
   };
+  base.commentsOnly = Boolean(data?.commentsOnly);
+  base.datePreference = String(data?.datePreference ?? "").trim();
+  base.registrationNote = String(data?.registrationNote ?? "").trim();
+  base.declaredGradeLevel = normalizeGrade(data?.declaredGradeLevel) || "";
+  base.declaredGradeFlex = Boolean(data?.declaredGradeFlex);
+  base.feeWaiverRequested = Boolean(data?.feeWaiverRequested);
   return base;
 }
 
@@ -385,6 +403,56 @@ export async function ensureEntryDocExists() {
   state.director.entryExists = true;
   state.director.entryDraft = normalizeEntryData(payload, base);
   return true;
+}
+
+/**
+ * Upsert registration fields for an ensemble's event entry without requiring it to be the selected ensemble.
+ * @param {{ eventId: string, schoolId: string, ensembleId: string, declaredGradeLevel?: string, declaredGradeFlex?: boolean, commentsOnly?: boolean, feeWaiverRequested?: boolean, datePreference?: string, registrationNote?: string }} params
+ */
+export async function upsertRegistrationForEnsemble({
+  eventId,
+  schoolId,
+  ensembleId,
+  ensembleName = "",
+  declaredGradeLevel = "",
+  declaredGradeFlex = false,
+  commentsOnly = false,
+  feeWaiverRequested = false,
+  datePreference = "",
+  registrationNote = "",
+}) {
+  if (!eventId || !schoolId || !ensembleId) return;
+  const entryRef = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId);
+  const snap = await getDoc(entryRef);
+  const createdByUid = state.auth.currentUser?.uid || "";
+  const normalizedGrade = normalizeGrade(declaredGradeLevel) || "";
+
+  const registrationPayload = {
+    schoolId,
+    ensembleId,
+    ensembleName: ensembleName || ensembleId,
+    eventId,
+    declaredGradeLevel: normalizedGrade,
+    declaredGradeFlex: Boolean(declaredGradeFlex),
+    commentsOnly: Boolean(commentsOnly),
+    feeWaiverRequested: Boolean(feeWaiverRequested),
+    datePreference: String(datePreference ?? "").trim(),
+    registrationNote: String(registrationNote ?? "").trim(),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (!snap.exists()) {
+    const base = buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid });
+    await setDoc(entryRef, {
+      ...base,
+      ...registrationPayload,
+      createdAt: serverTimestamp(),
+      registeredAt: serverTimestamp(),
+      registeredByUid: createdByUid,
+    }, { merge: true });
+  } else {
+    await updateDoc(entryRef, registrationPayload);
+  }
 }
 
 export async function saveEntrySection(section, payload, successMessage) {
@@ -674,12 +742,29 @@ export function computeDirectorCompletionState(entry) {
     (value) => Number(value) > 0
   );
   const instrumentationComplete = hasStandardCount;
+  const seatingComplete = Boolean(
+    entry?.seating && Array.isArray(entry.seating.rows) && entry.seating.rows.length > 0
+  );
+  const percussionComplete = Boolean(
+    entry?.percussionNeeds && Array.isArray(entry.percussionNeeds.selected)
+  );
+  const lunchComplete = Boolean(entry?.lunchOrder);
   const gradeComputed = Boolean(entry?.performanceGrade?.trim?.());
-  const ready = hasEnsemble && repertoireComplete && instrumentationComplete && gradeComputed;
+  const ready =
+    hasEnsemble &&
+    repertoireComplete &&
+    instrumentationComplete &&
+    seatingComplete &&
+    percussionComplete &&
+    lunchComplete &&
+    gradeComputed;
   return {
     ensemble: hasEnsemble,
     repertoire: repertoireComplete,
     instrumentation: instrumentationComplete,
+    seating: seatingComplete,
+    percussion: percussionComplete,
+    lunch: lunchComplete,
     grade: gradeComputed,
     ready,
   };
@@ -1142,7 +1227,7 @@ export function setDirectorEvent(nextId) {
   return { ok: true };
 }
 
-export async function saveDirectorProfile({ name, nafmeNumber, expValue }) {
+export async function saveDirectorProfile({ name, nafmeNumber, expValue, cellPhone }) {
   if (!state.auth.currentUser || !state.auth.userProfile || state.auth.userProfile.role !== "director") {
     return { ok: false, reason: "not-authorized" };
   }
@@ -1155,6 +1240,7 @@ export async function saveDirectorProfile({ name, nafmeNumber, expValue }) {
     displayName: name,
     nafmeMembershipNumber: nafmeNumber,
     nafmeMembershipExp: expValue ? Timestamp.fromDate(new Date(expValue)) : null,
+    cellPhone: typeof cellPhone === "string" ? cellPhone.trim() : "",
     updatedAt: serverTimestamp(),
   };
   if (userSnap.exists()) {
@@ -1174,6 +1260,7 @@ export async function saveDirectorProfile({ name, nafmeNumber, expValue }) {
   state.auth.userProfile.nafmeMembershipExp = expValue
     ? Timestamp.fromDate(new Date(expValue))
     : null;
+  state.auth.userProfile.cellPhone = payload.cellPhone;
   if (rolesPayload.roles) {
     state.auth.userProfile.roles = rolesPayload.roles;
   }

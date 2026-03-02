@@ -469,6 +469,45 @@ h3 {
   filter: none;
 }
 
+.admin-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-subnav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.admin-subnav-btn:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.admin-subnav-btn[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--text);
+  border-color: transparent;
+}
+
+.admin-view.is-hidden {
+  display: none;
+}
+
 .card {
   background: var(--panel);
   border-radius: 8px;
@@ -1342,6 +1381,70 @@ body.director-only #tabLockHint {
   text-transform: uppercase;
   margin-top: 10px;
 }
+
+.schedule-timeline-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 8px;
+}
+.schedule-timeline-table th,
+.schedule-timeline-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.schedule-timeline-table th {
+  font-weight: 600;
+  color: var(--muted);
+}
+.schedule-timeline-table td:first-child {
+  max-width: 180px;
+}
+
+.stage-view-panel { margin-top: 12px; }
+.stage-view-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.stage-view-nav .row { flex-wrap: wrap; }
+.stage-view-content { margin-top: 8px; }
+.stage-view-card {
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-solid);
+}
+.stage-view-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.stage-view-school {
+  font-size: 1.1rem;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+.stage-view-block-title {
+  font-weight: 600;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+.stage-view-row { font-size: 1.1rem; margin: 2px 0; }
+.stage-view-totals { font-weight: 600; margin-top: 8px; }
+.stage-view-notes { font-size: 0.95rem; color: var(--muted); margin-top: 4px; }
+.stage-view-percussion { margin-top: 12px; }
+.stage-view-empty { color: var(--muted); font-style: italic; }
+
+.prep-time-display {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-top: 12px;
+  min-height: 2.5rem;
+}
+.prep-time-display.prep-time-done { color: var(--accent); }
 
 .packet-panel {
   margin-top: 10px;

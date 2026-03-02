@@ -25,12 +25,15 @@ import { getDirectorNameForSchool } from "./director.js";
 import { getSchoolNameById } from "./utils.js";
 
 
-export async function createEvent({ name, startAtDate, endAtDate }) {
+export async function createEvent({ name, startAtDate, endAtDate, registrationDeadlineDate }) {
+  const deadlineDate = registrationDeadlineDate ||
+    new Date(startAtDate.getFullYear(), startAtDate.getMonth() - 1, startAtDate.getDate());
   return addDoc(collection(db, COLLECTIONS.events), {
     name: name.trim(),
     isActive: false,
     startAt: Timestamp.fromDate(startAtDate),
     endAt: Timestamp.fromDate(endAtDate),
+    registrationDeadline: Timestamp.fromDate(deadlineDate),
     timezone: "America/New_York",
     createdAt: serverTimestamp(),
   });
@@ -154,7 +157,7 @@ export function watchEvents(callback) {
     state.event.list.sort((a, b) => {
       const aTime = a.startAt?.toMillis ? a.startAt.toMillis() : 0;
       const bTime = b.startAt?.toMillis ? b.startAt.toMillis() : 0;
-      return aTime - bTime;
+      return bTime - aTime;
     });
     callback?.(state.event.list);
   });
@@ -300,8 +303,64 @@ export async function updateScheduleEntryTime({ eventId, entryId, nextDate }) {
   );
 }
 
+export async function updateEventSchedulerFields({
+  eventId,
+  firstPerformanceAt,
+  scheduleBreaks,
+}) {
+  const eventRef = doc(db, COLLECTIONS.events, eventId);
+  const updates = {};
+  if (firstPerformanceAt !== undefined) {
+    updates[FIELDS.events.firstPerformanceAt] = firstPerformanceAt
+      ? Timestamp.fromDate(firstPerformanceAt)
+      : null;
+  }
+  if (scheduleBreaks !== undefined) {
+    updates[FIELDS.events.scheduleBreaks] = Array.isArray(scheduleBreaks)
+      ? scheduleBreaks
+      : [];
+  }
+  if (Object.keys(updates).length === 0) return;
+  return updateDoc(eventRef, { ...updates, updatedAt: serverTimestamp() });
+}
+
 export async function deleteScheduleEntry({ eventId, entryId }) {
   return deleteDoc(doc(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule, entryId));
+}
+
+/**
+ * Aggregate lunch totals by school for the event (from director entries).
+ * @param {string} eventId
+ * @returns {Promise<Array<{ schoolId: string, schoolName: string, cheese: number, pepperoni: number, total: number }>>}
+ */
+export async function getLunchTotalsBySchool(eventId) {
+  if (!eventId) return [];
+  const entriesSnap = await getDocs(
+    collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries)
+  );
+  const bySchool = new Map();
+  entriesSnap.docs.forEach((docSnap) => {
+    const data = docSnap.data() || {};
+    const schoolId = data.schoolId || "";
+    if (!schoolId) return;
+    const lunch = data.lunchOrder || {};
+    const cheese = Number(lunch.cheeseQty) || 0;
+    const pepperoni = Number(lunch.pepperoniQty) || 0;
+    const prev = bySchool.get(schoolId) || { cheese: 0, pepperoni: 0 };
+    prev.cheese += cheese;
+    prev.pepperoni += pepperoni;
+    bySchool.set(schoolId, prev);
+  });
+  const schoolsList = state.admin.schoolsList || [];
+  return Array.from(bySchool.entries())
+    .map(([schoolId, counts]) => ({
+      schoolId,
+      schoolName: getSchoolNameById(schoolsList, schoolId) || schoolId,
+      cheese: counts.cheese,
+      pepperoni: counts.pepperoni,
+      total: counts.cheese + counts.pepperoni,
+    }))
+    .sort((a, b) => (a.schoolName || "").localeCompare(b.schoolName || ""));
 }
 
 export async function getPacketData({ eventId, entry }) {
@@ -387,4 +446,23 @@ export async function deleteOpenPacket({ packetId }) {
 export async function deleteSchool({ schoolId }) {
   const deleteFn = httpsCallable(functions, "deleteSchool");
   return deleteFn({ schoolId });
+}
+
+export async function fetchRegisteredEnsembles(eventId) {
+  if (!eventId) return [];
+  const snap = await getDocs(
+    collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries)
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function fetchScheduleEntries(eventId) {
+  if (!eventId) return [];
+  const snap = await getDocs(
+    query(
+      collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule),
+      orderBy("performanceAt", "asc")
+    )
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }

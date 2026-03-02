@@ -67,8 +67,16 @@
             <button type="button" class="ghost" id="adminProfileToggleBtn">Update Profile</button>
           </div>
         </div>
+        <nav class="admin-subnav" id="adminSubnav" role="tablist" aria-label="Admin views">
+          <button type="button" class="admin-subnav-btn" id="adminSubnavChairBtn" role="tab" data-admin-view="chair" aria-selected="false">Chair</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavEventChairBtn" role="tab" data-admin-view="eventChair" aria-selected="false">Event Chair</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavEventsBtn" role="tab" data-admin-view="events" aria-selected="true">Events & Packets</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavLogisticsBtn" role="tab" data-admin-view="logistics" aria-selected="false">Stage Logistics</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavDirectoryBtn" role="tab" data-admin-view="directory" aria-selected="false">Directory & Users</button>
+        </nav>
         <div class="ios-screen">
         <div class="stack">
+          <div id="adminViewEvents" class="admin-view stack" data-admin-view="events">
           <div class="panel" id="adminEventsSection">
             <h3>Event Defaults</h3>
             <p class="hint">Create an event name and assign Stage 1/2/3/Sight judges. Open Judge still works without this.</p>
@@ -121,6 +129,106 @@
             <ul id="adminOpenPacketsList" class="list"></ul>
           </div>
 
+          <div class="panel" id="adminRegisteredEnsemblesSection">
+            <h3>Registered Ensembles</h3>
+            <p class="hint">Ensembles that have registered for the active event. Click one to auto-fill the schedule form.</p>
+            <ul id="adminRegisteredEnsemblesList" class="list"></ul>
+          </div>
+          <div class="panel" id="adminScheduleSection">
+            <h3>Event Schedule Roster</h3>
+            <p class="hint">Add bands to the schedule for the active event. Order is by performance time. You can set the first performance time and apply the full timeline in Stage Logistics.</p>
+            <form id="scheduleForm" class="stack">
+              <label>
+                School
+                <select id="scheduleSchoolSelect"></select>
+              </label>
+              <label>
+                Ensemble
+                <select id="scheduleEnsembleSelect"></select>
+              </label>
+              <div class="hint" id="scheduleEnsembleHint"></div>
+              <label>
+                Performance time (placeholder ok; use Stage Logistics to apply computed times)
+                <input type="datetime-local" id="performanceAtInput" />
+              </label>
+              <button type="submit" id="scheduleSubmitBtn" disabled>Add band</button>
+            </form>
+            <ul id="scheduleList" class="list"></ul>
+          </div>
+          </div>
+
+          <div id="adminViewChair" class="admin-view stack is-hidden" data-admin-view="chair">
+          <div class="panel" id="chairRegisteredSection">
+            <h3>Registered Ensembles</h3>
+            <p class="hint">Ensembles registered for the active event. Use the Events &amp; Packets tab to add them to the schedule.</p>
+            <ul id="chairRegisteredEnsemblesList" class="list"></ul>
+          </div>
+          <div class="panel" id="adminChairSection">
+            <h3>Chair Operations</h3>
+            <p class="hint">Run sheet: schedule order, judge progress, one-tap lock/release. Set an active event and add bands to the schedule.</p>
+            <div class="note" id="adminChairMessage"></div>
+            <div class="row">
+              <button type="button" class="ghost" id="chairDashboardRefreshBtn">Refresh</button>
+              <button type="button" class="ghost" id="chairLunchExportBtn">Export lunch labels</button>
+            </div>
+            <div id="adminChairDashboardContainer"></div>
+          </div>
+          </div>
+
+          <div id="adminViewEventChair" class="admin-view stack is-hidden" data-admin-view="eventChair">
+            <div class="panel" id="adminEventChairDefineSection">
+              <h3>Events</h3>
+              <p class="hint" id="eventChairDefineHint">The event is the label for this adjudication. Packets, schedule, and judge sheets are tied to an event. Only one event is active at a time.</p>
+              <button type="button" id="eventChairShowCreateBtn">Create New Event</button>
+              <div id="eventChairCreateFormBlock" class="stack is-hidden">
+                <form id="eventChairCreateEventForm" class="stack">
+                  <label>
+                    Event name
+                    <input type="text" id="eventChairEventNameInput" placeholder="e.g. Eastern District MPA 2026" />
+                  </label>
+                  <label>
+                    Start date (optional)
+                    <input type="date" id="eventChairStartAtInput" />
+                  </label>
+                  <label>
+                    End date (optional)
+                    <input type="date" id="eventChairEndAtInput" />
+                  </label>
+                  <label>
+                    Registration deadline (optional, defaults to 1 month before start)
+                    <input type="date" id="eventChairDeadlineInput" />
+                  </label>
+                  <div class="row">
+                    <button type="submit" id="eventChairCreateEventBtn">Create event</button>
+                    <button type="button" id="eventChairCancelCreateBtn" class="ghost">Cancel</button>
+                  </div>
+                </form>
+              </div>
+              <ul id="eventChairEventList" class="list"></ul>
+            </div>
+            <div class="panel is-hidden" id="eventChairDetailSection">
+              <button type="button" class="ghost" id="eventChairBackToListBtn">&larr; Back to Events</button>
+              <h3 id="eventChairDetailTitle">Event</h3>
+              <p class="hint" id="eventChairDetailDates"></p>
+              <div class="stack">
+                <label>
+                  First performance time
+                  <input type="datetime-local" id="eventChairFirstPerfInput" />
+                </label>
+                <button type="button" class="ghost" id="eventChairFirstPerfSaveBtn">Save first time</button>
+              </div>
+              <h4>Registered Ensembles</h4>
+              <p class="hint">Type a position number (1, 2, 3...) to set performance order.</p>
+              <div id="eventChairRegisteredTable"></div>
+              <div class="row">
+                <button type="button" id="eventChairPreviewBtn">Preview Schedule</button>
+                <button type="button" id="eventChairApplyBtn" disabled>Apply Schedule</button>
+              </div>
+              <div id="eventChairTimelineContainer"></div>
+            </div>
+          </div>
+
+          <div id="adminViewLogistics" class="admin-view stack is-hidden" data-admin-view="logistics">
           <div class="panel" id="adminLogisticsSection">
             <h3>Stage Setup Logistics</h3>
             <p class="hint">View seating chart and percussion needs from the Director entry for the active event.</p>
@@ -155,7 +263,36 @@
               <div class="stack" id="adminLogisticsContent"></div>
             </div>
           </div>
+          <div class="panel" id="adminSchedulerSection">
+            <h3>Schedule Timeline</h3>
+            <p class="hint">Derive holding, warm-up, perform, and sight-reading times from the first performance time. Grade I/II: 25 min per slot; III/IV: 30 min; V: 35 min; VI: 40 min. Breaks add 30 min before the next band.</p>
+            <div class="stack" id="adminSchedulerStack">
+              <div class="note" id="adminSchedulerMessage"></div>
+              <div class="stack" id="adminSchedulerFirstRow">
+                <label>
+                  First performance time (perform slot for first band)
+                  <input type="datetime-local" id="schedulerFirstPerformanceInput" />
+                </label>
+                <button type="button" class="ghost" id="schedulerFirstPerformanceSaveBtn">Save first time</button>
+              </div>
+              <div id="adminSchedulerTimelineContainer"></div>
+              <button type="button" class="ghost is-hidden" id="schedulerApplyBtn">Apply to schedule</button>
+            </div>
+          </div>
+          <div class="panel stage-view-panel" id="adminStageViewSection">
+            <h3>Stage View (Site Host)</h3>
+            <p class="hint">Next ensemble stage setup for the Stage Team. Large type for use at stage.</p>
+            <div class="note" id="stageViewMessage"></div>
+            <div class="stage-view-nav row">
+              <button type="button" class="ghost" id="stageViewPrevBtn">Previous</button>
+              <span id="stageViewPositionLabel">—</span>
+              <button type="button" class="ghost" id="stageViewNextBtn">Next ensemble</button>
+            </div>
+            <div id="stageViewContent" class="stage-view-content"></div>
+          </div>
+          </div>
 
+          <div id="adminViewDirectory" class="admin-view stack is-hidden" data-admin-view="directory">
           <div class="panel" id="adminSchoolsSection">
             <h3>Directory</h3>
             <div class="stack">
@@ -237,6 +374,7 @@
                 <div class="note" id="provisionResult"></div>
               </div>
             </div>
+          </div>
           </div>
         </div>
         </div>
@@ -398,6 +536,20 @@
                 </div>
               </details>
 
+              <div class="panel stack judge-open-step-card is-hidden" id="judgeOpenPrepTimePanel">
+                <div class="step-heading">
+                  <span class="badge">Sight Reading</span>
+                  <strong>Prep Time</strong>
+                </div>
+                <p class="hint">Grade II–IV: 5 min; Grade V: 6 min; Grade VI: 7 min.</p>
+                <div class="row">
+                  <button type="button" class="btn--secondary" data-prep-mins="5">Start 5 min</button>
+                  <button type="button" class="btn--secondary" data-prep-mins="6">Start 6 min</button>
+                  <button type="button" class="btn--secondary" data-prep-mins="7">Start 7 min</button>
+                </div>
+                <div class="prep-time-display" id="judgeOpenPrepTimeDisplay" aria-live="polite"></div>
+              </div>
+
               <div class="panel stack judge-open-step-card">
                 <div class="step-heading">
                   <span class="badge">Step 4</span>
@@ -431,253 +583,205 @@
       </section>
 
       <section class="card" id="directorCard" role="tabpanel" aria-labelledby="directorTab">
-        <div class="ios-nav mobile-only">
-          <div class="ios-subtitle">Director</div>
-          <h2 class="ios-title">Registrations</h2>
-          <div class="ios-subtitle">Complete Day of Forms and review released results packets.</div>
-        </div>
         <div class="tab-header desktop-only">
           <div>
-            <h2>Ensemble Registrations</h2>
-            <div class="tab-subtitle">Complete Day of Forms and review released results packets.</div>
+            <h2>Director</h2>
+            <div class="tab-subtitle">Register ensembles, complete day-of forms, and review results.</div>
           </div>
           <div class="tab-header-actions">
             <span class="badge" id="directorEntryStatusBadge">Incomplete</span>
           </div>
         </div>
         <div class="ios-screen">
-          <div class="panel director-summary" id="directorSummary">
-            <div class="director-summary-school">
-              <div class="director-summary-school-row">
-                <div class="director-summary-school-name" id="directorSummarySchool">No school attached</div>
-                <div class="row" id="directorDetachControls">
-                  <button type="button" id="directorDetachBtn" class="ghost">
-                    Change School
-                  </button>
-                </div>
-              </div>
-              <div class="director-summary-attached" id="directorSummaryAttachedContent">
-                <ul id="directorEnsembleList" class="list ensembles-list"></ul>
-                <button type="button" id="directorShowEnsembleFormBtn" class="btn--secondary">
-                  Create New Ensemble
-                </button>
-                <div class="director-summary-directors" id="directorSchoolDirectors"></div>
-              </div>
-              <div class="row" id="directorAttachControls">
-                <select id="directorAttachSelect"></select>
-                <button type="button" id="directorAttachBtn">Confirm School</button>
+
+          <!-- LANDING: school, directors, event selector -->
+          <div class="panel director-summary stack" id="directorSummary">
+            <div class="director-summary-school-row">
+              <div class="director-summary-school-name" id="directorSummarySchool">No school attached</div>
+              <div class="row" id="directorDetachControls">
+                <button type="button" id="directorDetachBtn" class="ghost">Change School</button>
               </div>
             </div>
-        </div>
-        <div class="stack" id="directorMainStack">
-          <div class="stack" id="directorEnsemblesSection">
-            <form id="directorEnsembleForm" class="stack is-hidden">
-              <label>
-                Ensemble Name
-                <input type="text" id="directorEnsembleNameInput" />
-              </label>
-              <div class="error" id="directorEnsembleError"></div>
-              <div class="actions">
-                <button type="submit" id="directorEnsembleSubmitBtn">Create Ensemble</button>
-                <button type="button" class="ghost" id="directorEnsembleCancelBtn">
-                  Cancel
-                </button>
+            <div class="row" id="directorAttachControls">
+              <select id="directorAttachSelect"></select>
+              <button type="button" id="directorAttachBtn">Confirm School</button>
+            </div>
+            <div class="director-summary-directors" id="directorSchoolDirectors"></div>
+            <div class="director-summary-event-select stack" id="directorEventSelectBlock">
+              <label for="directorEventSelect">Event</label>
+              <div class="row">
+                <select id="directorEventSelect" class="grow"></select>
+                <button type="button" id="directorEventGoBtn" class="btn--secondary">Continue</button>
               </div>
-            </form>
+            </div>
           </div>
 
+          <!-- REGISTRATION: multi-step form -->
+          <div class="panel stack is-hidden" id="directorRegistrationPanel">
+            <h3>Event Registration</h3>
+            <div class="note" id="directorRegistrationEventName"></div>
+            <div class="note" id="directorRegistrationEventDates"></div>
+            <div class="note" id="directorRegistrationDeadline"></div>
+            <div class="panel">
+              <h4>Step 1 -- Update your profile</h4>
+              <p class="hint">Ensure your NAfME membership is active and your cell phone is on file.</p>
+              <button type="button" class="ghost" id="directorRegistrationProfileBtn">Update Profile</button>
+            </div>
+            <div class="panel">
+              <h4>Step 2 -- Choose ensembles</h4>
+              <p class="hint">Select the ensembles that will participate in this event. If you don't see one, create it below.</p>
+              <div id="directorRegistrationEnsembleList" class="stack"></div>
+            </div>
+            <div class="panel">
+              <h4>Step 3 -- Registration preferences</h4>
+              <p class="hint">For each ensemble: declare the performance grade (for scheduling), flex, comments-only, fee waiver, and date preference. Repertoire is added later in day-of forms.</p>
+              <div id="directorRegistrationGradeFlexList" class="stack"></div>
+            </div>
+            <div class="panel">
+              <h4>Step 4 -- Fees</h4>
+              <p class="hint" id="directorRegistrationFeesHint">Each registered ensemble is $225. A Signature Form must be signed by your school's principal.</p>
+            </div>
+            <button type="button" class="btn--lg btn-primary" id="directorSaveRegistrationBtn">Save Registration</button>
+          </div>
+
+          <!-- POST-REGISTRATION: summary + action buttons -->
+          <div class="panel stack is-hidden" id="directorPostRegistration">
+            <h3 id="directorRegisteredEventName"></h3>
+            <div class="note" id="directorRegisteredEventDates"></div>
+            <div id="directorRegisteredEnsemblesSummary" class="stack"></div>
+            <div class="row">
+              <button type="button" class="btn--secondary" id="directorEditRegistrationBtn">Edit Registration</button>
+              <button type="button" class="btn--secondary" id="directorPrintSignatureBtn">Print Signature Form / Invoice</button>
+              <button type="button" class="btn--secondary" id="directorEnsembleInfoBtn">Ensemble Info (Day-of Forms)</button>
+            </div>
+            <button type="button" class="ghost" id="directorBackToEventsBtn">Back to Events</button>
+          </div>
+
+          <!-- DAY-OF FORMS: ensemble selector + entry form -->
+          <div class="stack is-hidden" id="directorDayOfFormsBlock">
+            <div class="row">
+              <button type="button" class="ghost" id="directorDayOfBackBtn">Back</button>
+              <label class="grow">
+                Ensemble
+                <select id="directorDayOfEnsembleSelect" class="grow"></select>
+              </label>
+            </div>
             <div class="panel group" id="directorEntryPanel">
-            <h3>Event Entry</h3>
-            <div class="row">
-              <div class="note">Status: <span id="directorEntryStatus">Incomplete</span></div>
-              <div class="note" id="directorSchoolLunchTotal"></div>
-              <div class="note" id="directorSaveStatus"></div>
-              <span class="autosave-indicator" id="directorAutosaveIndicator">Autosaved</span>
-            </div>
-            <div class="note" id="directorEntryHint">
-              Select an ensemble and event to begin.
-            </div>
-            <div class="row">
-              <div class="active-ensemble-text is-hidden" id="directorActiveEnsemblePill">None selected</div>
-              <button type="button" class="ghost is-hidden" id="directorEditActiveEnsembleBtn">
-                Edit Active
-              </button>
-            </div>
-            <form id="directorEntryForm" class="stack">
-              <label>
-                Performance Grade (auto-derived from repertoire grades)
-                <input type="text" id="directorPerformanceGradeInput" placeholder="Auto-derived" readonly />
-              </label>
-              <input type="checkbox" id="directorPerformanceGradeFlex" hidden />
-              <div class="error" id="performanceGradeError"></div>
-              <details class="panel accordion-card" open>
-                <summary>
-                  <div>
-                    <strong>Repertoire</strong>
-                  </div>
-                </summary>
-                <div class="form-section">
-                  <div id="repertoireFields" class="stack"></div>
-                <div class="actions">
-                  <button type="button" id="saveRepertoireBtn">Save Repertoire</button>
-                  <div class="hint" id="saveRepertoireStatus"></div>
-                </div>
-                </div>
-              </details>
-
-              <details class="panel accordion-card">
-                <summary>
-                  <div>
-                    <strong>Instrument Counts</strong>
-                  </div>
-                </summary>
-                <div class="form-section">
-                  <div id="instrumentationStandard" class="grid-inputs"></div>
-                  <label>
-                    Total Percussion
-                    <input type="number" id="instrumentationTotalPercussion" min="0" value="0" />
-                  </label>
-                <div class="actions">
-                  <button type="button" id="saveInstrumentationBtn">Save Instrument Counts</button>
-                  <div class="hint" id="saveInstrumentationStatus"></div>
-                </div>
-                </div>
-              </details>
-
-              <details class="panel accordion-card">
-                <summary>
-                  <div>
-                    <strong>Non-Standard Instrumentation / Notes</strong>
-                  </div>
-                </summary>
-                <div class="form-section">
-                  <div class="stack">
-                    <div class="row">
-                      <strong>Non-standard instrumentation</strong>
-                      <button type="button" class="ghost" id="instrumentationNonStandardAddBtn">
-                        Add Instrument
-                      </button>
-                    </div>
-                    <div id="instrumentationNonStandard" class="stack"></div>
-                  </div>
-                  <label>
-                    Notes
-                    <textarea id="otherInstrumentationNotesInput" rows="3"></textarea>
-                  </label>
-                <div class="actions">
-                  <button type="button" id="saveNonStandardBtn">Save Instrument Notes</button>
-                  <div class="hint" id="saveNonStandardStatus"></div>
-                </div>
-                </div>
-              </details>
-
-              <details class="panel accordion-card">
-                <summary>
-                  <div>
-                    <strong>Rule 3C Doubling</strong>
-                  </div>
-                </summary>
-                <div class="form-section">
-                  <div id="rule3cRows" class="stack"></div>
-                  <label>
-                    Rule 3C notes
-                    <textarea id="rule3cNotesInput" rows="3"></textarea>
-                  </label>
-                <div class="actions">
-                  <button type="button" id="saveRule3cBtn">Save Rule 3C</button>
-                  <div class="hint" id="saveRule3cStatus"></div>
-                </div>
-                </div>
-              </details>
-
-              <details class="panel accordion-card">
-                <summary>
-                  <div>
-                    <strong>Seating Chart</strong>
-                  </div>
-                </summary>
-                <div class="form-section">
-                  <div id="seatingRows" class="stack"></div>
-                  <label>
-                    Seating / setup notes
-                    <textarea id="seatingNotesInput" rows="3"></textarea>
-                  </label>
-                <div class="actions">
-                  <button type="button" id="saveSeatingBtn">Save Seating</button>
-                  <div class="hint" id="saveSeatingStatus"></div>
-                </div>
-                </div>
-              </details>
-
-              <details class="panel accordion-card">
-                <summary>
-                  <div>
-                    <strong>Percussion</strong>
-                  </div>
-                </summary>
-                <div class="form-section">
-                  <div id="percussionOptions" class="grid-options"></div>
-                  <label>
-                    Other percussion requests
-                    <textarea id="percussionNotesInput" rows="3"></textarea>
-                  </label>
-                <div class="actions">
-                  <button type="button" id="savePercussionBtn">Save Percussion</button>
-                  <div class="hint" id="savePercussionStatus"></div>
-                </div>
-                </div>
-              </details>
-
-              <details class="panel accordion-card">
-                <summary>
-                  <div>
-                    <strong>Lunch Buy-In</strong>
-                  </div>
-                </summary>
+              <h3>Day-of Entry</h3>
+              <div class="row">
+                <div class="note">Status: <span id="directorEntryStatus">Incomplete</span></div>
+                <div class="note" id="directorSchoolLunchTotal"></div>
+                <div class="note" id="directorSaveStatus"></div>
+                <span class="autosave-indicator" id="directorAutosaveIndicator">Autosaved</span>
+              </div>
+              <div class="note" id="directorEntryHint">Select an ensemble above to begin.</div>
+              <form id="directorEntryForm" class="stack">
+                <label>
+                  Performance Grade (auto-derived from repertoire grades)
+                  <input type="text" id="directorPerformanceGradeInput" placeholder="Auto-derived" readonly />
+                </label>
+                <input type="checkbox" id="directorPerformanceGradeFlex" hidden />
+                <div class="error" id="performanceGradeError"></div>
+                <details class="panel accordion-card" open>
+                  <summary><div><strong>Repertoire</strong></div></summary>
                   <div class="form-section">
-                    <div class="hint">
-                      Each lunch includes two slices of pizza, chips/snack, and soda or bottled water.
-                      Cost per meal is $8.00.
+                    <div id="repertoireFields" class="stack"></div>
+                    <div class="actions">
+                      <button type="button" id="saveRepertoireBtn">Save Repertoire</button>
+                      <div class="hint" id="saveRepertoireStatus"></div>
                     </div>
-                  <label>
-                    Pepperoni pizza lunch quantity
-                    <input type="number" id="lunchPepperoniInput" min="0" value="0" />
-                  </label>
-                  <label>
-                    Cheese pizza lunch quantity
-                    <input type="number" id="lunchCheeseInput" min="0" value="0" />
-                  </label>
-                <div class="actions">
-                  <button type="button" id="saveLunchBtn">Save Lunch</button>
-                  <div class="hint" id="lunchTotalCost">$0.00</div>
-                  <div class="hint">Make checks payable to Ashley High School Band Boosters.</div>
-                  <div class="hint">Payment accepted by check or cash (one lump-sum payment for total meals).</div>
-                  <div class="hint" id="saveLunchStatus"></div>
-                </div>
-                </div>
+                  </div>
                 </details>
-
+                <details class="panel accordion-card">
+                  <summary><div><strong>Instrument Counts</strong></div></summary>
+                  <div class="form-section">
+                    <div id="instrumentationStandard" class="grid-inputs"></div>
+                    <label>Total Percussion <input type="number" id="instrumentationTotalPercussion" min="0" value="0" /></label>
+                    <div class="actions">
+                      <button type="button" id="saveInstrumentationBtn">Save Instrument Counts</button>
+                      <div class="hint" id="saveInstrumentationStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Non-Standard Instrumentation / Notes</strong></div></summary>
+                  <div class="form-section">
+                    <div class="stack">
+                      <div class="row">
+                        <strong>Non-standard instrumentation</strong>
+                        <button type="button" class="ghost" id="instrumentationNonStandardAddBtn">Add Instrument</button>
+                      </div>
+                      <div id="instrumentationNonStandard" class="stack"></div>
+                    </div>
+                    <label>Notes <textarea id="otherInstrumentationNotesInput" rows="3"></textarea></label>
+                    <div class="actions">
+                      <button type="button" id="saveNonStandardBtn">Save Instrument Notes</button>
+                      <div class="hint" id="saveNonStandardStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Rule 3C Doubling</strong></div></summary>
+                  <div class="form-section">
+                    <div id="rule3cRows" class="stack"></div>
+                    <label>Rule 3C notes <textarea id="rule3cNotesInput" rows="3"></textarea></label>
+                    <div class="actions">
+                      <button type="button" id="saveRule3cBtn">Save Rule 3C</button>
+                      <div class="hint" id="saveRule3cStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Seating Chart</strong></div></summary>
+                  <div class="form-section">
+                    <div id="seatingRows" class="stack"></div>
+                    <label>Seating / setup notes <textarea id="seatingNotesInput" rows="3"></textarea></label>
+                    <div class="actions">
+                      <button type="button" id="saveSeatingBtn">Save Seating</button>
+                      <div class="hint" id="saveSeatingStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Percussion</strong></div></summary>
+                  <div class="form-section">
+                    <div id="percussionOptions" class="grid-options"></div>
+                    <label>Other percussion requests <textarea id="percussionNotesInput" rows="3"></textarea></label>
+                    <div class="actions">
+                      <button type="button" id="savePercussionBtn">Save Percussion</button>
+                      <div class="hint" id="savePercussionStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Lunch Buy-In</strong></div></summary>
+                  <div class="form-section">
+                    <div class="hint">Each lunch includes two slices of pizza, chips/snack, and soda or bottled water. Cost per meal is $8.00.</div>
+                    <label>Pepperoni pizza lunch quantity <input type="number" id="lunchPepperoniInput" min="0" value="0" /></label>
+                    <label>Cheese pizza lunch quantity <input type="number" id="lunchCheeseInput" min="0" value="0" /></label>
+                    <div class="actions">
+                      <button type="button" id="saveLunchBtn">Save Lunch</button>
+                      <div class="hint" id="lunchTotalCost">$0.00</div>
+                      <div class="hint">Make checks payable to Ashley High School Band Boosters.</div>
+                      <div class="hint">Payment accepted by check or cash (one lump-sum payment for total meals).</div>
+                      <div class="hint" id="saveLunchStatus"></div>
+                    </div>
+                  </div>
+                </details>
                 <div class="actions entry-ready-actions">
-                  <button type="button" id="directorEntryReadyBtn" class="full-width-cta">
-                    Mark as Ready
-                  </button>
+                  <button type="button" id="directorEntryReadyBtn" class="full-width-cta">Mark as Ready</button>
                 </div>
-
-                </form>
+              </form>
+            </div>
+            <details class="panel accordion-card group">
+              <summary><div><strong>Results Packet</strong></div></summary>
+              <div class="form-section">
+                <div class="empty" id="directorEmpty">No results released yet.</div>
+                <div id="directorPackets" class="stack"></div>
               </div>
-
-              <details class="panel accordion-card group">
-            <summary>
-              <div>
-                <strong>Results Packet</strong>
-              </div>
-            </summary>
-            <div class="form-section">
-              <div class="empty" id="directorEmpty">No results released yet.</div>
-              <div id="directorPackets" class="stack"></div>
-              </div>
-              </details>
+            </details>
           </div>
+
         </div>
       </section>
 
@@ -810,6 +914,10 @@
               <input type="date" id="directorProfileNafmeExpInput" />
             </label>
             <label>
+              Cell Phone
+              <input type="tel" id="directorProfileCellPhoneInput" placeholder="e.g. 555-123-4567" />
+            </label>
+            <label>
               Membership Card Image
               <input type="file" id="directorProfileCardInput" accept="image/*" />
             </label>
@@ -845,6 +953,7 @@
       </div>
 
     <script src="/shared/grade1-lookup.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

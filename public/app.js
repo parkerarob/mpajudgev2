@@ -36,6 +36,7 @@ import { hasUnsavedChanges } from "./modules/navigation.js";
 
 const VERSION_CHECK_INTERVAL_MS = 5 * 60_000;
 const VERSION_CHECK_PATHS = ["/index.html"];
+const AUTH_INIT_DELAY_MS = 200;
 
 const params = new URLSearchParams(window.location.search);
 const userAgent = navigator.userAgent || "";
@@ -47,6 +48,7 @@ if (params.has("safe") || isChrome) {
 let versionCheckBaseline = null;
 let versionCheckTimerId = null;
 let versionReloadTriggered = false;
+let authInitTimeoutId = null;
 
 async function getAssetSignature(path) {
   const url = `${path}${path.includes("?") ? "&" : "?"}vcheck=${Date.now()}`;
@@ -59,12 +61,10 @@ async function getAssetSignature(path) {
     throw new Error(`Version check failed for ${path}: ${response.status}`);
   }
   const etag = response.headers.get("etag") || "";
-  const lastModified = response.headers.get("last-modified") || "";
-  const contentLength = response.headers.get("content-length") || "";
-  if (!(etag || lastModified || contentLength)) {
-    throw new Error(`Version headers missing for ${path}`);
+  if (!etag) {
+    throw new Error(`Version check skipped: missing ETag for ${path}`);
   }
-  return `${etag}|${lastModified}|${contentLength}`;
+  return etag;
 }
 
 async function getVersionSignatureSnapshot() {
@@ -112,9 +112,6 @@ function startVersionChecks() {
     if (document.visibilityState === "hidden") return;
     runVersionCheck();
   }, VERSION_CHECK_INTERVAL_MS);
-  window.addEventListener("focus", () => {
-    runVersionCheck();
-  });
 }
 
 bindAuthHandlers();
@@ -143,116 +140,151 @@ refreshSchoolDropdowns();
 watchSchools(() => {
   refreshSchoolDropdowns();
 });
-handleHashChange();
-startVersionChecks();
+// Defer handleHashChange until after auth has run (avoids race and blank state on Chrome/Mac)
+// handleHashChange is invoked from the auth callback (handleSignedOut or signed-in branch).
 
-if (window.location.pathname.includes("/judge-open") && window.location.hash !== "#judge-open") {
-  window.location.hash = "#judge-open";
-}
-
-onAuthStateChanged(auth, async (user) => {
-  state.auth.currentUser = user;
-  state.auth.profileLoading = Boolean(user);
-  updateAuthUI();
-
-  if (!user) {
-    stopOpenRecording();
-    stopOpenLevelMeter();
-    setMainInteractionDisabled(true);
-    const working = hasUnsavedChanges();
-    if (working) {
-      state.auth.sessionExpiredLocked = true;
-      stopWatchers();
-      showSessionExpiredModal();
-      setMainInteractionDisabled(true);
-      handleHashChange();
-      return;
-    }
-    state.auth.userProfile = null;
-    state.auth.profileLoading = false;
-    updateRoleUI();
-    resetJudgeOpenState();
+function handleSignedOut() {
+  stopOpenRecording();
+  stopOpenLevelMeter();
+  setMainInteractionDisabled(true);
+  const working = hasUnsavedChanges();
+  if (working) {
+    state.auth.sessionExpiredLocked = true;
     stopWatchers();
-    watchSchools(() => {
-      refreshSchoolDropdowns();
-    });
-    state.director.selectedEventId = null;
-    state.director.adminViewSchoolId = null;
-    state.director.selectedEnsembleId = null;
-    state.director.entryDraft = null;
-    state.director.entryRef = null;
-    state.director.entryExists = false;
-    state.director.ensemblesCache = [];
-    setDirectorEntryHint("");
-    setDirectorSaveStatus("");
-    setDirectorEntryStatusLabel("Incomplete");
-    setAuthView("signIn");
-    closeAuthModal();
-    window.location.hash = "";
-    if (window.location.pathname.includes("/judge-open")) {
-      window.history.replaceState(null, "", "/");
-    }
+    showSessionExpiredModal();
+    setMainInteractionDisabled(true);
     handleHashChange();
     return;
   }
-
-  closeAuthModal();
-
-  if (state.subscriptions.schools) {
-    state.subscriptions.schools();
-    state.subscriptions.schools = null;
-  }
-
-  const userRef = doc(db, COLLECTIONS.users, user.uid);
-  const snap = await getDoc(userRef);
-  state.auth.userProfile = snap.exists() ? snap.data() : null;
+  state.auth.userProfile = null;
   state.auth.profileLoading = false;
-  updateAuthUI();
-  if (state.auth.sessionExpiredLocked) {
-    state.auth.sessionExpiredLocked = false;
-    hideSessionExpiredModal();
-    setMainInteractionDisabled(false);
-  }
   updateRoleUI();
-  setMainInteractionDisabled(false);
-  if (state.auth.userProfile) {
-    const roles = state.auth.userProfile.roles || {};
-    const role = state.auth.userProfile.role
-      || (roles.admin ? "admin" : roles.director ? "director" : roles.judge ? "judge" : null);
-    const preferJudgeOpen = roles.judge === true && role !== "admin";
-    const path = window.location.pathname || "";
-    const isLegacyJudgePath = path.endsWith("/judge") || path.endsWith("/judge/");
-    if (isLegacyJudgePath && role !== "admin") {
-      window.history.replaceState(null, "", "/judge-open#judge-open");
-    }
-    if (preferJudgeOpen) {
-      setTab("judge-open");
-      if (window.location.hash !== "#judge-open") {
-        window.location.hash = "#judge-open";
-      }
-    } else if (role === "admin") {
-      setTab("admin");
-      if (window.location.hash !== "#admin") {
-        window.location.hash = "#admin";
-      }
-    } else if (role === "judge") {
-      setTab("judge-open");
-      if (window.location.hash !== "#judge-open") {
-        window.location.hash = "#judge-open";
-      }
-    } else if (role === "director") {
-      setTab("director");
-    }
-    startWatchers();
-    renderDirectorProfile();
-    if (preferJudgeOpen || role === "judge") {
-      restoreOpenPacketFromPrefs();
-    }
-  } else {
-    stopWatchers();
-  }
+  resetJudgeOpenState();
+  stopWatchers();
+  watchSchools(() => {
+    refreshSchoolDropdowns();
+  });
+  state.director.selectedEventId = null;
+  state.director.adminViewSchoolId = null;
+  state.director.selectedEnsembleId = null;
+  state.director.entryDraft = null;
+  state.director.entryRef = null;
+  state.director.entryExists = false;
+  state.director.ensemblesCache = [];
+  setDirectorEntryHint("");
+  setDirectorSaveStatus("");
+  setDirectorEntryStatusLabel("Incomplete");
+  setAuthView("signIn");
   closeAuthModal();
+  window.location.hash = "";
+  if (window.location.pathname.includes("/judge-open")) {
+    window.history.replaceState(null, "", "/");
+  }
   handleHashChange();
+}
+
+onAuthStateChanged(auth, async (user) => {
+  try {
+    state.auth.currentUser = user;
+    state.auth.profileLoading = Boolean(user);
+    updateAuthUI();
+
+    if (!user) {
+      if (!state.auth.authInitialized) {
+        if (!authInitTimeoutId) {
+          authInitTimeoutId = window.setTimeout(() => {
+            if (!state.auth.currentUser && !state.auth.authInitialized) {
+              state.auth.authInitialized = true;
+              handleSignedOut();
+              startVersionChecks();
+            }
+          }, AUTH_INIT_DELAY_MS);
+        }
+        return;
+      }
+      handleSignedOut();
+      return;
+    }
+
+    if (!state.auth.authInitialized) {
+      state.auth.authInitialized = true;
+      if (authInitTimeoutId) {
+        window.clearTimeout(authInitTimeoutId);
+        authInitTimeoutId = null;
+      }
+      startVersionChecks();
+    }
+
+    closeAuthModal();
+
+    if (state.subscriptions.schools) {
+      state.subscriptions.schools();
+      state.subscriptions.schools = null;
+    }
+
+    const userRef = doc(db, COLLECTIONS.users, user.uid);
+    const snap = await getDoc(userRef);
+    state.auth.userProfile = snap.exists() ? snap.data() : null;
+    state.auth.profileLoading = false;
+    updateAuthUI();
+    if (state.auth.sessionExpiredLocked) {
+      state.auth.sessionExpiredLocked = false;
+      hideSessionExpiredModal();
+      setMainInteractionDisabled(false);
+    }
+    updateRoleUI();
+    setMainInteractionDisabled(false);
+    if (state.auth.userProfile) {
+      const roles = state.auth.userProfile.roles || {};
+      const role =
+        state.auth.userProfile.role ||
+        (roles.admin ? "admin" : roles.director ? "director" : roles.judge ? "judge" : null);
+      const preferJudgeOpen = roles.judge === true && role !== "admin";
+      const path = window.location.pathname || "";
+      const isLegacyJudgePath = path.endsWith("/judge") || path.endsWith("/judge/");
+      if (isLegacyJudgePath && role !== "admin") {
+        window.history.replaceState(null, "", "/judge-open#judge-open");
+      }
+      if (preferJudgeOpen) {
+        setTab("judge-open");
+        if (window.location.hash !== "#judge-open") {
+          window.location.hash = "#judge-open";
+        }
+      } else if (role === "admin") {
+        setTab("admin");
+        if (window.location.hash !== "#admin") {
+          window.location.hash = "#admin";
+        }
+      } else if (role === "judge") {
+        setTab("judge-open");
+        if (window.location.hash !== "#judge-open") {
+          window.location.hash = "#judge-open";
+        }
+      } else if (role === "director") {
+        setTab("director");
+      }
+      startWatchers();
+      renderDirectorProfile();
+      if (preferJudgeOpen || role === "judge") {
+        restoreOpenPacketFromPrefs();
+      }
+    } else {
+      stopWatchers();
+    }
+    closeAuthModal();
+    handleHashChange();
+  } catch (err) {
+    console.error("Auth state handler error", err);
+    state.auth.authInitialized = true;
+    state.auth.profileLoading = false;
+    if (authInitTimeoutId) {
+      window.clearTimeout(authInitTimeoutId);
+      authInitTimeoutId = null;
+    }
+    updateAuthUI();
+    updateRoleUI();
+    handleHashChange();
+  }
 });
 
 if (firebaseConfig.apiKey === "YOUR_API_KEY") {

@@ -83,6 +83,7 @@ service cloud.firestore {
             "nafmeMembershipExp",
             "nafmeCardImageUrl",
             "nafmeCardImagePath",
+            "cellPhone",
             "createdAt",
             "updatedAt"
           ])
@@ -104,6 +105,7 @@ service cloud.firestore {
             "nafmeMembershipExp",
             "nafmeCardImageUrl",
             "nafmeCardImagePath",
+            "cellPhone",
             "roles"
           ])
           && (

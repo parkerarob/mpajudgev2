@@ -38,7 +38,7 @@ async function signIn(page, email, password) {
   await page.fill("#emailInput", email);
   await page.fill("#passwordInput", password);
   await page.click("#emailForm button[type='submit']");
-  await expect(page.locator("#authStatus")).toContainText(email, { timeout: 20000 });
+  await expect(page.locator("#accountSummary")).toContainText(email, { timeout: 20000 });
 }
 
 async function signOut(page) {
@@ -46,7 +46,7 @@ async function signOut(page) {
   if (await signOutBtn.isVisible()) {
     await signOutBtn.click();
   }
-  await expect(page.locator("#authStatus")).toContainText("Signed out", { timeout: 20000 });
+  await expect(page.locator("#accountSummary")).toContainText("Signed out", { timeout: 20000 });
 }
 
 test.describe.serial("Phase 1 Smoke Tests", () => {

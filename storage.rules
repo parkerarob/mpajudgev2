@@ -75,6 +75,13 @@ service firebase.storage {
         || (isDirector() && request.auth.uid == uid);
     }
 
+    match /signed_forms/{eventId}/{schoolId}/{fileName} {
+      allow read: if isAdmin()
+        || isDirectorForSchool(schoolId);
+      allow write: if isAdmin()
+        || isDirectorForSchool(schoolId);
+    }
+
     match /{allPaths=**} {
       allow read, write: if isAdmin();
     }

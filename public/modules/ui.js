@@ -52,6 +52,8 @@ import {
   watchScheduleEnsembles,
   fetchRegisteredEnsembles,
   fetchScheduleEntries,
+  fetchSchoolRegistrations,
+  updateSchoolRegistration,
 } from "./admin.js";
 import { computeScheduleTimeline } from "./scheduleTimeline.js";
 import {
@@ -82,6 +84,7 @@ import {
   setDirectorEvent,
   selectDirectorEnsemble,
   uploadDirectorProfileCard,
+  uploadSignedSignatureForm,
   upsertRegistrationForEnsemble,
   watchDirectorEnsembles,
   watchDirectorPackets,
@@ -2093,6 +2096,7 @@ export async function showEventChairDetail(eventId) {
   if (els.eventChairApplyBtn) els.eventChairApplyBtn.disabled = true;
 
   renderEventChairRegisteredTable();
+  renderEventChairFormsPayment();
 }
 
 export function hideEventChairDetail() {
@@ -2301,6 +2305,76 @@ async function applyEventChairSchedule() {
     console.error("Apply schedule failed", err);
     alertUser("Failed to apply schedule. Check console.");
   }
+}
+
+async function renderEventChairFormsPayment() {
+  const eventId = state.admin.eventChairDetailId;
+  const container = els.eventChairFormsPaymentContainer;
+  if (!eventId || !container) return;
+  container.innerHTML = "";
+
+  const registered = _eventChairRegistered || [];
+  const schoolIds = [...new Set(registered.map((e) => e.schoolId).filter(Boolean))];
+  if (!schoolIds.length) {
+    container.innerHTML = "<p class='hint'>No registered schools yet.</p>";
+    return;
+  }
+
+  const regList = await fetchSchoolRegistrations(eventId);
+  const bySchool = new Map(regList.map((r) => [r.id, r]));
+
+  const table = document.createElement("table");
+  table.setAttribute("role", "grid");
+  table.className = "schedule-timeline-table";
+  const thead = document.createElement("thead");
+  thead.innerHTML = "<tr><th>School</th><th>Form received</th><th>Payment received</th><th></th></tr>";
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+
+  schoolIds.forEach((schoolId) => {
+    const data = bySchool.get(schoolId) || {};
+    const schoolName = getSchoolNameById(state.admin.schoolsList, schoolId);
+    const tr = document.createElement("tr");
+
+    const formCell = document.createElement("td");
+    const formCheck = document.createElement("input");
+    formCheck.type = "checkbox";
+    formCheck.checked = Boolean(data.signatureFormReceived);
+    formCheck.addEventListener("change", async () => {
+      await updateSchoolRegistration(eventId, schoolId, { signatureFormReceived: formCheck.checked });
+      renderEventChairFormsPayment();
+    });
+    formCell.appendChild(formCheck);
+
+    const paymentCell = document.createElement("td");
+    const paymentCheck = document.createElement("input");
+    paymentCheck.type = "checkbox";
+    paymentCheck.checked = Boolean(data.paymentReceived);
+    paymentCheck.addEventListener("change", async () => {
+      await updateSchoolRegistration(eventId, schoolId, { paymentReceived: paymentCheck.checked });
+      renderEventChairFormsPayment();
+    });
+    paymentCell.appendChild(paymentCheck);
+
+    const linkCell = document.createElement("td");
+    if (data.signedFormUrl) {
+      const a = document.createElement("a");
+      a.href = data.signedFormUrl;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "View uploaded form";
+      linkCell.appendChild(a);
+    }
+
+    tr.innerHTML = `<td>${escapeHtml(schoolName)}</td>`;
+    tr.appendChild(formCell);
+    tr.appendChild(paymentCell);
+    tr.appendChild(linkCell);
+    tbody.appendChild(tr);
+  });
+
+  table.appendChild(tbody);
+  container.appendChild(table);
 }
 
 export function renderEventChairEventList() {
@@ -7583,6 +7657,32 @@ export function bindDirectorHandlers() {
   if (printSigBtn) {
     printSigBtn.addEventListener("click", () => {
       generateSignatureFormPdf();
+    });
+  }
+
+  const uploadSignedFormBtn = document.getElementById("directorUploadSignedFormBtn");
+  const signedFormInput = document.getElementById("directorSignedFormInput");
+  const signedFormStatus = document.getElementById("directorSignedFormStatus");
+  if (uploadSignedFormBtn && signedFormInput) {
+    uploadSignedFormBtn.addEventListener("click", () => signedFormInput.click());
+    signedFormInput.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const eventId = state.director.selectedEventId;
+      const schoolId = getDirectorSchoolId();
+      if (!eventId || !schoolId) {
+        if (signedFormStatus) signedFormStatus.textContent = "Select an event and ensure you are attached to a school.";
+        return;
+      }
+      if (signedFormStatus) signedFormStatus.textContent = "Uploading…";
+      try {
+        const result = await uploadSignedSignatureForm(eventId, schoolId, file);
+        if (signedFormStatus) signedFormStatus.textContent = result.ok ? "Signed form uploaded." : (result.reason || "Upload failed.");
+        if (result.ok) signedFormInput.value = "";
+      } catch (err) {
+        console.error("Upload signed form failed", err);
+        if (signedFormStatus) signedFormStatus.textContent = "Upload failed. Check console.";
+      }
     });
   }
 

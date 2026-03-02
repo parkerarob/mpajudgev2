@@ -466,3 +466,23 @@ export async function fetchScheduleEntries(eventId) {
   );
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
+
+export async function fetchSchoolRegistrations(eventId) {
+  if (!eventId) return [];
+  const snap = await getDocs(
+    collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schoolRegistrations)
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function updateSchoolRegistration(eventId, schoolId, fields) {
+  if (!eventId || !schoolId) return;
+  const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.schoolRegistrations, schoolId);
+  const snap = await getDoc(ref);
+  const payload = { ...fields, updatedAt: serverTimestamp() };
+  if (snap.exists()) {
+    await updateDoc(ref, payload);
+  } else {
+    await setDoc(ref, { schoolId, eventId, ...payload, createdAt: serverTimestamp() }, { merge: true });
+  }
+}

@@ -9,6 +9,7 @@ export const COLLECTIONS = {
   ensembles: "ensembles",
   entries: "entries",
   mpaRepertoire: "mpaRepertoire",
+  schoolRegistrations: "schoolRegistrations",
 };
 
 export const FIELDS = {
@@ -328,6 +329,8 @@ export const els = {
   eventChairPreviewBtn: document.getElementById("eventChairPreviewBtn"),
   eventChairApplyBtn: document.getElementById("eventChairApplyBtn"),
   eventChairTimelineContainer: document.getElementById("eventChairTimelineContainer"),
+  eventChairFormsPaymentDetails: document.getElementById("eventChairFormsPaymentDetails"),
+  eventChairFormsPaymentContainer: document.getElementById("eventChairFormsPaymentContainer"),
   adminViewEvents: document.getElementById("adminViewEvents"),
   adminViewLogistics: document.getElementById("adminViewLogistics"),
   adminViewDirectory: document.getElementById("adminViewDirectory"),
@@ -367,6 +370,9 @@ export const els = {
   directorRegisteredEnsemblesSummary: document.getElementById("directorRegisteredEnsemblesSummary"),
   directorEditRegistrationBtn: document.getElementById("directorEditRegistrationBtn"),
   directorPrintSignatureBtn: document.getElementById("directorPrintSignatureBtn"),
+  directorUploadSignedFormBtn: document.getElementById("directorUploadSignedFormBtn"),
+  directorSignedFormInput: document.getElementById("directorSignedFormInput"),
+  directorSignedFormStatus: document.getElementById("directorSignedFormStatus"),
   directorEnsembleInfoBtn: document.getElementById("directorEnsembleInfoBtn"),
   directorBackToEventsBtn: document.getElementById("directorBackToEventsBtn"),
   directorDayOfFormsBlock: document.getElementById("directorDayOfFormsBlock"),

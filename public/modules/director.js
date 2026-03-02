@@ -1309,6 +1309,37 @@ export async function uploadDirectorProfileCard(file) {
   return { ok: true, url };
 }
 
+/**
+ * Upload a signed signature form (PDF or image) for the current event/school.
+ * @param {string} eventId
+ * @param {string} schoolId - must be the director's school
+ * @param {File} file - PDF or image
+ */
+export async function uploadSignedSignatureForm(eventId, schoolId, file) {
+  if (!eventId || !schoolId || !file) return { ok: false, reason: "missing-params" };
+  if (getDirectorSchoolId() !== schoolId) return { ok: false, reason: "not-your-school" };
+  const ext = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "pdf";
+  const safeExt = ["pdf", "jpg", "jpeg", "png"].includes(ext) ? ext : "pdf";
+  const objectPath = `signed_forms/${eventId}/${schoolId}/signed.${safeExt}`;
+  const storageRef = ref(storage, objectPath);
+  await uploadBytes(storageRef, file, { contentType: file.type || "application/pdf" });
+  const url = await getDownloadURL(storageRef);
+  const regRef = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.schoolRegistrations, schoolId);
+  const snap = await getDoc(regRef);
+  const payload = {
+    signedFormUrl: url,
+    signedFormPath: objectPath,
+    signedFormUploadedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  if (snap.exists()) {
+    await updateDoc(regRef, payload);
+  } else {
+    await setDoc(regRef, { schoolId, eventId, ...payload, createdAt: serverTimestamp() }, { merge: true });
+  }
+  return { ok: true, url };
+}
+
 export function watchDirectorPackets(callback) {
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();

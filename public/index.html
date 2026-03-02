@@ -225,6 +225,11 @@
                 <button type="button" id="eventChairApplyBtn" disabled>Apply Schedule</button>
               </div>
               <div id="eventChairTimelineContainer"></div>
+              <details class="panel" id="eventChairFormsPaymentDetails">
+                <summary>Signature forms &amp; payment</summary>
+                <p class="hint">Track when each school’s signed form and payment are received.</p>
+                <div id="eventChairFormsPaymentContainer"></div>
+              </details>
             </div>
           </div>
 
@@ -652,8 +657,11 @@
             <div class="row">
               <button type="button" class="btn--secondary" id="directorEditRegistrationBtn">Edit Registration</button>
               <button type="button" class="btn--secondary" id="directorPrintSignatureBtn">Print Signature Form / Invoice</button>
+              <button type="button" class="btn--secondary" id="directorUploadSignedFormBtn">Upload signed form</button>
               <button type="button" class="btn--secondary" id="directorEnsembleInfoBtn">Ensemble Info (Day-of Forms)</button>
             </div>
+            <input type="file" id="directorSignedFormInput" accept=".pdf,.jpg,.jpeg,.png" class="is-hidden" />
+            <p class="hint" id="directorSignedFormStatus"></p>
             <button type="button" class="ghost" id="directorBackToEventsBtn">Back to Events</button>
           </div>
 

@@ -1,8 +1,9 @@
 /**
- * Event schedule timeline: derives holding, warm-up, perform, sight-reading
- * from first performance time, roster order, grades, and breaks.
+ * Event schedule timeline: performance times only.
+ * First band performs at firstPerformanceAt; each next band performs at
+ * previous performance time + previous band's slot length (by grade).
+ * Break adds 30 min before the next band's performance.
  * Grade I/II = 25 min, III/IV = 30 min, V = 35 min, VI = 40 min per slot.
- * Break adds 30 min before next band's holding.
  */
 
 const SLOT_MINUTES_BY_GRADE = {
@@ -28,11 +29,14 @@ export function getSlotMinutesForGrade(grade) {
 }
 
 /**
- * Compute timeline for all roster entries.
- * @param {Date|import('firebase/firestore').Timestamp} firstPerformanceAt - Start of perform slot for first band
- * @param {Array<{ id: string, ensembleId: string, [key: string]: unknown }>} rosterEntries - Ordered roster (by performanceAt)
+ * Compute timeline for all roster entries. Schedule is performance-time only:
+ * next performance = previous performance + previous slot (plus 30 min if break).
+ * Also returns holding/warmUp/sight derived from each perform time for display.
+ *
+ * @param {Date|import('firebase/firestore').Timestamp} firstPerformanceAt - Performance time for first band
+ * @param {Array<{ id: string, ensembleId: string, [key: string]: unknown }>} rosterEntries - Ordered roster
  * @param {Set<string>|Array<string>} scheduleBreaks - Entry IDs after which a 30-min break is inserted
- * @param {(entry: { id: string, ensembleId: string }) => string|null} getGrade - Returns grade I–VI or null for each entry
+ * @param {(entry: { id: string, ensembleId: string }) => string|null} getGrade - Returns grade I–VI or null
  * @returns {Array<{ entryId: string, ensembleId: string, grade: string|null, slotMins: number, holdingStart: Date, warmUpStart: Date, performStart: Date, sightStart: Date }>}
  */
 export function computeScheduleTimeline(firstPerformanceAt, rosterEntries, scheduleBreaks, getGrade) {
@@ -52,34 +56,25 @@ export function computeScheduleTimeline(firstPerformanceAt, rosterEntries, sched
   if (!rosterEntries.length) return [];
 
   const result = [];
-  let nextAvailable = new Date(0);
+  let nextPerformTime = new Date(performStartFirst.getTime());
 
   for (let i = 0; i < rosterEntries.length; i++) {
     const entry = rosterEntries[i];
     const grade = getGrade(entry);
     const slotMins = getSlotMinutesForGrade(grade);
 
-    let holdingStart;
-    let warmUpStart;
-    let performStart;
-    let sightStart;
-
-    if (i === 0) {
-      performStart = new Date(performStartFirst.getTime());
-      warmUpStart = new Date(performStart.getTime() - 2 * slotMins * 60 * 1000);
-      holdingStart = new Date(performStart.getTime() - 3 * slotMins * 60 * 1000);
-      sightStart = new Date(performStart.getTime() + slotMins * 60 * 1000);
-    } else {
+    if (i > 0) {
       if (breakSet.has(rosterEntries[i - 1].id)) {
-        nextAvailable = new Date(nextAvailable.getTime() + 30 * 60 * 1000);
+        nextPerformTime = new Date(nextPerformTime.getTime() + 30 * 60 * 1000);
       }
-      holdingStart = new Date(nextAvailable.getTime());
-      warmUpStart = new Date(holdingStart.getTime() + slotMins * 60 * 1000);
-      performStart = new Date(warmUpStart.getTime() + slotMins * 60 * 1000);
-      sightStart = new Date(performStart.getTime() + slotMins * 60 * 1000);
     }
 
-    nextAvailable = new Date(sightStart.getTime() + slotMins * 60 * 1000);
+    const performStart = new Date(nextPerformTime.getTime());
+    nextPerformTime = new Date(performStart.getTime() + slotMins * 60 * 1000);
+
+    const holdingStart = new Date(performStart.getTime() - 3 * slotMins * 60 * 1000);
+    const warmUpStart = new Date(performStart.getTime() - 2 * slotMins * 60 * 1000);
+    const sightStart = new Date(performStart.getTime() + slotMins * 60 * 1000);
 
     result.push({
       entryId: entry.id,

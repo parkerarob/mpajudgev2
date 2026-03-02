@@ -179,6 +179,14 @@ service cloud.firestore {
         allow read: if isAdmin() || isJudge();
         allow write: if isAdmin();
       }
+
+      match /schoolRegistrations/{schoolId} {
+        allow read: if isAdmin()
+          || (isDirector() && schoolId == userSchoolId());
+        allow create, update: if isAdmin()
+          || (isDirector() && schoolId == userSchoolId());
+        allow delete: if isAdmin();
+      }
     }
 
     match /mpaRepertoire/{pieceId} {

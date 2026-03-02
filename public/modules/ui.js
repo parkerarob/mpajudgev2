@@ -54,6 +54,7 @@ import {
   fetchScheduleEntries,
   fetchSchoolRegistrations,
   updateSchoolRegistration,
+  updateEntryCheckinFields,
 } from "./admin.js";
 import { computeScheduleTimeline } from "./scheduleTimeline.js";
 import {
@@ -1395,6 +1396,10 @@ function applyAdminView(view) {
     els.adminViewEventChair.classList.toggle("is-hidden", view !== "eventChair");
     if (view === "eventChair") renderEventChairDefineEvent();
   }
+  if (els.adminViewCheckin) {
+    els.adminViewCheckin.classList.toggle("is-hidden", view !== "checkin");
+    if (view === "checkin") renderCheckinList();
+  }
   if (els.adminSubnavChairBtn) {
     els.adminSubnavChairBtn.setAttribute("aria-selected", view === "chair" ? "true" : "false");
   }
@@ -1409,6 +1414,9 @@ function applyAdminView(view) {
   }
   if (els.adminSubnavDirectoryBtn) {
     els.adminSubnavDirectoryBtn.setAttribute("aria-selected", view === "directory" ? "true" : "false");
+  }
+  if (els.adminSubnavCheckinBtn) {
+    els.adminSubnavCheckinBtn.setAttribute("aria-selected", view === "checkin" ? "true" : "false");
   }
 }
 
@@ -1606,9 +1614,6 @@ export function updateRoleUI() {
     document.body.classList.add("auth-locked");
     document.body.classList.remove("director-only");
     setMainInteractionDisabled(true);
-    if (els.roleTabBar) {
-      els.roleTabBar.classList.add("is-hidden");
-    }
     if (els.adminCard) els.adminCard.style.display = "none";
     if (els.judgeOpenCard) els.judgeOpenCard.style.display = "none";
     if (els.directorCard) els.directorCard.style.display = "none";
@@ -1633,9 +1638,6 @@ export function updateRoleUI() {
     document.body.classList.add("auth-locked");
     document.body.classList.remove("director-only");
     setMainInteractionDisabled(true);
-    if (els.roleTabBar) {
-      els.roleTabBar.classList.add("is-hidden");
-    }
     if (els.adminCard) els.adminCard.style.display = "none";
     if (els.judgeOpenCard) els.judgeOpenCard.style.display = "none";
     if (els.directorCard) els.directorCard.style.display = "none";
@@ -1651,9 +1653,6 @@ export function updateRoleUI() {
     document.body.classList.add("auth-locked");
     document.body.classList.remove("director-only");
     setMainInteractionDisabled(true);
-    if (els.roleTabBar) {
-      els.roleTabBar.classList.add("is-hidden");
-    }
     if (els.adminCard) els.adminCard.style.display = "none";
     if (els.judgeOpenCard) els.judgeOpenCard.style.display = "none";
     if (els.directorCard) els.directorCard.style.display = "none";
@@ -1673,9 +1672,6 @@ export function updateRoleUI() {
   document.body.classList.remove("auth-locked");
   const effectiveRole = getEffectiveRole(state.auth.userProfile);
   setMainInteractionDisabled(false);
-  if (els.roleTabBar) {
-    els.roleTabBar.classList.remove("is-hidden");
-  }
   updateRoleTabBar(effectiveRole);
   if (effectiveRole === "director") {
     document.body.classList.add("director-only");
@@ -2167,7 +2163,10 @@ function renderEventChairRegisteredTable() {
   });
 
   table.appendChild(tbody);
-  els.eventChairRegisteredTable.appendChild(table);
+  const wrap = document.createElement("div");
+  wrap.className = "schedule-timeline-table-wrap";
+  wrap.appendChild(table);
+  els.eventChairRegisteredTable.appendChild(wrap);
 }
 
 function getOrderedEnsemblesFromPositionInputs() {
@@ -2209,8 +2208,8 @@ function previewEventChairSchedule() {
     return;
   }
 
-  const fakeRoster = ordered.map((item, idx) => ({
-    id: `pos-${idx}`,
+  const fakeRoster = ordered.map((item) => ({
+    id: item.ensembleId,
     ensembleId: item.ensembleId,
     schoolId: item.schoolId,
     ensembleName: item.ensembleName,
@@ -2224,7 +2223,8 @@ function previewEventChairSchedule() {
     Array.isArray(event?.scheduleBreaks) ? event.scheduleBreaks : []
   );
 
-  _eventChairTimeline = computeScheduleTimeline(firstPerfDate, fakeRoster, breakSet, getGrade);
+  const dayBreaksRaw = event?.scheduleDayBreaks || {};
+  _eventChairTimeline = computeScheduleTimeline(firstPerfDate, fakeRoster, breakSet, getGrade, dayBreaksRaw);
 
   if (els.eventChairTimelineContainer) {
     els.eventChairTimelineContainer.innerHTML = "";
@@ -2232,9 +2232,13 @@ function previewEventChairSchedule() {
     table.setAttribute("role", "grid");
     table.className = "schedule-timeline-table";
     const thead = document.createElement("thead");
-    thead.innerHTML = "<tr><th>Pos</th><th>Ensemble</th><th>Grade</th><th>Slot</th><th>Holding</th><th>Warm-up</th><th>Perform</th><th>Sight</th></tr>";
+    thead.innerHTML = "<tr><th>Pos</th><th>Ensemble</th><th>Grade</th><th>Slot</th><th>Holding</th><th>Warm-up</th><th>Perform</th><th>Sight</th><th></th></tr>";
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
+
+    const scheduleBreaks = Array.isArray(event?.scheduleBreaks) ? event.scheduleBreaks : [];
+    const dayBreaksMap = event?.scheduleDayBreaks && typeof event.scheduleDayBreaks === "object"
+      ? { ...event.scheduleDayBreaks } : {};
 
     _eventChairTimeline.forEach((row, idx) => {
       const item = ordered[idx];
@@ -2249,12 +2253,76 @@ function previewEventChairSchedule() {
         <td>${escapeHtml(formatTimeRange(row.warmUpStart, row.performStart))}</td>
         <td>${escapeHtml(formatTimeRange(row.performStart, row.sightStart))}</td>
         <td>${escapeHtml(formatTimeRange(row.sightStart, sightEnd))}</td>
+        <td></td>
       `;
+      const actionCell = tr.querySelector("td:last-child");
+
+      const hasBreak = breakSet.has(item.ensembleId);
+      const breakBtn = document.createElement("button");
+      breakBtn.type = "button";
+      breakBtn.className = "ghost";
+      breakBtn.textContent = hasBreak ? "Remove break" : "Add break";
+      breakBtn.addEventListener("click", async () => {
+        const next = hasBreak
+          ? scheduleBreaks.filter((id) => id !== item.ensembleId)
+          : [...scheduleBreaks, item.ensembleId];
+        await updateEventSchedulerFields({ eventId, scheduleBreaks: next });
+        const evtIdx = (state.event.list || []).findIndex((e) => e.id === eventId);
+        if (evtIdx !== -1) state.event.list[evtIdx] = { ...state.event.list[evtIdx], scheduleBreaks: next };
+        if (state.event.active?.id === eventId) {
+          state.event.active = { ...state.event.active, scheduleBreaks: next };
+        }
+        previewEventChairSchedule();
+      });
+      actionCell.appendChild(breakBtn);
+
+      const hasDayBreak = Object.prototype.hasOwnProperty.call(dayBreaksMap, item.ensembleId);
+      const dayBtn = document.createElement("button");
+      dayBtn.type = "button";
+      dayBtn.className = "ghost";
+      if (hasDayBreak) {
+        const dbVal = dayBreaksMap[item.ensembleId];
+        const dbDate = dbVal && typeof dbVal.toDate === "function" ? dbVal.toDate() : new Date(dbVal);
+        dayBtn.textContent = `Remove day break (${dbDate.toLocaleString()})`;
+        dayBtn.addEventListener("click", async () => {
+          const next = { ...dayBreaksMap };
+          delete next[item.ensembleId];
+          await updateEventSchedulerFields({ eventId, scheduleDayBreaks: next });
+          const evtIdx = (state.event.list || []).findIndex((e) => e.id === eventId);
+          if (evtIdx !== -1) state.event.list[evtIdx] = { ...state.event.list[evtIdx], scheduleDayBreaks: next };
+          if (state.event.active?.id === eventId) {
+            state.event.active = { ...state.event.active, scheduleDayBreaks: next };
+          }
+          previewEventChairSchedule();
+        });
+      } else {
+        dayBtn.textContent = "Start next day";
+        dayBtn.addEventListener("click", async () => {
+          const defaultVal = toLocalDatetimeValue(new Date(row.performStart.getTime() + 24 * 60 * 60 * 1000));
+          const input = prompt("Enter start time for the next day (YYYY-MM-DDTHH:MM):", defaultVal);
+          if (!input) return;
+          const parsed = new Date(input);
+          if (Number.isNaN(parsed.getTime())) { alertUser("Invalid date/time."); return; }
+          const next = { ...dayBreaksMap, [item.ensembleId]: parsed };
+          await updateEventSchedulerFields({ eventId, scheduleDayBreaks: next });
+          const evtIdx = (state.event.list || []).findIndex((e) => e.id === eventId);
+          if (evtIdx !== -1) state.event.list[evtIdx] = { ...state.event.list[evtIdx], scheduleDayBreaks: next };
+          if (state.event.active?.id === eventId) {
+            state.event.active = { ...state.event.active, scheduleDayBreaks: next };
+          }
+          previewEventChairSchedule();
+        });
+      }
+      actionCell.appendChild(dayBtn);
+
       tbody.appendChild(tr);
     });
 
     table.appendChild(tbody);
-    els.eventChairTimelineContainer.appendChild(table);
+    const wrap = document.createElement("div");
+    wrap.className = "schedule-timeline-table-wrap";
+    wrap.appendChild(table);
+    els.eventChairTimelineContainer.appendChild(wrap);
   }
 
   if (els.eventChairApplyBtn) els.eventChairApplyBtn.disabled = false;
@@ -2374,7 +2442,10 @@ async function renderEventChairFormsPayment() {
   });
 
   table.appendChild(tbody);
-  container.appendChild(table);
+  const wrap = document.createElement("div");
+  wrap.className = "schedule-timeline-table-wrap";
+  wrap.appendChild(table);
+  container.appendChild(wrap);
 }
 
 export function renderEventChairEventList() {
@@ -2934,19 +3005,7 @@ function syncOpenDirectorEntrySnapshotDraft(nextSnapshot) {
   });
 }
 
-function updateRoleTabBar(role) {
-  if (!els.roleTabBar) return;
-  const groups = els.roleTabGroups || [];
-  groups.forEach((group) => {
-    const show = group.dataset.role === role;
-    group.style.display = show ? "contents" : "none";
-    if (show) {
-      const buttons = group.querySelectorAll("button");
-      buttons.forEach((btn, index) => {
-        btn.setAttribute("aria-selected", index === 0 ? "true" : "false");
-      });
-    }
-  });
+function updateRoleTabBar(_role) {
 }
 
 function scrollToSection(target) {
@@ -5315,7 +5374,8 @@ export async function refreshSchedulerTimeline(override) {
   );
   const getGrade = (entry) => gradeMap.get(entry.ensembleId) ?? null;
   const breakSet = new Set(scheduleBreaks);
-  const timeline = computeScheduleTimeline(firstPerformanceAt, roster, breakSet, getGrade);
+  const dayBreaks = event?.scheduleDayBreaks || {};
+  const timeline = computeScheduleTimeline(firstPerformanceAt, roster, breakSet, getGrade, dayBreaks);
 
   els.adminSchedulerTimelineContainer.innerHTML = "";
   const table = document.createElement("table");
@@ -5363,7 +5423,10 @@ export async function refreshSchedulerTimeline(override) {
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
-  els.adminSchedulerTimelineContainer.appendChild(table);
+  const schedWrap = document.createElement("div");
+  schedWrap.className = "schedule-timeline-table-wrap";
+  schedWrap.appendChild(table);
+  els.adminSchedulerTimelineContainer.appendChild(schedWrap);
 
   if (els.schedulerApplyBtn) {
     els.schedulerApplyBtn.classList.remove("is-hidden");
@@ -5558,7 +5621,10 @@ export async function refreshChairDashboard() {
     });
 
     table.appendChild(tbody);
-    els.adminChairDashboardContainer.appendChild(table);
+    const dashWrap = document.createElement("div");
+    dashWrap.className = "schedule-timeline-table-wrap";
+    dashWrap.appendChild(table);
+    els.adminChairDashboardContainer.appendChild(dashWrap);
   } catch (error) {
     console.error("refreshChairDashboard failed", error);
     els.adminChairMessage.textContent = "Unable to load run sheet. Check console.";
@@ -6414,6 +6480,232 @@ function updateScheduleSubmitState() {
   els.scheduleSubmitBtn.disabled = !ready;
 }
 
+/* ── Check-in tab helpers ─────────────────────────────────── */
+
+export async function renderCheckinList() {
+  if (!els.checkinList) return;
+  const eventId = state.event.active;
+  if (!eventId) {
+    els.checkinList.innerHTML = '<p class="hint">No active event.</p>';
+    return;
+  }
+
+  els.checkinList.innerHTML = '<p class="hint">Loading…</p>';
+  if (els.checkinDetailPanel) els.checkinDetailPanel.classList.add("is-hidden");
+  state.admin.checkinDetailEnsembleId = null;
+
+  try {
+    const [schedEntries, regEntries] = await Promise.all([
+      fetchScheduleEntries(eventId),
+      fetchRegisteredEnsembles(eventId),
+    ]);
+
+    const entryMap = {};
+    regEntries.forEach((e) => { entryMap[e.id] = e; });
+
+    const merged = schedEntries.map((s) => ({
+      ...s,
+      entry: entryMap[s.ensembleId || s.id] || {},
+    }));
+
+    if (!merged.length) {
+      els.checkinList.innerHTML = '<p class="hint">No ensembles scheduled yet.</p>';
+      return;
+    }
+
+    const table = document.createElement("table");
+    table.className = "schedule-timeline-table";
+    table.innerHTML = `<thead><tr>
+      <th>#</th><th>Time</th><th>Ensemble</th><th>School</th><th>Arrived</th><th>Confirmed</th><th></th>
+    </tr></thead>`;
+    const tbody = document.createElement("tbody");
+
+    merged.forEach((item, idx) => {
+      const entry = item.entry || {};
+      const perfAt = item.performanceAt?.toDate?.() ?? (item.performanceAt ? new Date(item.performanceAt) : null);
+      const timeStr = perfAt ? perfAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
+      const arrived = entry.arrivedAt ? "✓" : "";
+      const confirmed = entry.directorConfirmedAt ? "✓" : "";
+      const arrivedClass = entry.arrivedAt ? "badge--success" : "";
+      const confirmedClass = entry.directorConfirmedAt ? "badge--success" : "";
+      const ensId = item.ensembleId || item.id;
+
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${timeStr}</td>
+        <td>${item.ensembleName || entry.ensembleName || ensId}</td>
+        <td>${item.schoolName || entry.schoolName || "—"}</td>
+        <td><span class="badge ${arrivedClass}">${arrived || "—"}</span></td>
+        <td><span class="badge ${confirmedClass}">${confirmed || "—"}</span></td>
+        <td><button type="button" class="ghost checkin-detail-btn" data-ens-id="${ensId}">Details</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+    els.checkinList.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "schedule-timeline-table-wrap";
+    wrap.appendChild(table);
+    els.checkinList.appendChild(wrap);
+
+    els.checkinList.querySelectorAll(".checkin-detail-btn").forEach((btn) => {
+      btn.addEventListener("click", () => showCheckinDetail(btn.dataset.ensId));
+    });
+  } catch (err) {
+    console.error("renderCheckinList error", err);
+    els.checkinList.innerHTML = '<p class="hint">Failed to load check-in list.</p>';
+  }
+}
+
+export async function showCheckinDetail(ensembleId) {
+  if (!ensembleId || !els.checkinDetailPanel) return;
+  const eventId = state.event.active;
+  if (!eventId) return;
+
+  state.admin.checkinDetailEnsembleId = ensembleId;
+  els.checkinDetailPanel.classList.remove("is-hidden");
+  if (els.checkinList) els.checkinList.classList.add("is-hidden");
+  if (els.checkinDetailContent) els.checkinDetailContent.innerHTML = '<p class="hint">Loading…</p>';
+
+  try {
+    const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      if (els.checkinDetailContent) els.checkinDetailContent.innerHTML = '<p class="hint">Entry not found.</p>';
+      return;
+    }
+    const data = snap.data();
+
+    if (els.checkinDetailTitle) els.checkinDetailTitle.textContent = data.ensembleName || ensembleId;
+    if (els.checkinDetailMeta) els.checkinDetailMeta.textContent = `${data.schoolName || ""}  •  Grade ${data.performanceGrade || "?"}`;
+
+    if (els.checkinArrivalBtn) {
+      els.checkinArrivalBtn.textContent = data.arrivedAt ? "Undo Arrival" : "Mark Arrived";
+      els.checkinArrivalBtn.className = data.arrivedAt ? "ghost" : "";
+    }
+    if (els.checkinConfirmBtn) {
+      els.checkinConfirmBtn.textContent = data.directorConfirmedAt ? "Undo Confirmation" : "Director Confirmed";
+      els.checkinConfirmBtn.className = data.directorConfirmedAt ? "ghost" : "";
+    }
+
+    const rep = data.repertoire || {};
+    const inst = data.instrumentation || {};
+    const rule3c = data.rule3c || {};
+    const seating = data.seating || {};
+    const perc = data.percussionNeeds || {};
+
+    let html = "";
+
+    // Repertoire
+    html += '<details open class="panel"><summary>Repertoire</summary><div class="stack">';
+    REPERTOIRE_FIELDS.forEach((f) => {
+      const piece = rep[f.key] || {};
+      html += `<label>${f.label}</label>
+        <input type="text" data-field="repertoire.${f.key}.title" value="${escapeAttr(piece.title || "")}" placeholder="Title" />
+        <input type="text" data-field="repertoire.${f.key}.composer" value="${escapeAttr(piece.composer || "")}" placeholder="Composer" />`;
+      if (f.key !== "march") {
+        html += `<input type="text" data-field="repertoire.${f.key}.grade" value="${escapeAttr(piece.grade || "")}" placeholder="Grade" />`;
+      }
+    });
+    html += "</div></details>";
+
+    // Instrumentation
+    html += '<details class="panel"><summary>Instrumentation</summary><div class="stack">';
+    html += `<label>Total Percussion</label><input type="number" data-field="instrumentation.totalPercussion" value="${inst.totalPercussion ?? ""}" />`;
+    const counts = inst.standardCounts || {};
+    STANDARD_INSTRUMENTS.forEach((si) => {
+      html += `<label>${si.label}</label><input type="number" data-field="instrumentation.standardCounts.${si.key}" value="${counts[si.key] ?? ""}" />`;
+    });
+    if (Array.isArray(inst.nonStandard) && inst.nonStandard.length) {
+      html += "<label>Non-standard</label>";
+      inst.nonStandard.forEach((ns, i) => {
+        html += `<div class="row"><input type="text" data-field="instrumentation.nonStandard.${i}.name" value="${escapeAttr(ns.name || "")}" placeholder="Name" />
+          <input type="number" data-field="instrumentation.nonStandard.${i}.count" value="${ns.count ?? ""}" placeholder="#" /></div>`;
+      });
+    }
+    html += `<label>Other Notes</label><input type="text" data-field="instrumentation.otherInstrumentationNotes" value="${escapeAttr(inst.otherInstrumentationNotes || "")}" />`;
+    html += "</div></details>";
+
+    // Percussion Needs
+    html += '<details class="panel"><summary>Percussion Needs</summary><div class="stack">';
+    const percSelected = Array.isArray(perc.selected) ? perc.selected : [];
+    PERCUSSION_OPTIONS.forEach((opt) => {
+      const checked = percSelected.includes(opt) ? "checked" : "";
+      html += `<label><input type="checkbox" data-perc-option="${escapeAttr(opt)}" ${checked} /> ${opt}</label>`;
+    });
+    html += `<label>Notes</label><input type="text" data-field="percussionNeeds.notes" value="${escapeAttr(perc.notes || "")}" />`;
+    html += "</div></details>";
+
+    // Rule 3C
+    html += '<details class="panel"><summary>Rule 3C</summary><div class="stack">';
+    html += `<label>Rule Mode</label><input type="text" data-field="rule3c.ruleMode" value="${escapeAttr(rule3c.ruleMode || "")}" />`;
+    if (Array.isArray(rule3c.entries)) {
+      rule3c.entries.forEach((e, i) => {
+        html += `<div class="row"><input type="text" data-field="rule3c.entries.${i}.name" value="${escapeAttr(e?.name || "")}" placeholder="Name" />
+          <input type="text" data-field="rule3c.entries.${i}.instrument" value="${escapeAttr(e?.instrument || "")}" placeholder="Instrument" /></div>`;
+      });
+    }
+    html += "</div></details>";
+
+    // Seating
+    html += '<details class="panel"><summary>Seating</summary><div class="stack">';
+    html += `<label>Chair Count</label><input type="number" data-field="seating.chairCount" value="${seating.chairCount ?? ""}" />`;
+    if (Array.isArray(seating.rows)) {
+      seating.rows.forEach((r, i) => {
+        html += `<label>Row ${i + 1}</label><input type="number" data-field="seating.rows.${i}" value="${r ?? ""}" />`;
+      });
+    }
+    html += "</div></details>";
+
+    // Lunch
+    html += '<details class="panel"><summary>Lunch / Other</summary><div class="stack">';
+    html += `<label>Lunch Count</label><input type="number" data-field="lunchCount" value="${data.lunchCount ?? ""}" />`;
+    html += `<label>Director Cell Phone</label><input type="text" data-field="directorCellPhone" value="${escapeAttr(data.directorCellPhone || "")}" />`;
+    html += "</div></details>";
+
+    if (els.checkinDetailContent) els.checkinDetailContent.innerHTML = html;
+    if (els.checkinSaveEditsBtn) els.checkinSaveEditsBtn.classList.remove("is-hidden");
+  } catch (err) {
+    console.error("showCheckinDetail error", err);
+    if (els.checkinDetailContent) els.checkinDetailContent.innerHTML = '<p class="hint">Failed to load entry.</p>';
+  }
+}
+
+function escapeAttr(str) {
+  return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function collectCheckinEdits() {
+  if (!els.checkinDetailContent) return {};
+  const edits = {};
+
+  els.checkinDetailContent.querySelectorAll("[data-field]").forEach((input) => {
+    const path = input.dataset.field;
+    const val = input.type === "number" ? (input.value === "" ? null : Number(input.value)) : input.value;
+    const parts = path.split(".");
+    let obj = edits;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const k = parts[i];
+      const nextKey = parts[i + 1];
+      if (!obj[k]) obj[k] = /^\d+$/.test(nextKey) ? [] : {};
+      obj = obj[k];
+    }
+    const lastKey = parts[parts.length - 1];
+    obj[lastKey] = val;
+  });
+
+  const percSelected = [];
+  els.checkinDetailContent.querySelectorAll("[data-perc-option]").forEach((cb) => {
+    if (cb.checked) percSelected.push(cb.dataset.percOption);
+  });
+  if (!edits.percussionNeeds) edits.percussionNeeds = {};
+  edits.percussionNeeds.selected = percSelected;
+
+  return edits;
+}
+
 export function bindAdminHandlers() {
   if (adminHandlersBound) return;
   adminHandlersBound = true;
@@ -6424,6 +6716,7 @@ export function bindAdminHandlers() {
     els.adminSubnavEventsBtn,
     els.adminSubnavLogisticsBtn,
     els.adminSubnavDirectoryBtn,
+    els.adminSubnavCheckinBtn,
   ];
   adminSubnavButtons.forEach((btn) => {
     if (!btn) return;
@@ -6438,6 +6731,57 @@ export function bindAdminHandlers() {
       }
     });
   });
+
+  // Check-in handlers
+  if (els.checkinBackBtn) {
+    els.checkinBackBtn.addEventListener("click", () => {
+      state.admin.checkinDetailEnsembleId = null;
+      if (els.checkinDetailPanel) els.checkinDetailPanel.classList.add("is-hidden");
+      if (els.checkinList) els.checkinList.classList.remove("is-hidden");
+    });
+  }
+  if (els.checkinArrivalBtn) {
+    els.checkinArrivalBtn.addEventListener("click", async () => {
+      const ensId = state.admin.checkinDetailEnsembleId;
+      const eventId = state.event.active;
+      if (!ensId || !eventId) return;
+      const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensId);
+      const snap = await getDoc(ref);
+      const current = snap.exists() ? snap.data() : {};
+      const toggled = current.arrivedAt ? null : serverTimestamp();
+      await updateEntryCheckinFields(eventId, ensId, { arrivedAt: toggled });
+      await showCheckinDetail(ensId);
+    });
+  }
+  if (els.checkinConfirmBtn) {
+    els.checkinConfirmBtn.addEventListener("click", async () => {
+      const ensId = state.admin.checkinDetailEnsembleId;
+      const eventId = state.event.active;
+      if (!ensId || !eventId) return;
+      const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensId);
+      const snap = await getDoc(ref);
+      const current = snap.exists() ? snap.data() : {};
+      const toggled = current.directorConfirmedAt ? null : serverTimestamp();
+      await updateEntryCheckinFields(eventId, ensId, { directorConfirmedAt: toggled });
+      await showCheckinDetail(ensId);
+    });
+  }
+  if (els.checkinSaveEditsBtn) {
+    els.checkinSaveEditsBtn.addEventListener("click", async () => {
+      const ensId = state.admin.checkinDetailEnsembleId;
+      const eventId = state.event.active;
+      if (!ensId || !eventId) return;
+      const edits = collectCheckinEdits();
+      try {
+        await updateEntryCheckinFields(eventId, ensId, edits);
+        alertUser("Changes saved.");
+        await showCheckinDetail(ensId);
+      } catch (err) {
+        console.error("checkin save error", err);
+        alertUser("Failed to save changes.");
+      }
+    });
+  }
 
   renderAdminLogisticsEnsembleOptions(els.adminLogisticsCurrentEnsembleSelect, []);
   renderAdminLogisticsEnsembleOptions(els.adminLogisticsNextEnsembleSelect, []);
@@ -6787,7 +7131,8 @@ export function bindAdminHandlers() {
       );
       const getGrade = (entry) => gradeMap.get(entry.ensembleId) ?? null;
       const breakSet = new Set(scheduleBreaks);
-      const timeline = computeScheduleTimeline(firstPerformanceAt, roster, breakSet, getGrade);
+      const dayBreaks = state.event.active.scheduleDayBreaks || {};
+      const timeline = computeScheduleTimeline(firstPerformanceAt, roster, breakSet, getGrade, dayBreaks);
       try {
         for (const row of timeline) {
           await updateScheduleEntryTime({
@@ -8133,69 +8478,4 @@ export function bindAppHandlers() {
     });
   }
 
-  if (els.roleTabButtons?.length) {
-    els.roleTabButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        const action = button.dataset.action || "";
-        const role = getEffectiveRole(state.auth.userProfile);
-        if (!role) return;
-        els.roleTabButtons.forEach((btn) => {
-          btn.setAttribute("aria-selected", btn === button ? "true" : "false");
-        });
-        switch (action) {
-          case "admin-home":
-          case "admin-events":
-            setTab("admin", { force: true });
-            state.admin.currentView = "events";
-            applyAdminView("events");
-            scrollToSection(els.adminOpenPacketsSection || els.adminSchoolsSection);
-            break;
-          case "admin-schools":
-            setTab("admin", { force: true });
-            state.admin.currentView = "directory";
-            applyAdminView("directory");
-            scrollToSection(els.adminSchoolsSection);
-            break;
-          case "admin-settings":
-            setTab("admin", { force: true });
-            state.admin.currentView = "directory";
-            applyAdminView("directory");
-            scrollToSection(els.adminSettingsSection);
-            break;
-          case "judge-judging":
-            setTab("judge-open", { force: true });
-            if (state.judgeOpen.currentPacketId) {
-              showOpenDetailView();
-            } else {
-              hideOpenDetailView();
-              scrollToSection(els.judgeOpenListView);
-            }
-            break;
-          case "judge-schedule":
-            setTab("judge-open", { force: true });
-            hideOpenDetailView();
-            scrollToSection(els.judgeOpenListView);
-            break;
-          case "judge-profile":
-            openUserProfileModal();
-            break;
-          case "director-schedule":
-            setTab("director", { force: true });
-            scrollToSection(els.directorEventMeta);
-            break;
-          case "director-ensemble":
-            setTab("director", { force: true });
-            scrollToSection(els.directorEnsemblesSection);
-            break;
-          case "director-profile":
-            openDirectorProfileModal();
-            break;
-          default:
-            if (role === "admin") setTab("admin", { force: true });
-            if (role === "judge") setTab("judge-open", { force: true });
-            if (role === "director") setTab("director", { force: true });
-        }
-      });
-    });
-  }
 }

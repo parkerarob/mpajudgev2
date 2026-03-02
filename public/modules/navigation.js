@@ -52,7 +52,8 @@ export function resolveHash(hash) {
       segment === "chair" ? "chair" :
       segment === "eventChair" ? "eventChair" :
       segment === "logistics" ? "logistics" :
-      segment === "directory" ? "directory" : "events";
+      segment === "directory" ? "directory" :
+      segment === "checkin" ? "checkin" : "events";
     return { type: "tab", tab: "admin", adminView };
   }
   return { type: "none" };

@@ -120,7 +120,7 @@ const CAPTION_TEMPLATES = {
     {key: "balanceBlend", label: "Balance/Blend"},
     {key: "precision", label: "Precision"},
     {key: "basicMusicianship", label: "Basic Musicianship"},
-    {key: "interpretativeMusicianship", label: "Interpretative Musicianship"},
+    {key: "interpretativeMusicianship", label: "Interpretive Musicianship"},
     {key: "generalFactors", label: "General Factors"},
   ],
   sight: [

@@ -307,6 +307,7 @@ export async function updateEventSchedulerFields({
   eventId,
   firstPerformanceAt,
   scheduleBreaks,
+  scheduleDayBreaks,
 }) {
   const eventRef = doc(db, COLLECTIONS.events, eventId);
   const updates = {};
@@ -319,6 +320,15 @@ export async function updateEventSchedulerFields({
     updates[FIELDS.events.scheduleBreaks] = Array.isArray(scheduleBreaks)
       ? scheduleBreaks
       : [];
+  }
+  if (scheduleDayBreaks !== undefined) {
+    const converted = {};
+    if (scheduleDayBreaks && typeof scheduleDayBreaks === "object") {
+      for (const [key, val] of Object.entries(scheduleDayBreaks)) {
+        converted[key] = val instanceof Date ? Timestamp.fromDate(val) : val;
+      }
+    }
+    updates[FIELDS.events.scheduleDayBreaks] = converted;
   }
   if (Object.keys(updates).length === 0) return;
   return updateDoc(eventRef, { ...updates, updatedAt: serverTimestamp() });
@@ -485,4 +495,10 @@ export async function updateSchoolRegistration(eventId, schoolId, fields) {
   } else {
     await setDoc(ref, { schoolId, eventId, ...payload, createdAt: serverTimestamp() }, { merge: true });
   }
+}
+
+export async function updateEntryCheckinFields(eventId, ensembleId, fields) {
+  if (!eventId || !ensembleId) return;
+  const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId);
+  return updateDoc(ref, { ...fields, updatedAt: serverTimestamp() });
 }

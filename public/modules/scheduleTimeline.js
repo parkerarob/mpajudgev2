@@ -29,29 +29,48 @@ export function getSlotMinutesForGrade(grade) {
 }
 
 /**
+ * Resolve a value that may be a Firestore Timestamp, Date, or date string to a Date.
+ * @param {*} val
+ * @returns {Date|null}
+ */
+function toDate(val) {
+  if (!val) return null;
+  if (typeof val.toDate === "function") return val.toDate();
+  if (val instanceof Date) return val;
+  const d = new Date(val);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
  * Compute timeline for all roster entries. Schedule is performance-time only:
  * next performance = previous performance + previous slot (plus 30 min if break).
+ * A day break (entry in dayBreaks map) jumps the timeline to a specific date/time,
+ * superseding a regular 30-min break on the same entry.
  * Also returns holding/warmUp/sight derived from each perform time for display.
  *
- * @param {Date|import('firebase/firestore').Timestamp} firstPerformanceAt - Performance time for first band
- * @param {Array<{ id: string, ensembleId: string, [key: string]: unknown }>} rosterEntries - Ordered roster
+ * @param {Date|import('firebase/firestore').Timestamp} firstPerformanceAt
+ * @param {Array<{ id: string, ensembleId: string, [key: string]: unknown }>} rosterEntries
  * @param {Set<string>|Array<string>} scheduleBreaks - Entry IDs after which a 30-min break is inserted
- * @param {(entry: { id: string, ensembleId: string }) => string|null} getGrade - Returns grade I–VI or null
+ * @param {(entry: { id: string, ensembleId: string }) => string|null} getGrade
+ * @param {Object<string, Date|import('firebase/firestore').Timestamp>} [dayBreaks] - Entry IDs mapped to a jump-to datetime
  * @returns {Array<{ entryId: string, ensembleId: string, grade: string|null, slotMins: number, holdingStart: Date, warmUpStart: Date, performStart: Date, sightStart: Date }>}
  */
-export function computeScheduleTimeline(firstPerformanceAt, rosterEntries, scheduleBreaks, getGrade) {
+export function computeScheduleTimeline(firstPerformanceAt, rosterEntries, scheduleBreaks, getGrade, dayBreaks) {
   const breakSet = Array.isArray(scheduleBreaks)
     ? new Set(scheduleBreaks)
     : scheduleBreaks instanceof Set
       ? scheduleBreaks
       : new Set();
 
-  const performStartFirst =
-    firstPerformanceAt && typeof firstPerformanceAt.toDate === "function"
-      ? firstPerformanceAt.toDate()
-      : firstPerformanceAt instanceof Date
-        ? firstPerformanceAt
-        : new Date(firstPerformanceAt);
+  const dayBreakMap = new Map();
+  if (dayBreaks && typeof dayBreaks === "object") {
+    for (const [key, val] of Object.entries(dayBreaks)) {
+      const d = toDate(val);
+      if (d) dayBreakMap.set(key, d);
+    }
+  }
+
+  const performStartFirst = toDate(firstPerformanceAt) || new Date();
 
   if (!rosterEntries.length) return [];
 
@@ -64,7 +83,10 @@ export function computeScheduleTimeline(firstPerformanceAt, rosterEntries, sched
     const slotMins = getSlotMinutesForGrade(grade);
 
     if (i > 0) {
-      if (breakSet.has(rosterEntries[i - 1].id)) {
+      const prevId = rosterEntries[i - 1].id;
+      if (dayBreakMap.has(prevId)) {
+        nextPerformTime = new Date(dayBreakMap.get(prevId).getTime());
+      } else if (breakSet.has(prevId)) {
         nextPerformTime = new Date(nextPerformTime.getTime() + 30 * 60 * 1000);
       }
     }

@@ -38,7 +38,7 @@
         Offline: submissions are disabled until you reconnect.
       </div>
       <div class="notice notice--info" id="provisioningNotice" hidden role="status" aria-live="polite"></div>
-      <nav class="tabs desktop-only" role="tablist" aria-label="Role views">
+      <nav class="tabs" role="tablist" aria-label="Role views">
         <button class="tab" type="button" id="adminTab" role="tab" aria-controls="adminCard" data-tab="admin" aria-selected="false">
           Admin
         </button>
@@ -52,12 +52,7 @@
       <div class="hint" id="tabLockHint"></div>
 
       <section class="card" id="adminCard" role="tabpanel" aria-labelledby="adminTab">
-        <div class="ios-nav mobile-only">
-          <div class="ios-subtitle">Admin</div>
-          <h2 class="ios-title">Home</h2>
-          <div class="ios-subtitle">Manage event defaults, open packets, directories, and settings.</div>
-        </div>
-        <div class="tab-header desktop-only">
+        <div class="tab-header">
           <div>
             <h2>Admin Tools</h2>
             <div class="tab-subtitle">Manage event defaults, open packets, directories, and settings.</div>
@@ -73,6 +68,7 @@
           <button type="button" class="admin-subnav-btn" id="adminSubnavEventsBtn" role="tab" data-admin-view="events" aria-selected="true">Events & Packets</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavLogisticsBtn" role="tab" data-admin-view="logistics" aria-selected="false">Stage Logistics</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavDirectoryBtn" role="tab" data-admin-view="directory" aria-selected="false">Directory & Users</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavCheckinBtn" role="tab" data-admin-view="checkin" aria-selected="false">Check-in</button>
         </nav>
         <div class="ios-screen">
         <div class="stack">
@@ -381,17 +377,29 @@
             </div>
           </div>
           </div>
+
+          <div id="adminViewCheckin" class="admin-view stack is-hidden" data-admin-view="checkin">
+            <h3>Registration / Check-in</h3>
+            <p class="hint" id="checkinHint">Bands scheduled for the active event, in performance order.</p>
+            <div id="checkinList"></div>
+            <div class="panel is-hidden" id="checkinDetailPanel">
+              <button type="button" class="ghost" id="checkinBackBtn">&larr; Back to list</button>
+              <h3 id="checkinDetailTitle"></h3>
+              <p class="hint" id="checkinDetailMeta"></p>
+              <div class="row">
+                <button type="button" id="checkinArrivalBtn">Mark Arrived</button>
+                <button type="button" id="checkinConfirmBtn">Director Confirmed</button>
+              </div>
+              <div id="checkinDetailContent"></div>
+              <button type="button" id="checkinSaveEditsBtn" class="is-hidden">Save Changes</button>
+            </div>
+          </div>
         </div>
         </div>
       </section>
 
       <section class="card judge-open-card" id="judgeOpenCard" role="tabpanel" aria-labelledby="judgeOpenTab">
-        <div class="ios-nav mobile-only">
-          <div class="ios-subtitle">Judge</div>
-          <h2 class="ios-title">Judging</h2>
-          <div class="ios-subtitle">Record, transcribe, and submit without a schedule.</div>
-        </div>
-        <div class="tab-header desktop-only">
+        <div class="tab-header">
           <div>
             <h2>Judge Sheet</h2>
             <div class="tab-subtitle">Record, transcribe, and submit without a schedule.</div>
@@ -588,7 +596,7 @@
       </section>
 
       <section class="card" id="directorCard" role="tabpanel" aria-labelledby="directorTab">
-        <div class="tab-header desktop-only">
+        <div class="tab-header">
           <div>
             <h2>Director</h2>
             <div class="tab-subtitle">Register ensembles, complete day-of forms, and review results.</div>

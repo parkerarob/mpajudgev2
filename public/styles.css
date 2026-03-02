@@ -47,21 +47,10 @@ body {
   color: var(--text);
 }
 
-body.safe-render .ios-nav,
-body.safe-render .tabbar,
 body.safe-render .sticky-bottom,
-body.safe-render .modal-panel,
-body.safe-render .bottom-nav {
+body.safe-render .modal-panel {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-}
-
-.mobile-only {
-  display: none;
-}
-
-.desktop-only {
-  display: block;
 }
 
 .card {
@@ -74,46 +63,13 @@ body.safe-render .bottom-nav {
 }
 
 .ios-screen {
-  padding: 18px 16px calc(92px + env(safe-area-inset-bottom));
-  max-width: 520px;
+  padding: 18px 16px;
+  max-width: 1100px;
   margin: 0 auto;
   width: 100%;
   display: grid;
   gap: 16px;
   align-content: start;
-}
-
-@media (min-width: 769px) {
-  .ios-screen {
-    max-width: 1100px;
-    padding: 0;
-  }
-}
-
-.ios-nav {
-  padding: 18px 16px 10px;
-  position: sticky;
-  top: 0;
-  background: linear-gradient(
-    to bottom,
-    rgba(11, 12, 15, 0.92),
-    rgba(11, 12, 15, 0.65),
-    transparent
-  );
-  backdrop-filter: blur(16px);
-  z-index: 20;
-}
-
-.ios-title {
-  font-size: 34px;
-  line-height: 1.1;
-  letter-spacing: -0.02em;
-  margin: 6px 0 8px;
-}
-
-.ios-subtitle {
-  color: var(--muted);
-  font-size: 14px;
 }
 
 .group {
@@ -155,49 +111,6 @@ body.safe-render .bottom-nav {
   color: white;
   font-weight: 700;
   letter-spacing: 0.01em;
-}
-
-.tabbar {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: 0;
-  width: min(520px, 100%);
-  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
-  background: rgba(24, 26, 31, 0.72);
-  border-top: 1px solid var(--hairline);
-  backdrop-filter: blur(20px);
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  align-items: start;
-  gap: 6px;
-  z-index: 60;
-}
-
-.tabbar-group {
-  display: contents;
-}
-
-.tabbar button {
-  background: transparent;
-  border: 0;
-  color: var(--muted);
-  padding: 10px 8px;
-  border-radius: 12px;
-  font-weight: 600;
-  min-height: 44px;
-  align-self: start;
-  min-width: 0;
-  width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tabbar button[aria-selected="true"] {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
 }
 
 .sticky-bottom {
@@ -527,6 +440,12 @@ h3 {
   transform: translateY(4px);
 }
 
+#adminCard {
+  transition: none;
+  transform: none;
+  will-change: auto;
+}
+
 .stack {
   display: grid;
   gap: 12px;
@@ -697,6 +616,10 @@ button.is-loading .button-spinner {
 
 .panel {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+details.panel {
+  contain: layout style;
 }
 
 .director-summary {
@@ -1382,6 +1305,11 @@ body.director-only #tabLockHint {
   margin-top: 10px;
 }
 
+.schedule-timeline-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .schedule-timeline-table {
   width: 100%;
   border-collapse: collapse;
@@ -1784,39 +1712,6 @@ select:focus-visible {
   box-shadow: none;
 }
 
-.bottom-nav {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  justify-content: space-around;
-  align-items: center;
-  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-  background: rgba(12, 14, 24, 0.92);
-  border-top: 1px solid var(--border);
-  z-index: 50;
-}
-
-.bottom-nav .tab {
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  display: grid;
-  gap: 2px;
-  font-size: 11px;
-  color: var(--muted);
-  min-height: 44px;
-}
-
-.bottom-nav .tab[aria-selected="true"] {
-  color: var(--text);
-}
-
-.bottom-nav .nav-icon {
-  font-size: 16px;
-}
-
 @media (max-width: 768px) {
   body {
     padding: 0;
@@ -1849,12 +1744,8 @@ select:focus-visible {
     padding: 0;
   }
 
-  .ios-nav {
-    padding: 14px 16px 8px;
-  }
-
   .ios-screen {
-    padding: 10px 16px calc(92px + env(safe-area-inset-bottom));
+    padding: 10px 16px;
     gap: 14px;
   }
 
@@ -1893,29 +1784,6 @@ select:focus-visible {
 
   .auth-identity {
     text-align: left;
-  }
-
-  .ios-title {
-    font-size: 24px;
-    line-height: 1.12;
-    margin: 4px 0 6px;
-  }
-
-  .ios-subtitle {
-    font-size: 13px;
-    line-height: 1.35;
-  }
-
-  .ios-nav .ios-subtitle:last-child {
-    max-width: 34ch;
-  }
-
-  .mobile-only {
-    display: block;
-  }
-
-  .desktop-only {
-    display: none;
   }
 
   button,

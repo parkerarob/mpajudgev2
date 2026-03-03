@@ -2076,29 +2076,194 @@ export async function showEventChairDetail(eventId) {
         ? `${startDate} – ${endDate}` : startDate || endDate || "";
   }
 
-  if (els.eventChairFirstPerfInput && event?.firstPerformanceAt) {
-    const d = event.firstPerformanceAt.toDate
-      ? event.firstPerformanceAt.toDate()
-      : new Date(event.firstPerformanceAt);
-    els.eventChairFirstPerfInput.value = toLocalDatetimeValue(d);
-  } else if (els.eventChairFirstPerfInput) {
-    els.eventChairFirstPerfInput.value = "";
-  }
-
   _eventChairRegistered = await fetchRegisteredEnsembles(eventId);
   _eventChairScheduleEntries = await fetchScheduleEntries(eventId);
   _eventChairTimeline = [];
-  if (els.eventChairTimelineContainer) els.eventChairTimelineContainer.innerHTML = "";
-  if (els.eventChairApplyBtn) els.eventChairApplyBtn.disabled = true;
 
-  renderEventChairRegisteredTable();
-  renderEventChairFormsPayment();
+  await renderEventChairSchoolList();
 }
 
 export function hideEventChairDetail() {
   state.admin.eventChairDetailId = null;
   if (els.adminEventChairDefineSection) els.adminEventChairDefineSection.classList.remove("is-hidden");
   if (els.eventChairDetailSection) els.eventChairDetailSection.classList.add("is-hidden");
+}
+
+async function renderEventChairSchoolList() {
+  const eventId = state.admin.eventChairDetailId;
+  const container = els.eventChairSchoolList;
+  if (!eventId || !container) return;
+
+  container.innerHTML = "<p class=\"hint\">Loading…</p>";
+
+  const registered = _eventChairRegistered || [];
+  const scheduleByEnsemble = new Map();
+  (_eventChairScheduleEntries || []).forEach((se) => {
+    scheduleByEnsemble.set(se.ensembleId, se);
+  });
+
+  const bySchool = new Map();
+  registered.forEach((e) => {
+    const sid = e.schoolId || "";
+    if (!bySchool.has(sid)) bySchool.set(sid, []);
+    bySchool.get(sid).push(e);
+  });
+
+  let regList = [];
+  try {
+    regList = await fetchSchoolRegistrations(eventId);
+  } catch (_) {}
+  const schoolRegBySchool = new Map(regList.map((r) => [r.id, r]));
+
+  const schoolIds = [...bySchool.keys()].filter(Boolean);
+  schoolIds.sort((a, b) => {
+    const na = getSchoolNameById(state.admin.schoolsList, a) || "";
+    const nb = getSchoolNameById(state.admin.schoolsList, b) || "";
+    return na.localeCompare(nb);
+  });
+
+  if (!schoolIds.length) {
+    container.innerHTML = "<p class=\"hint\">No registered schools yet.</p>";
+    return;
+  }
+
+  container.innerHTML = "";
+
+  schoolIds.forEach((schoolId) => {
+    const ensembles = bySchool.get(schoolId) || [];
+    const schoolName = getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId || "Unknown";
+    const regData = schoolRegBySchool.get(schoolId) || {};
+
+    const details = document.createElement("details");
+    details.className = "panel event-chair-school-card";
+    details.dataset.schoolName = schoolName.toLowerCase();
+    details.open = true;
+
+    const summary = document.createElement("summary");
+    summary.className = "school-card-summary";
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = `${ensembles.length} ensemble${ensembles.length !== 1 ? "s" : ""}`;
+    summary.appendChild(document.createTextNode(schoolName + " "));
+    summary.appendChild(badge);
+    details.appendChild(summary);
+
+    const cardBody = document.createElement("div");
+    cardBody.className = "stack";
+
+    const formRow = document.createElement("div");
+    formRow.className = "row";
+    formRow.innerHTML = "<span class=\"muted\">Forms:</span> ";
+    const formCheck = document.createElement("input");
+    formCheck.type = "checkbox";
+    formCheck.checked = Boolean(regData.signatureFormReceived);
+    formCheck.id = `eventChairForm-${schoolId}`;
+    formCheck.addEventListener("change", async () => {
+      await updateSchoolRegistration(eventId, schoolId, { signatureFormReceived: formCheck.checked });
+    });
+    const formLabel = document.createElement("label");
+    formLabel.htmlFor = formCheck.id;
+    formLabel.textContent = "Signature ";
+    formLabel.prepend(formCheck);
+    formRow.appendChild(formLabel);
+
+    const paymentCheck = document.createElement("input");
+    paymentCheck.type = "checkbox";
+    paymentCheck.checked = Boolean(regData.paymentReceived);
+    paymentCheck.id = `eventChairPayment-${schoolId}`;
+    paymentCheck.addEventListener("change", async () => {
+      await updateSchoolRegistration(eventId, schoolId, { paymentReceived: paymentCheck.checked });
+    });
+    const paymentLabel = document.createElement("label");
+    paymentLabel.htmlFor = paymentCheck.id;
+    paymentLabel.textContent = "Payment ";
+    paymentLabel.prepend(paymentCheck);
+    formRow.appendChild(paymentLabel);
+
+    if (regData.signedFormUrl) {
+      const a = document.createElement("a");
+      a.href = regData.signedFormUrl;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "View uploaded form";
+      formRow.appendChild(a);
+    }
+    cardBody.appendChild(formRow);
+
+    ensembles.forEach((entry) => {
+      const ensembleId = entry.ensembleId || entry.id;
+      const scheduleEntry = scheduleByEnsemble.get(ensembleId);
+      let perfValue = "";
+      if (scheduleEntry?.performanceAt) {
+        const d = scheduleEntry.performanceAt.toDate
+          ? scheduleEntry.performanceAt.toDate()
+          : new Date(scheduleEntry.performanceAt);
+        perfValue = toLocalDatetimeValue(d);
+      }
+
+      const row = document.createElement("div");
+      row.className = "ensemble-schedule-row row";
+      const input = document.createElement("input");
+      input.type = "datetime-local";
+      input.value = perfValue;
+      input.dataset.ensembleId = ensembleId;
+      input.dataset.schoolId = schoolId;
+      input.dataset.ensembleName = entry.ensembleName || ensembleId;
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "ghost";
+      saveBtn.textContent = "Save";
+      saveBtn.dataset.ensembleId = ensembleId;
+      saveBtn.dataset.schoolId = schoolId;
+      saveBtn.dataset.ensembleName = entry.ensembleName || ensembleId;
+      saveBtn.dataset.scheduleId = scheduleEntry ? scheduleEntry.id : "";
+
+      saveBtn.addEventListener("click", async () => {
+        const raw = input.value;
+        if (!raw) {
+          alertUser("Enter a performance date and time.");
+          return;
+        }
+        const nextDate = new Date(raw);
+        if (Number.isNaN(nextDate.getTime())) {
+          alertUser("Invalid date/time.");
+          return;
+        }
+        try {
+          if (scheduleEntry) {
+            await updateScheduleEntryTime({
+              eventId,
+              entryId: scheduleEntry.id,
+              nextDate,
+            });
+          } else {
+            await createScheduleEntry({
+              eventId,
+              performanceAtDate: nextDate,
+              schoolId,
+              ensembleId,
+              ensembleName: entry.ensembleName || ensembleId,
+            });
+          }
+          _eventChairScheduleEntries = await fetchScheduleEntries(eventId);
+          await renderEventChairSchoolList();
+        } catch (err) {
+          console.error("Save schedule time failed", err);
+          alertUser("Failed to save. Check console.");
+        }
+      });
+
+      const gradeText = entry.declaredGradeLevel ? `Grade ${entry.declaredGradeLevel}` : "—";
+      row.appendChild(document.createTextNode(entry.ensembleName || ensembleId));
+      row.appendChild(document.createTextNode(" | " + gradeText + " | Perf: "));
+      row.appendChild(input);
+      row.appendChild(saveBtn);
+      cardBody.appendChild(row);
+    });
+
+    details.appendChild(cardBody);
+    container.appendChild(details);
+  });
 }
 
 function renderEventChairRegisteredTable() {
@@ -2111,79 +2276,121 @@ function renderEventChairRegisteredTable() {
     return;
   }
 
-  const scheduledMap = new Map();
-  _eventChairScheduleEntries.forEach((entry, idx) => {
-    scheduledMap.set(entry.ensembleId, { position: idx + 1, scheduleEntry: entry });
+  const registeredById = new Map();
+  _eventChairRegistered.forEach((e) => {
+    registeredById.set(e.ensembleId || e.id, e);
   });
 
-  const table = document.createElement("table");
-  table.setAttribute("role", "grid");
-  table.className = "schedule-timeline-table";
-  const thead = document.createElement("thead");
-  thead.innerHTML = "<tr><th>Pos</th><th>Ensemble</th><th>School</th><th>Grade</th><th>Date Pref</th></tr>";
-  table.appendChild(thead);
-  const tbody = document.createElement("tbody");
-
+  // Initial order: existing schedule order, then any registered not yet in schedule
+  const orderedEntries = [];
+  const seen = new Set();
+  _eventChairScheduleEntries.forEach((se) => {
+    const entry = registeredById.get(se.ensembleId);
+    if (entry) {
+      orderedEntries.push(entry);
+      seen.add(entry.ensembleId || entry.id);
+    }
+  });
   _eventChairRegistered.forEach((entry) => {
-    const ensembleId = entry.ensembleId || entry.id;
-    const scheduled = scheduledMap.get(ensembleId);
-    const tr = document.createElement("tr");
-
-    const posCell = document.createElement("td");
-    const posInput = document.createElement("input");
-    posInput.type = "number";
-    posInput.min = "1";
-    posInput.style.width = "3.5rem";
-    posInput.dataset.ensembleId = ensembleId;
-    posInput.dataset.schoolId = entry.schoolId || "";
-    posInput.dataset.ensembleName = entry.ensembleName || ensembleId;
-    posInput.dataset.grade = entry.declaredGradeLevel || "";
-    posInput.className = "event-chair-pos-input";
-    if (scheduled) posInput.value = String(scheduled.position);
-    posCell.appendChild(posInput);
-
-    const nameCell = document.createElement("td");
-    nameCell.textContent = entry.ensembleName || ensembleId;
-
-    const schoolCell = document.createElement("td");
-    schoolCell.textContent = getSchoolNameById(state.admin.schoolsList, entry.schoolId);
-
-    const gradeCell = document.createElement("td");
-    gradeCell.textContent = entry.declaredGradeLevel || "—";
-
-    const datePrefCell = document.createElement("td");
-    datePrefCell.textContent = entry.datePreference || "—";
-
-    tr.appendChild(posCell);
-    tr.appendChild(nameCell);
-    tr.appendChild(schoolCell);
-    tr.appendChild(gradeCell);
-    tr.appendChild(datePrefCell);
-    tbody.appendChild(tr);
+    const id = entry.ensembleId || entry.id;
+    if (!seen.has(id)) {
+      orderedEntries.push(entry);
+      seen.add(id);
+    }
   });
 
-  table.appendChild(tbody);
-  const wrap = document.createElement("div");
-  wrap.className = "schedule-timeline-table-wrap";
-  wrap.appendChild(table);
-  els.eventChairRegisteredTable.appendChild(wrap);
+  const container = document.createElement("div");
+  container.className = "event-chair-drag-list";
+  container.setAttribute("role", "list");
+
+  orderedEntries.forEach((entry) => {
+    const ensembleId = entry.ensembleId || entry.id;
+    const row = document.createElement("div");
+    row.className = "drag-row";
+    row.setAttribute("role", "listitem");
+    row.draggable = true;
+    row.dataset.ensembleId = ensembleId;
+    row.dataset.schoolId = entry.schoolId || "";
+    row.dataset.ensembleName = entry.ensembleName || ensembleId;
+    row.dataset.grade = entry.declaredGradeLevel || "";
+
+    const posNum = orderedEntries.indexOf(entry) + 1;
+    const schoolName = getSchoolNameById(state.admin.schoolsList, entry.schoolId);
+    row.innerHTML = `
+      <span class="drag-handle" aria-hidden="true">&#9776;</span>
+      <span class="drag-row-pos">${posNum}</span>
+      <span class="drag-row-name">${escapeHtml(entry.ensembleName || ensembleId)}</span>
+      <span class="drag-row-school">${escapeHtml(schoolName)}</span>
+      <span class="drag-row-grade">${escapeHtml(entry.declaredGradeLevel || "—")}</span>
+      <span class="drag-row-date">${escapeHtml(entry.datePreference || "—")}</span>
+    `;
+
+    row.addEventListener("dragstart", (e) => {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", ensembleId);
+      e.dataTransfer.setDragImage(row, 0, 0);
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      container.querySelectorAll(".drag-row").forEach((r) => r.classList.remove("drag-over"));
+      updateDragRowPositions(container);
+    });
+    row.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const id = e.dataTransfer.getData("text/plain");
+      if (id && id !== ensembleId) {
+        row.classList.add("drag-over");
+      }
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove("drag-over");
+    });
+    row.addEventListener("drop", (e) => {
+      e.preventDefault();
+      row.classList.remove("drag-over");
+      const draggedId = e.dataTransfer.getData("text/plain");
+      if (!draggedId || draggedId === ensembleId) return;
+      const all = Array.from(container.querySelectorAll(".drag-row"));
+      const draggedEl = all.find((r) => r.dataset.ensembleId === draggedId);
+      const targetEl = all.find((r) => r.dataset.ensembleId === ensembleId);
+      if (!draggedEl || !targetEl) return;
+      const targetIdx = all.indexOf(targetEl);
+      if (targetIdx === -1) return;
+      if (targetIdx < all.indexOf(draggedEl)) {
+        container.insertBefore(draggedEl, targetEl);
+      } else {
+        container.insertBefore(draggedEl, targetEl.nextSibling);
+      }
+      updateDragRowPositions(container);
+    });
+
+    container.appendChild(row);
+  });
+
+  els.eventChairRegisteredTable.appendChild(container);
+}
+
+function updateDragRowPositions(container) {
+  if (!container) return;
+  container.querySelectorAll(".drag-row-pos").forEach((el, idx) => {
+    el.textContent = idx + 1;
+  });
 }
 
 function getOrderedEnsemblesFromPositionInputs() {
-  const inputs = els.eventChairRegisteredTable?.querySelectorAll(".event-chair-pos-input") || [];
+  const rows = els.eventChairRegisteredTable?.querySelectorAll(".drag-row") || [];
   const items = [];
-  inputs.forEach((input) => {
-    const pos = parseInt(input.value, 10);
-    if (!pos || pos < 1) return;
+  rows.forEach((row, idx) => {
     items.push({
-      position: pos,
-      ensembleId: input.dataset.ensembleId,
-      schoolId: input.dataset.schoolId,
-      ensembleName: input.dataset.ensembleName,
-      grade: input.dataset.grade || null,
+      position: idx + 1,
+      ensembleId: row.dataset.ensembleId,
+      schoolId: row.dataset.schoolId || "",
+      ensembleName: row.dataset.ensembleName,
+      grade: row.dataset.grade || null,
     });
   });
-  items.sort((a, b) => a.position - b.position);
   return items;
 }
 
@@ -2232,7 +2439,7 @@ function previewEventChairSchedule() {
     table.setAttribute("role", "grid");
     table.className = "schedule-timeline-table";
     const thead = document.createElement("thead");
-    thead.innerHTML = "<tr><th>Pos</th><th>Ensemble</th><th>Grade</th><th>Slot</th><th>Holding</th><th>Warm-up</th><th>Perform</th><th>Sight</th><th></th></tr>";
+    thead.innerHTML = "<tr><th>Pos</th><th>Ensemble</th><th>School</th><th>Grade</th><th>Slot</th><th>Holding</th><th>Warm-up</th><th>Perform</th><th>Sight</th><th></th></tr>";
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
 
@@ -2247,6 +2454,7 @@ function previewEventChairSchedule() {
       tr.innerHTML = `
         <td>${idx + 1}</td>
         <td>${escapeHtml(item.ensembleName)}</td>
+        <td>${escapeHtml(getSchoolNameById(state.admin.schoolsList, item.schoolId) || "—")}</td>
         <td>${escapeHtml(row.grade || "—")}</td>
         <td>${row.slotMins} min</td>
         <td>${escapeHtml(formatTimeRange(row.holdingStart, row.warmUpStart))}</td>
@@ -6484,7 +6692,8 @@ function updateScheduleSubmitState() {
 
 export async function renderCheckinList() {
   if (!els.checkinList) return;
-  const eventId = state.event.active;
+  const active = state.event.active;
+  const eventId = active && (typeof active === "string" ? active : active.id);
   if (!eventId) {
     els.checkinList.innerHTML = '<p class="hint">No active event.</p>';
     return;
@@ -6561,7 +6770,8 @@ export async function renderCheckinList() {
 
 export async function showCheckinDetail(ensembleId) {
   if (!ensembleId || !els.checkinDetailPanel) return;
-  const eventId = state.event.active;
+  const active = state.event.active;
+  const eventId = active && (typeof active === "string" ? active : active.id);
   if (!eventId) return;
 
   state.admin.checkinDetailEnsembleId = ensembleId;
@@ -6743,7 +6953,7 @@ export function bindAdminHandlers() {
   if (els.checkinArrivalBtn) {
     els.checkinArrivalBtn.addEventListener("click", async () => {
       const ensId = state.admin.checkinDetailEnsembleId;
-      const eventId = state.event.active;
+      const eventId = state.event.active && (typeof state.event.active === "string" ? state.event.active : state.event.active.id);
       if (!ensId || !eventId) return;
       const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensId);
       const snap = await getDoc(ref);
@@ -6756,7 +6966,7 @@ export function bindAdminHandlers() {
   if (els.checkinConfirmBtn) {
     els.checkinConfirmBtn.addEventListener("click", async () => {
       const ensId = state.admin.checkinDetailEnsembleId;
-      const eventId = state.event.active;
+      const eventId = state.event.active && (typeof state.event.active === "string" ? state.event.active : state.event.active.id);
       if (!ensId || !eventId) return;
       const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensId);
       const snap = await getDoc(ref);
@@ -6769,7 +6979,7 @@ export function bindAdminHandlers() {
   if (els.checkinSaveEditsBtn) {
     els.checkinSaveEditsBtn.addEventListener("click", async () => {
       const ensId = state.admin.checkinDetailEnsembleId;
-      const eventId = state.event.active;
+      const eventId = state.event.active && (typeof state.event.active === "string" ? state.event.active : state.event.active.id);
       if (!ensId || !eventId) return;
       const edits = collectCheckinEdits();
       try {
@@ -6858,49 +7068,16 @@ export function bindAdminHandlers() {
     });
   }
 
-  if (els.eventChairFirstPerfSaveBtn) {
-    els.eventChairFirstPerfSaveBtn.addEventListener("click", async () => {
-      const eventId = state.admin.eventChairDetailId;
-      if (!eventId) return;
-      const raw = els.eventChairFirstPerfInput?.value || "";
-      if (!raw) {
-        alertUser("Enter a date and time for the first performance.");
-        return;
-      }
-      const date = new Date(raw);
-      if (Number.isNaN(date.getTime())) {
-        alertUser("Invalid date/time.");
-        return;
-      }
-      try {
-        await updateEventSchedulerFields({ eventId, firstPerformanceAt: date });
-        const localEvent = (state.event.list || []).find((e) => e.id === eventId);
-        if (localEvent) {
-          localEvent.firstPerformanceAt = { toDate: () => date };
-        }
-        if (state.event.active?.id === eventId) {
-          state.event.active = {
-            ...state.event.active,
-            firstPerformanceAt: { toDate: () => date },
-          };
-        }
-        alertUser("First performance time saved.");
-      } catch (err) {
-        console.error("Save first performance time failed", err);
-        alertUser("Unable to save. Check console.");
-      }
-    });
-  }
-
-  if (els.eventChairPreviewBtn) {
-    els.eventChairPreviewBtn.addEventListener("click", () => {
-      previewEventChairSchedule();
-    });
-  }
-
-  if (els.eventChairApplyBtn) {
-    els.eventChairApplyBtn.addEventListener("click", async () => {
-      await applyEventChairSchedule();
+  if (els.eventChairSchoolFilter) {
+    els.eventChairSchoolFilter.addEventListener("input", () => {
+      const q = (els.eventChairSchoolFilter.value || "").trim().toLowerCase();
+      const list = els.eventChairSchoolList;
+      if (!list) return;
+      list.querySelectorAll(".event-chair-school-card").forEach((card) => {
+        const name = (card.dataset.schoolName || "");
+        const show = !q || name.includes(q);
+        card.classList.toggle("is-hidden", !show);
+      });
     });
   }
 

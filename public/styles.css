@@ -458,6 +458,11 @@ h3 {
   align-items: center;
 }
 
+.full-width {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -1328,6 +1333,87 @@ body.director-only #tabLockHint {
 }
 .schedule-timeline-table td:first-child {
   max-width: 180px;
+}
+
+/* Event Chair drag-and-drop list */
+.event-chair-drag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.drag-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  cursor: grab;
+  font-size: 13px;
+}
+.drag-row:active {
+  cursor: grabbing;
+}
+.drag-row.dragging {
+  opacity: 0.6;
+  cursor: grabbing;
+}
+.drag-row.drag-over {
+  border-color: var(--accent, #0a7ea4);
+  background: var(--surface-elevated);
+}
+.drag-handle {
+  color: var(--muted);
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+}
+.drag-row-pos {
+  flex-shrink: 0;
+  width: 2rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.drag-row-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+}
+.drag-row-school,
+.drag-row-grade,
+.drag-row-date {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* Event Chair school-centric cards */
+.event-chair-school-card {
+  margin-top: 8px;
+}
+.event-chair-school-card .school-card-summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+.event-chair-school-card .school-card-summary .badge {
+  margin-left: 8px;
+  font-weight: 500;
+}
+.ensemble-schedule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.ensemble-schedule-row:last-child {
+  border-bottom: none;
+}
+.ensemble-schedule-row input[type="datetime-local"] {
+  min-width: 160px;
 }
 
 .stage-view-panel { margin-top: 12px; }

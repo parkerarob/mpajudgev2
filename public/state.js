@@ -324,6 +324,8 @@ export const els = {
   eventChairBackToListBtn: document.getElementById("eventChairBackToListBtn"),
   eventChairDetailTitle: document.getElementById("eventChairDetailTitle"),
   eventChairDetailDates: document.getElementById("eventChairDetailDates"),
+  eventChairSchoolFilter: document.getElementById("eventChairSchoolFilter"),
+  eventChairSchoolList: document.getElementById("eventChairSchoolList"),
   eventChairFirstPerfInput: document.getElementById("eventChairFirstPerfInput"),
   eventChairFirstPerfSaveBtn: document.getElementById("eventChairFirstPerfSaveBtn"),
   eventChairRegisteredTable: document.getElementById("eventChairRegisteredTable"),

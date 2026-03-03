@@ -206,26 +206,8 @@
               <button type="button" class="ghost" id="eventChairBackToListBtn">&larr; Back to Events</button>
               <h3 id="eventChairDetailTitle">Event</h3>
               <p class="hint" id="eventChairDetailDates"></p>
-              <div class="stack">
-                <label>
-                  First performance time
-                  <input type="datetime-local" id="eventChairFirstPerfInput" />
-                </label>
-                <button type="button" class="ghost" id="eventChairFirstPerfSaveBtn">Save first time</button>
-              </div>
-              <h4>Registered Ensembles</h4>
-              <p class="hint">Type a position number (1, 2, 3...) to set performance order.</p>
-              <div id="eventChairRegisteredTable"></div>
-              <div class="row">
-                <button type="button" id="eventChairPreviewBtn">Preview Schedule</button>
-                <button type="button" id="eventChairApplyBtn" disabled>Apply Schedule</button>
-              </div>
-              <div id="eventChairTimelineContainer"></div>
-              <details class="panel" id="eventChairFormsPaymentDetails">
-                <summary>Signature forms &amp; payment</summary>
-                <p class="hint">Track when each school’s signed form and payment are received.</p>
-                <div id="eventChairFormsPaymentContainer"></div>
-              </details>
+              <input type="text" id="eventChairSchoolFilter" placeholder="Filter schools..." class="full-width" />
+              <div id="eventChairSchoolList" class="stack"></div>
             </div>
           </div>
 

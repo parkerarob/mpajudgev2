@@ -446,21 +446,6 @@ export async function lockSubmission({ eventId, ensembleId, judgePosition }) {
   return lockSubmissionFn({ eventId, ensembleId, judgePosition });
 }
 
-export function watchOpenPacketsAdmin(callback) {
-  if (state.subscriptions.openPacketsAdmin) state.subscriptions.openPacketsAdmin();
-  const packetsQuery = query(
-    collection(db, COLLECTIONS.packets),
-    orderBy(FIELDS.packets.updatedAt, "desc")
-  );
-  state.subscriptions.openPacketsAdmin = onSnapshot(packetsQuery, (snapshot) => {
-    const packets = snapshot.docs.map((docSnap) => ({
-      id: docSnap.id,
-      ...docSnap.data(),
-    }));
-    callback?.(packets);
-  });
-}
-
 export async function lockOpenPacket({ packetId }) {
   const lockFn = httpsCallable(functions, "lockPacket");
   return lockFn({ packetId });

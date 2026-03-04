@@ -27,24 +27,18 @@ import {
   getLunchTotalsBySchool,
   renameEvent,
   lockSubmission,
-  lockOpenPacket,
   linkOpenPacketToEnsemble,
-  setOpenPacketJudgePosition,
   provisionUser,
   releasePacket,
-  releaseOpenPacket,
   releaseMockPacketForAshleyTesting,
   saveAssignments,
   saveSchool,
   setActiveEvent,
   unreleasePacket,
   unassignDirectorSchool,
-  unlockOpenPacket,
   unlockSubmission,
-  unreleaseOpenPacket,
   updateEventSchedulerFields,
   updateScheduleEntryTime,
-  watchOpenPacketsAdmin,
   watchAssignmentsForActiveEvent,
   watchActiveEvent,
   watchDirectors,
@@ -149,6 +143,9 @@ import {
   levelToRoman,
   romanToLevel,
 } from "./utils.js";
+import { createAdminViewController } from "./ui-admin-shell.js";
+import { createAdminRenderers } from "./ui-admin-renderers.js";
+import { createAdminLiveRenderers } from "./ui-admin-live-renderers.js";
 
 export function alertUser(message) {
   window.alert(message);
@@ -178,8 +175,11 @@ function isAdminLiveEventEnabled() {
   return state.app.features?.enableAdminLiveEvent !== false;
 }
 
-function isAdminDirectoryEnabled() {
-  return state.app.features?.enableAdminDirectory !== false;
+function isAdminSettingsEnabled() {
+  return (
+    state.app.features?.enableAdminSettings !== false &&
+    state.app.features?.enableAdminDirectory !== false
+  );
 }
 
 function detectOpenJudgeAssignment(assignments, uid) {
@@ -1455,10 +1455,9 @@ export function confirmDiscardUnsaved() {
 
 let preEventGuidedFlowInFlight = false;
 let preEventGuidedFlowQueued = false;
-let adminSchoolDetailRenderInFlight = false;
-let adminSchoolDetailRenderQueued = false;
-let adminPacketsRenderInFlight = false;
-let adminPacketsRenderQueued = false;
+let adminViewController = null;
+let adminRenderers = null;
+let adminLiveRenderers = null;
 
 function schedulePreEventGuidedFlowRender() {
   if (state.app.stabilityMode) return;
@@ -1480,111 +1479,98 @@ function schedulePreEventGuidedFlowRender() {
   });
 }
 
-function isAdminHeavyViewLoaded(view) {
-  if (!state.admin.safeMode) return true;
-  if (view === "preEvent") return Boolean(state.admin.preEventHeavyLoaded);
-  if (view === "liveEvent") return Boolean(state.admin.liveEventHeavyLoaded);
-  return true;
+function getAdminViewController() {
+  if (adminViewController) return adminViewController;
+  adminViewController = createAdminViewController({
+    els,
+    state,
+    isAdminLiveEventEnabled,
+    isAdminSettingsEnabled,
+    getEffectiveRole,
+    renderLiveEventCheckinQueue,
+    renderAdminSchoolDetail,
+    renderRegisteredEnsemblesList,
+    renderAdminPacketsBySchedule,
+    renderEventList,
+    renderAdminSchoolsDirectory,
+    renderDirectorAssignmentsDirectory,
+  });
+  return adminViewController;
 }
 
-function setAdminSafeModePanel(view) {
-  if (!els.adminSafeModePanel || !els.adminSafeModeMessage || !els.adminSafeModeLoadBtn) return;
-  const needsManualLoad = state.admin.safeMode && (view === "preEvent" || view === "liveEvent") && !isAdminHeavyViewLoaded(view);
-  els.adminSafeModePanel.classList.toggle("is-hidden", !needsManualLoad);
-  if (!needsManualLoad) return;
-  if (view === "preEvent") {
-    els.adminSafeModeMessage.textContent =
-      "Admin safe mode is on. Pre-Event heavy data is paused to prevent browser crashes.";
-  } else {
-    els.adminSafeModeMessage.textContent =
-      "Admin safe mode is on. Live Event heavy data is paused to prevent browser crashes.";
-  }
+function getAdminRenderers() {
+  if (adminRenderers) return adminRenderers;
+  adminRenderers = createAdminRenderers({
+    els,
+    state,
+    db,
+    COLLECTIONS,
+    collection,
+    getDocs,
+    fetchRegisteredEnsembles,
+    fetchScheduleEntries,
+    getSchoolNameById,
+    normalizeEnsembleDisplayName,
+    toLocalDatetimeValue,
+    formatPerformanceAt,
+    getPacketData,
+    releasePacket,
+    unreleasePacket,
+    loadAdminPacketView,
+    alertUser,
+    createScheduleEntry,
+    updateScheduleEntryTime,
+    formatAdminDayOfReadOnly,
+    openDirectorDayOfFromAdmin,
+    closeAdminSchoolDetail,
+    applyAdminView,
+    schedulePreEventGuidedFlowRender,
+  });
+  return adminRenderers;
+}
+
+function getAdminLiveRenderers() {
+  if (adminLiveRenderers) return adminLiveRenderers;
+  adminLiveRenderers = createAdminLiveRenderers({
+    els,
+    state,
+    db,
+    COLLECTIONS,
+    FIELDS,
+    collection,
+    getDocs,
+    query,
+    where,
+    fetchScheduleEntries,
+    fetchRegisteredEnsembles,
+    getSchoolNameById,
+    normalizeEnsembleDisplayName,
+    toDateOrNull,
+    computeEnsembleCheckinStatus,
+    escapeHtml,
+    formatStartTime,
+    formatSchoolEnsembleLabel,
+    buildAdminLogisticsEntryPanel,
+    buildAdminLogisticsDiffPanel,
+    updateEntryCheckinFields,
+  });
+  return adminLiveRenderers;
+}
+
+function isAdminHeavyViewLoaded(view) {
+  return getAdminViewController().isAdminHeavyViewLoaded(view);
 }
 
 function isAdminSchoolDetailOpen() {
-  return state.admin.currentView === "preEvent" && Boolean(state.admin.selectedSchoolId);
+  return getAdminViewController().isAdminSchoolDetailOpen();
 }
 
 function closeAdminSchoolDetail() {
-  state.admin.selectedSchoolId = null;
-  state.admin.selectedSchoolName = "";
-  applyAdminView("preEvent");
+  return getAdminViewController().closeAdminSchoolDetail();
 }
 
 function applyAdminView(view) {
-  if (view === "liveEvent" && !isAdminLiveEventEnabled()) view = "preEvent";
-  if (view === "directory" && !isAdminDirectoryEnabled()) view = "preEvent";
-  state.admin.currentView = view;
-  const showPreEvent = view === "preEvent";
-  const showPackets = view === "packets";
-  const showLiveEvent = view === "liveEvent" && isAdminLiveEventEnabled();
-  const showDirectory = view === "directory" && isAdminDirectoryEnabled();
-  const showSchoolDetail = showPreEvent && Boolean(state.admin.selectedSchoolId);
-  const heavyLoaded = isAdminHeavyViewLoaded(view);
-  setAdminSafeModePanel(view);
-
-  if (els.adminViewChair) {
-    els.adminViewChair.classList.toggle("is-hidden", !showLiveEvent);
-    if (showLiveEvent && heavyLoaded) {
-      renderLiveEventCheckinQueue();
-    }
-  }
-  if (els.adminViewEvents) {
-    els.adminViewEvents.classList.toggle("is-hidden", !showPreEvent);
-    if (showPreEvent) {
-      if (els.preEventFlowPanel) els.preEventFlowPanel.classList.add("is-hidden");
-      if (els.adminRegisteredEnsemblesSection) {
-        els.adminRegisteredEnsemblesSection.classList.toggle("is-hidden", showSchoolDetail);
-      }
-      if (els.adminScheduleSection) {
-        els.adminScheduleSection.classList.toggle("is-hidden", showSchoolDetail);
-      }
-      if (els.adminSchoolDetailSection) {
-        els.adminSchoolDetailSection.classList.toggle("is-hidden", !showSchoolDetail);
-      }
-      if (showSchoolDetail) {
-        if (heavyLoaded) {
-          renderAdminSchoolDetail();
-        } else if (els.adminSchoolDetailHint) {
-          els.adminSchoolDetailHint.textContent = "Safe mode active. Click \"Load This View\" to load school details.";
-        }
-      } else if (heavyLoaded) {
-        renderRegisteredEnsemblesList();
-      } else {
-        if (els.adminRegisteredEnsemblesList) {
-          els.adminRegisteredEnsemblesList.innerHTML =
-            "<li class='hint'>Safe mode: click \"Load This View\" to fetch full Pre-Event data.</li>";
-        }
-      }
-    }
-  }
-  if (els.adminViewPackets) {
-    els.adminViewPackets.classList.toggle("is-hidden", !showPackets);
-    if (showPackets) {
-      renderAdminPacketsBySchedule();
-    }
-  }
-  if (els.adminPacketsMockPreviewBtn) {
-    const isAdmin = getEffectiveRole(state.auth.userProfile) === "admin";
-    els.adminPacketsMockPreviewBtn.style.display = isAdmin ? "inline-flex" : "none";
-  }
-  if (els.adminViewDirectory) {
-    els.adminViewDirectory.classList.toggle("is-hidden", !showDirectory);
-  }
-  if (els.adminSubnavChairBtn) {
-    els.adminSubnavChairBtn.classList.toggle("is-hidden", !isAdminLiveEventEnabled());
-    els.adminSubnavChairBtn.setAttribute("aria-selected", showLiveEvent ? "true" : "false");
-  }
-  if (els.adminSubnavEventChairBtn) {
-    els.adminSubnavEventChairBtn.setAttribute("aria-selected", showPreEvent ? "true" : "false");
-  }
-  if (els.adminSubnavPacketsBtn) {
-    els.adminSubnavPacketsBtn.setAttribute("aria-selected", showPackets ? "true" : "false");
-  }
-  if (els.adminSubnavDirectoryBtn) {
-    els.adminSubnavDirectoryBtn.classList.toggle("is-hidden", !isAdminDirectoryEnabled());
-    els.adminSubnavDirectoryBtn.setAttribute("aria-selected", showDirectory ? "true" : "false");
-  }
+  return getAdminViewController().applyAdminView(view);
 }
 
 function updateTabUI(tabName, role) {
@@ -1906,7 +1892,6 @@ export function stopWatchers() {
   if (state.subscriptions.scheduleEnsembles) state.subscriptions.scheduleEnsembles();
   if (state.subscriptions.openPackets) state.subscriptions.openPackets();
   if (state.subscriptions.openSessions) state.subscriptions.openSessions();
-  if (state.subscriptions.openPacketsAdmin) state.subscriptions.openPacketsAdmin();
   if (state.subscriptions.schools) state.subscriptions.schools();
   state.subscriptions.events = null;
   state.subscriptions.activeEvent = null;
@@ -1925,7 +1910,6 @@ export function stopWatchers() {
   state.subscriptions.scheduleEnsembles = null;
   state.subscriptions.openPackets = null;
   state.subscriptions.openSessions = null;
-  state.subscriptions.openPacketsAdmin = null;
   state.subscriptions.schools = null;
   state.admin.lastRosterEventId = "";
 }
@@ -1933,7 +1917,7 @@ export function stopWatchers() {
 export function startWatchers() {
   stopWatchers();
   const liveEnabled = isAdminLiveEventEnabled();
-  const directoryEnabled = isAdminDirectoryEnabled();
+  const settingsEnabled = isAdminSettingsEnabled();
   const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
   const onRosterUpdate = (entries) => {
     if (state.app.currentTab !== "admin") return;
@@ -1965,7 +1949,9 @@ export function startWatchers() {
     watchRoster(onRosterUpdate);
   };
   watchEvents(() => {
-    if (directoryEnabled) renderEventList();
+    if (settingsEnabled && state.app.currentTab === "admin" && state.admin.currentView === "settings") {
+      renderEventList();
+    }
     if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent" && !isAdminSchoolDetailOpen()) {
       if (isAdminHeavyViewLoaded("preEvent")) renderRegisteredEnsemblesList();
     }
@@ -2022,7 +2008,7 @@ export function startWatchers() {
   startActiveAssignmentsWatcher();
   syncRosterWatcherForActiveEvent();
   watchSchools(() => {
-    if (directoryEnabled) {
+    if (settingsEnabled && state.app.currentTab === "admin" && state.admin.currentView === "settings") {
       renderAdminSchoolsDirectory();
       renderDirectorAssignmentsDirectory();
       if (
@@ -2061,10 +2047,12 @@ export function startWatchers() {
       }
     }
   });
-  if (directoryEnabled) {
+  if (settingsEnabled) {
     watchDirectors((directors) => {
       state.admin.directorsList = directors;
-      renderDirectorAssignmentsDirectory();
+      if (state.app.currentTab === "admin" && state.admin.currentView === "settings") {
+        renderDirectorAssignmentsDirectory();
+      }
     });
   }
 
@@ -2080,9 +2068,6 @@ export function startWatchers() {
   if (judgeEnabled && getEffectiveRole(state.auth.userProfile) === "admin") {
     watchJudges((judges) => {
       renderJudgeOptions(judges);
-    });
-    state.subscriptions.openPacketsAdmin = watchOpenPacketsAdmin((packets) => {
-      renderAdminOpenPackets(packets || []);
     });
   }
 }
@@ -3152,175 +3137,6 @@ function updateTapePlayback(sessions) {
   if (els.judgeOpenTapePlayback.src !== playlist[bounded].url) {
     els.judgeOpenTapePlayback.src = playlist[bounded].url;
   }
-}
-
-export function renderAdminOpenPackets(packets) {
-  if (!els.adminOpenPacketsList) return;
-  els.adminOpenPacketsList.innerHTML = "";
-  if (!packets.length) {
-    if (els.adminOpenPacketsHint) {
-      els.adminOpenPacketsHint.textContent = "No open packets yet.";
-    }
-    return;
-  }
-  if (els.adminOpenPacketsHint) {
-    els.adminOpenPacketsHint.textContent = "";
-  }
-  packets.forEach((packet) => {
-    const item = document.createElement("li");
-    item.className = "list-item";
-    const meta = document.createElement("div");
-    meta.className = "stack";
-    const title = document.createElement("strong");
-    const school = packet.schoolName || packet.schoolId || "Unknown school";
-    const ensemble = packet.ensembleName || packet.ensembleId || "Unknown ensemble";
-    const creator =
-      packet.createdByJudgeName ||
-      packet.createdByJudgeEmail ||
-      packet.createdByJudgeUid ||
-      "Unknown judge";
-    const assignmentEventId = packet.assignmentEventId || "";
-    const linkedEvent = assignmentEventId
-      ? state.event.list.find((event) => event.id === assignmentEventId)
-      : null;
-    const eventLabel = linkedEvent?.name || assignmentEventId || "Open (no event)";
-    title.textContent = `${school} - ${ensemble}`;
-    const detail = document.createElement("div");
-    detail.className = "note";
-    const judgePositionLabel =
-      JUDGE_POSITION_LABELS[packet.judgePosition] || (packet.judgePosition ? packet.judgePosition : "Unassigned");
-    detail.textContent =
-      `Status: ${packet.status || "draft"} - Judge: ${creator} - Slot: ${judgePositionLabel} - Event: ${eventLabel}`;
-    meta.appendChild(title);
-    meta.appendChild(detail);
-    item.appendChild(meta);
-
-    const actions = document.createElement("div");
-    actions.className = "actions";
-
-    const slotSelect = document.createElement("select");
-    slotSelect.className = "ghost";
-    [
-      { value: "", label: "No Slot" },
-      { value: JUDGE_POSITIONS.stage1, label: "Stage 1" },
-      { value: JUDGE_POSITIONS.stage2, label: "Stage 2" },
-      { value: JUDGE_POSITIONS.stage3, label: "Stage 3" },
-      { value: JUDGE_POSITIONS.sight, label: "Sight" },
-    ].forEach(({ value, label }) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      slotSelect.appendChild(option);
-    });
-    slotSelect.value = packet.judgePosition || "";
-    actions.appendChild(slotSelect);
-
-    const slotBtn = document.createElement("button");
-    slotBtn.className = "ghost";
-    slotBtn.textContent = "Save Slot";
-    slotBtn.disabled = packet.status === "released";
-    if (packet.status === "released") {
-      slotBtn.title = "Revoke packet before changing judge slot.";
-    }
-    slotBtn.addEventListener("click", async () => {
-      try {
-        await setOpenPacketJudgePosition({
-          packetId: packet.id,
-          judgePosition: slotSelect.value || "",
-          assignmentEventId: state.event.active?.id || packet.assignmentEventId || "",
-        });
-      } catch (error) {
-        console.error("Set open packet judge slot failed", error);
-        alertUser(error?.message || "Unable to update judge slot.");
-      }
-    });
-    actions.appendChild(slotBtn);
-
-    const lockBtn = document.createElement("button");
-    const isLocked = Boolean(packet.locked);
-    lockBtn.textContent = isLocked ? "Unlock" : "Lock";
-    lockBtn.className = "ghost";
-    lockBtn.addEventListener("click", async () => {
-      if (isLocked) {
-        await unlockOpenPacket({ packetId: packet.id });
-      } else {
-        await lockOpenPacket({ packetId: packet.id });
-      }
-    });
-    actions.appendChild(lockBtn);
-
-    const releaseBtn = document.createElement("button");
-    releaseBtn.className = "ghost";
-    const isReleased = packet.status === "released";
-    releaseBtn.textContent = isReleased ? "Revoke" : "Release";
-    releaseBtn.disabled = !isReleased && !isLocked;
-    if (!isReleased && !isLocked) {
-      releaseBtn.title = "Lock packet before releasing.";
-    }
-    releaseBtn.addEventListener("click", async () => {
-      try {
-        if (isReleased) {
-          await unreleaseOpenPacket({ packetId: packet.id });
-          return;
-        }
-        await releaseOpenPacket({ packetId: packet.id });
-      } catch (error) {
-        console.error("Release/revoke open packet failed", error);
-        alertUser(error?.message || "Unable to update packet release state.");
-      }
-    });
-    actions.appendChild(releaseBtn);
-
-    const packetPanel = document.createElement("div");
-    packetPanel.className = "packet-panel is-hidden";
-
-    const canViewPacket = Boolean(packet.ensembleId);
-    const viewBtn = document.createElement("button");
-    viewBtn.className = "ghost";
-    viewBtn.textContent = "View Packet";
-    if (!canViewPacket) {
-      viewBtn.disabled = true;
-      viewBtn.title = "Link this packet to an ensemble before viewing.";
-    }
-    const packetEntry = {
-      ensembleId: packet.ensembleId || "",
-      schoolId: packet.schoolId || "",
-    };
-    const packetEventId = packet.assignmentEventId || state.event.active?.id || "";
-    viewBtn.addEventListener("click", async () => {
-      if (!canViewPacket || !packetEventId) return;
-      const isHidden = packetPanel.classList.contains("is-hidden");
-      if (isHidden) {
-        packetPanel.classList.remove("is-hidden");
-        viewBtn.textContent = "Hide Packet";
-        await loadAdminPacketView(packetEntry, packetPanel, packetEventId);
-      } else {
-        packetPanel.classList.add("is-hidden");
-        viewBtn.textContent = "View Packet";
-      }
-    });
-    actions.appendChild(viewBtn);
-
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "ghost";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", async () => {
-      const label = `${school} - ${ensemble}`;
-      if (!confirmUser(`Delete open packet for ${label}? This removes packet audio and sessions.`)) {
-        return;
-      }
-      try {
-        await deleteOpenPacket({ packetId: packet.id });
-      } catch (error) {
-        console.error("Delete open packet failed", error);
-        alertUser("Unable to delete open packet. Check console for details.");
-      }
-    });
-    actions.appendChild(deleteBtn);
-    item.appendChild(actions);
-    item.appendChild(packetPanel);
-    els.adminOpenPacketsList.appendChild(item);
-  });
 }
 
 export function setStageJudgeSelectValues({
@@ -5417,657 +5233,12 @@ export async function refreshSchedulerTimeline(override) {
   }
 }
 
-async function renderChairRegisteredEnsembles(eventId) {
-  if (!els.chairRegisteredEnsemblesList) return;
-  els.chairRegisteredEnsemblesList.innerHTML = "";
-  if (!eventId) return;
-  try {
-    const registered = await fetchRegisteredEnsembles(eventId);
-    if (!registered.length) {
-      els.chairRegisteredEnsemblesList.innerHTML =
-        "<li class='hint'>No ensembles have registered yet.</li>";
-      return;
-    }
-    const scheduledIds = new Set(
-      (state.event.rosterEntries || []).map((e) => e.ensembleId)
-    );
-    registered.forEach((entry) => {
-      const schoolName = getSchoolNameById(state.admin.schoolsList, entry.schoolId);
-      const ensembleName = normalizeEnsembleDisplayName({
-        schoolName,
-        ensembleName: entry.ensembleName || "",
-        ensembleId: entry.ensembleId || entry.id,
-      });
-      const grade = entry.declaredGradeLevel || "—";
-      const isScheduled = scheduledIds.has(entry.ensembleId || entry.id);
-      const li = document.createElement("li");
-      const top = document.createElement("div");
-      const strong = document.createElement("strong");
-      strong.textContent = formatSchoolEnsembleLabel({
-        schoolName,
-        ensembleName,
-        ensembleId: entry.ensembleId || entry.id,
-      });
-      top.appendChild(strong);
-      if (isScheduled) {
-        const badge = document.createElement("span");
-        badge.className = "badge";
-        badge.textContent = "Scheduled";
-        badge.style.marginLeft = "0.5rem";
-        badge.style.fontSize = "0.75rem";
-        top.appendChild(badge);
-      }
-      const details = document.createElement("div");
-      details.className = "hint";
-      details.textContent = `Grade ${grade}`;
-      li.appendChild(top);
-      li.appendChild(details);
-      els.chairRegisteredEnsemblesList.appendChild(li);
-    });
-  } catch (err) {
-    console.error("renderChairRegisteredEnsembles failed", err);
-  }
-}
-
 async function renderLiveEventCheckinQueue() {
-  if (!els.liveEventContent) return;
-  const eventId = state.event.active?.id || "";
-  const eventName = state.event.active?.name || "Active Event";
-  if (!eventId) {
-    els.liveEventContent.innerHTML = "<p class='hint'>Set an active event to view Check-in Queue.</p>";
-    return;
-  }
-  els.liveEventContent.innerHTML = "<p class='hint'>Loading check-in queue...</p>";
-  try {
-    let warningText = "";
-    const schedEntries = await fetchScheduleEntries(eventId).catch((error) => {
-      console.warn("Live Event check-in: schedule unavailable", error);
-      warningText = "Schedule data is temporarily unavailable.";
-      return state.event.rosterEntries || [];
-    });
-    const regEntries = await fetchRegisteredEnsembles(eventId).catch((error) => {
-      console.warn("Live Event check-in: entry data unavailable", error);
-      warningText = warningText
-        ? `${warningText} Director entry data is partially unavailable.`
-        : "Director entry data is partially unavailable.";
-      return [];
-    });
-    const directorsSnap = await getDocs(
-      query(
-        collection(db, COLLECTIONS.users),
-        where(FIELDS.users.role, "==", "director")
-      )
-    ).catch((error) => {
-      console.warn("Live Event check-in: unable to read director profiles; continuing without NAfME detail", error);
-      warningText = warningText
-        ? `${warningText} NAfME details unavailable.`
-        : "NAfME details unavailable.";
-      return null;
-    });
-    const entryMap = new Map((regEntries || []).map((entry) => [entry.ensembleId || entry.id, entry]));
-    const directorsBySchool = new Map();
-    directorsSnap?.forEach((snap) => {
-      const data = snap.data() || {};
-      const schoolId = data.schoolId || "";
-      if (!schoolId || directorsBySchool.has(schoolId)) return;
-      directorsBySchool.set(schoolId, {
-        uid: snap.id,
-        displayName: data.displayName || "",
-        email: data.email || "",
-        nafmeMembershipNumber: data.nafmeMembershipNumber || "",
-        nafmeMembershipExp: data.nafmeMembershipExp || null,
-        nafmeCardImageUrl: data.nafmeCardImageUrl || "",
-        cellPhone: data.cellPhone || "",
-      });
-    });
-    const rows = (schedEntries || []).map((sched) => {
-      const ensembleId = sched.ensembleId || sched.id;
-      const reg = entryMap.get(ensembleId) || {};
-      const schoolId = sched.schoolId || reg.schoolId || "";
-      const directorProfile = directorsBySchool.get(schoolId) || {};
-      const schoolName = sched.schoolName || reg.schoolName || getSchoolNameById(state.admin.schoolsList, reg.schoolId) || "—";
-      const ensembleName = normalizeEnsembleDisplayName({
-        schoolName,
-        ensembleName: sched.ensembleName || reg.ensembleName || "",
-        ensembleId,
-      }) || "—";
-      const grade = reg.declaredGradeLevel || reg.performanceGrade || "—";
-      const perfAt = toDateOrNull(sched.performanceAt);
-      const checkin = computeEnsembleCheckinStatus({ entry: reg, directorProfile });
-      return {
-        ensembleId,
-        schoolId,
-        schoolName,
-        ensembleName,
-        grade,
-        performanceAt: perfAt,
-        entry: reg,
-        directorProfile,
-        checkin,
-        checkedIn: checkin.checkedIn,
-      };
-    }).sort((a, b) => {
-      const aTime = a.performanceAt?.getTime?.() || 0;
-      const bTime = b.performanceAt?.getTime?.() || 0;
-      return aTime - bTime;
-    });
-
-    if (!rows.length) {
-      els.liveEventContent.innerHTML = `<p class='hint'>${escapeHtml(eventName)} has no scheduled ensembles yet.</p>`;
-      return;
-    }
-
-    const allowedFilters = new Set(["all", "not-checked-in", "checked-in"]);
-    const currentFilter = allowedFilters.has(state.admin.liveEventCheckinFilter)
-      ? state.admin.liveEventCheckinFilter
-      : "all";
-    state.admin.liveEventCheckinFilter = currentFilter;
-    const filteredRows = rows.filter((row) => {
-      if (currentFilter === "not-checked-in") return !row.checkedIn;
-      if (currentFilter === "checked-in") return row.checkedIn;
-      return true;
-    });
-
-    const wrap = document.createElement("div");
-    wrap.className = "stack";
-    const topRow = document.createElement("div");
-    topRow.className = "row row--between";
-    const meta = document.createElement("div");
-    meta.className = "note";
-    meta.textContent = `Check-in Queue · ${eventName}`;
-    topRow.appendChild(meta);
-    const filter = document.createElement("select");
-    filter.innerHTML = `
-      <option value="all">All</option>
-      <option value="not-checked-in">Not Checked In</option>
-      <option value="checked-in">Checked In</option>
-    `;
-    filter.value = currentFilter;
-    filter.addEventListener("change", () => {
-      state.admin.liveEventCheckinFilter = filter.value || "all";
-      renderLiveEventCheckinQueue();
-    });
-    topRow.appendChild(filter);
-    wrap.appendChild(topRow);
-    if (warningText) {
-      const warn = document.createElement("div");
-      warn.className = "hint";
-      warn.textContent = warningText;
-      wrap.appendChild(warn);
-    }
-    if (!filteredRows.length) {
-      const empty = document.createElement("p");
-      empty.className = "hint";
-      empty.textContent = "No ensembles match this filter.";
-      wrap.appendChild(empty);
-      renderLiveEventStageSetup(wrap, rows);
-      els.liveEventContent.innerHTML = "";
-      els.liveEventContent.appendChild(wrap);
-      return;
-    }
-    const tableWrap = document.createElement("div");
-    tableWrap.className = "schedule-timeline-table-wrap";
-    const table = document.createElement("table");
-    table.className = "schedule-timeline-table";
-    table.innerHTML = `
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>School</th>
-          <th>Ensemble</th>
-          <th>Grade</th>
-          <th>Checked In</th>
-          <th></th>
-        </tr>
-      </thead>
-    `;
-    const tbody = document.createElement("tbody");
-    filteredRows.forEach((row) => {
-      const tr = document.createElement("tr");
-      const statusLabel = row.checkedIn
-        ? "✓"
-        : `${[
-            row.checkin.nafmeValid,
-            row.checkin.scoresReceived,
-            row.checkin.changesReviewed,
-            row.checkin.lunchConfirmed,
-          ].filter(Boolean).length}/${row.checkin.lunchRequired ? 4 : 3}`;
-      tr.innerHTML = `
-        <td>${escapeHtml(formatStartTime(row.performanceAt))}</td>
-        <td>${escapeHtml(row.schoolName)}</td>
-        <td>${escapeHtml(row.ensembleName)}</td>
-        <td>${escapeHtml(row.grade)}</td>
-        <td>${escapeHtml(statusLabel)}</td>
-      `;
-      const actionsTd = document.createElement("td");
-      const manageBtn = document.createElement("button");
-      manageBtn.type = "button";
-      manageBtn.className = "ghost live-checkin-manage-btn";
-      manageBtn.dataset.ensembleId = row.ensembleId;
-      manageBtn.textContent = "Check In";
-      actionsTd.appendChild(manageBtn);
-      tr.appendChild(actionsTd);
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    tableWrap.appendChild(table);
-    wrap.appendChild(tableWrap);
-    renderLiveEventStageSetup(wrap, rows);
-    els.liveEventContent.innerHTML = "";
-    els.liveEventContent.appendChild(wrap);
-    const rowMap = new Map(filteredRows.map((row) => [row.ensembleId, row]));
-    els.liveEventContent.querySelectorAll(".live-checkin-manage-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const row = rowMap.get(btn.dataset.ensembleId || "");
-        if (row) openLiveEventCheckinModal(row);
-      });
-    });
-  } catch (error) {
-    console.error("renderLiveEventCheckinQueue failed", error);
-    const message = error?.message || error?.code || "unknown error";
-    els.liveEventContent.innerHTML = `<p class='hint'>Unable to load check-in queue right now. (${escapeHtml(String(message))})</p>`;
-  }
-}
-
-function renderLiveEventStageSetup(parent, rows) {
-  if (!parent || !Array.isArray(rows) || !rows.length) return;
-
-  const panel = document.createElement("div");
-  panel.className = "panel stack";
-  const title = document.createElement("h4");
-  title.textContent = "Stage Setup View";
-  const hint = document.createElement("p");
-  hint.className = "hint";
-  hint.textContent = "Select Band On Stage and Next Band to view setup changes at a glance, including percussion.";
-  panel.appendChild(title);
-  panel.appendChild(hint);
-
-  const controls = document.createElement("div");
-  controls.className = "row";
-  const currentLabel = document.createElement("label");
-  currentLabel.className = "grow";
-  currentLabel.textContent = "Band On Stage";
-  const currentSelect = document.createElement("select");
-  currentLabel.appendChild(currentSelect);
-  const nextLabel = document.createElement("label");
-  nextLabel.className = "grow";
-  nextLabel.textContent = "Next Band";
-  const nextSelect = document.createElement("select");
-  nextLabel.appendChild(nextSelect);
-  controls.appendChild(currentLabel);
-  controls.appendChild(nextLabel);
-  panel.appendChild(controls);
-
-  const status = document.createElement("div");
-  status.className = "note";
-  panel.appendChild(status);
-
-  const content = document.createElement("div");
-  content.className = "stack";
-  panel.appendChild(content);
-
-  const sortedRows = [...rows].sort((a, b) => {
-    const aTime = a.performanceAt?.getTime?.() || 0;
-    const bTime = b.performanceAt?.getTime?.() || 0;
-    return aTime - bTime;
-  });
-  const toLabel = (row) =>
-    `${formatStartTime(row.performanceAt)} - ${formatSchoolEnsembleLabel({
-      schoolName: row.schoolName,
-      ensembleName: row.ensembleName,
-      ensembleId: row.ensembleId,
-    })}`;
-
-  const fillSelect = (select, selectedId) => {
-    select.innerHTML = "";
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select an ensemble";
-    select.appendChild(placeholder);
-    sortedRows.forEach((row) => {
-      const option = document.createElement("option");
-      option.value = row.ensembleId;
-      option.textContent = toLabel(row);
-      select.appendChild(option);
-    });
-    if (selectedId && sortedRows.some((row) => row.ensembleId === selectedId)) {
-      select.value = selectedId;
-    }
-  };
-
-  const defaultCurrent = sortedRows[0]?.ensembleId || "";
-  const defaultNext = sortedRows[1]?.ensembleId || defaultCurrent;
-  state.admin.liveEventStageCurrentEnsembleId =
-    state.admin.liveEventStageCurrentEnsembleId || defaultCurrent;
-  state.admin.liveEventStageNextEnsembleId =
-    state.admin.liveEventStageNextEnsembleId || defaultNext;
-
-  fillSelect(currentSelect, state.admin.liveEventStageCurrentEnsembleId);
-  fillSelect(nextSelect, state.admin.liveEventStageNextEnsembleId);
-
-  const renderDetail = () => {
-    const currentId = currentSelect.value || "";
-    const nextId = nextSelect.value || "";
-    state.admin.liveEventStageCurrentEnsembleId = currentId;
-    state.admin.liveEventStageNextEnsembleId = nextId;
-    content.innerHTML = "";
-
-    if (!currentId || !nextId) {
-      status.textContent = "Choose both ensembles to view stage setup.";
-      return;
-    }
-    const currentRow = sortedRows.find((row) => row.ensembleId === currentId);
-    const nextRow = sortedRows.find((row) => row.ensembleId === nextId);
-    if (!currentRow || !nextRow) {
-      status.textContent = "Unable to load one or both selected ensembles.";
-      return;
-    }
-
-    status.textContent = "Showing at-a-glance setup and changeover diff.";
-    content.appendChild(buildAdminLogisticsEntryPanel(currentRow.entry || {}, "Band On Stage"));
-    content.appendChild(buildAdminLogisticsEntryPanel(nextRow.entry || {}, "Next Band"));
-    content.appendChild(buildAdminLogisticsDiffPanel(currentRow.entry || {}, nextRow.entry || {}));
-  };
-
-  currentSelect.addEventListener("change", renderDetail);
-  nextSelect.addEventListener("change", renderDetail);
-  renderDetail();
-
-  parent.appendChild(panel);
+  return getAdminLiveRenderers().renderLiveEventCheckinQueue();
 }
 
 function closeLiveEventCheckinModal() {
-  if (!els.liveEventCheckinModal) return;
-  els.liveEventCheckinModal.classList.remove("is-open");
-  els.liveEventCheckinModal.setAttribute("aria-hidden", "true");
-  if (els.liveEventCheckinBody) els.liveEventCheckinBody.innerHTML = "";
-}
-
-function formatDateShort(dateLike) {
-  const d = toDateOrNull(dateLike);
-  if (!d) return "—";
-  return d.toLocaleDateString();
-}
-
-function renderLiveEventCheckinModalBody(row) {
-  if (!els.liveEventCheckinBody) return;
-  const checkin = computeEnsembleCheckinStatus({
-    entry: row.entry || {},
-    directorProfile: row.directorProfile || {},
-  });
-  const directorName =
-    row.directorProfile?.displayName ||
-    row.directorProfile?.email ||
-    "No director profile on file";
-  const nafmeNumber = row.directorProfile?.nafmeMembershipNumber || "—";
-  const nafmeExp = formatDateShort(row.directorProfile?.nafmeMembershipExp);
-  const cardUrl = row.directorProfile?.nafmeCardImageUrl || "";
-
-  els.liveEventCheckinBody.innerHTML = "";
-  const summary = document.createElement("div");
-  summary.className = "stack";
-  const nafmeStatusText = checkin.nafmeValidFromProfile
-    ? "Valid from profile ✓"
-    : checkin.nafmeManualVerified
-      ? "Manually verified at check-in ✓"
-      : "Missing/Expired";
-  summary.innerHTML = `
-    <div class="note"><strong>School:</strong> ${escapeHtml(row.schoolName)}</div>
-    <div class="note"><strong>Ensemble:</strong> ${escapeHtml(row.ensembleName)}</div>
-    <div class="note"><strong>Director:</strong> ${escapeHtml(directorName)}</div>
-    <div class="note"><strong>NAfME:</strong> ${escapeHtml(nafmeStatusText)}</div>
-    <div class="note"><strong>Membership #:</strong> ${escapeHtml(nafmeNumber)}</div>
-    <div class="note"><strong>Expiration:</strong> ${escapeHtml(nafmeExp)}</div>
-  `;
-  if (cardUrl) {
-    const openCardBtn = document.createElement("button");
-    openCardBtn.type = "button";
-    openCardBtn.className = "ghost";
-    openCardBtn.textContent = "View NAfME Card Image";
-    openCardBtn.addEventListener("click", () => {
-      window.open(cardUrl, "_blank", "noopener,noreferrer");
-    });
-    summary.appendChild(openCardBtn);
-  }
-  els.liveEventCheckinBody.appendChild(summary);
-
-  const checklist = document.createElement("div");
-  checklist.className = "stack";
-  const checks = [
-    {
-      key: "checkinNafmeManualVerified",
-      label: checkin.nafmeValidFromProfile
-        ? "NAfME membership verified (auto from profile)"
-        : "NAfME membership verified (manual override)",
-      checked: checkin.nafmeValid,
-      disabled: checkin.nafmeValidFromProfile,
-    },
-    {
-      key: "checkinScoresReceived",
-      label: "Judge scores received at registration",
-      checked: Boolean(row.entry?.checkinScoresReceived),
-    },
-    {
-      key: "checkinChangesReviewed",
-      label: "Director asked about ensemble changes",
-      checked: Boolean(row.entry?.checkinChangesReviewed),
-    },
-  ];
-  if (checkin.lunchRequired) {
-    checks.push({
-      key: "checkinLunchConfirmed",
-      label: "Lunch request confirmed with director",
-      checked: Boolean(row.entry?.checkinLunchConfirmed),
-    });
-  }
-
-  checks.forEach((item) => {
-    const label = document.createElement("label");
-    label.className = "admin-school-checkin-item";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = item.checked;
-    input.disabled = Boolean(item.disabled);
-    const span = document.createElement("span");
-    span.textContent = item.label;
-    input.addEventListener("change", async () => {
-      const nextVal = input.checked;
-      input.disabled = true;
-      try {
-        await updateEntryCheckinFields(state.event.active?.id, row.ensembleId, { [item.key]: nextVal });
-        row.entry = { ...(row.entry || {}), [item.key]: nextVal };
-        renderLiveEventCheckinModalBody(row);
-        renderLiveEventCheckinQueue();
-      } catch (error) {
-        console.error("Failed to save check-in field", error);
-        input.checked = !nextVal;
-      } finally {
-        input.disabled = false;
-      }
-    });
-    label.appendChild(input);
-    label.appendChild(span);
-    checklist.appendChild(label);
-  });
-  if (!checkin.lunchRequired) {
-    const lunchNote = document.createElement("div");
-    lunchNote.className = "hint";
-    lunchNote.textContent = "Lunch not requested for this ensemble.";
-    checklist.appendChild(lunchNote);
-  }
-
-  const result = document.createElement("div");
-  result.className = checkin.checkedIn ? "badge badge--success" : "badge";
-  result.textContent = checkin.checkedIn ? "Checked In ✓" : "Not Checked In";
-  checklist.appendChild(result);
-  els.liveEventCheckinBody.appendChild(checklist);
-}
-
-function openLiveEventCheckinModal(row) {
-  if (!els.liveEventCheckinModal) return;
-  if (els.liveEventCheckinTitle) {
-    els.liveEventCheckinTitle.textContent = `${row.schoolName} ${row.ensembleName}`;
-  }
-  renderLiveEventCheckinModalBody(row);
-  els.liveEventCheckinModal.classList.add("is-open");
-  els.liveEventCheckinModal.setAttribute("aria-hidden", "false");
-}
-
-export async function refreshChairDashboard() {
-  if (!els.adminChairMessage || !els.adminChairDashboardContainer) return;
-  const eventId = state.event.active?.id;
-  const roster = state.event.rosterEntries || [];
-
-  renderChairRegisteredEnsembles(eventId);
-
-  if (!eventId || !state.event.active) {
-    if (els.adminChairMessage) els.adminChairMessage.textContent = "Set an active event first.";
-    els.adminChairDashboardContainer.innerHTML = "";
-    return;
-  }
-  if (!roster.length) {
-    if (els.adminChairMessage) els.adminChairMessage.textContent = "Add bands to the schedule first.";
-    els.adminChairDashboardContainer.innerHTML = "";
-    return;
-  }
-
-  els.adminChairMessage.textContent = "Loading run sheet...";
-  els.adminChairDashboardContainer.innerHTML = "";
-
-  try {
-    const rows = await Promise.all(
-      roster.map(async (entry) => {
-        const [packetData, entryStatus] = await Promise.all([
-          getPacketData({ eventId, entry }),
-          fetchEntryStatus(eventId, entry.ensembleId),
-        ]);
-        const { grade, submissions, summary } = packetData;
-        return {
-          entry,
-          grade: grade || null,
-          submissions: submissions || {},
-          summary,
-          entryStatus: entryStatus || null,
-        };
-      })
-    );
-
-    els.adminChairMessage.textContent = "";
-
-    const table = document.createElement("table");
-    table.className = "schedule-timeline-table chair-dashboard-table";
-    table.setAttribute("role", "grid");
-    const thead = document.createElement("thead");
-    thead.innerHTML =
-      "<tr><th>Time</th><th>School</th><th>Ensemble</th><th>Grade</th><th>Entry</th><th>Stage 1</th><th>Stage 2</th><th>Stage 3</th><th>Sight</th><th>Issues</th><th>Actions</th></tr>";
-    table.appendChild(thead);
-    const tbody = document.createElement("tbody");
-
-    const positionOrder = [
-      JUDGE_POSITIONS.stage1,
-      JUDGE_POSITIONS.stage2,
-      JUDGE_POSITIONS.stage3,
-      JUDGE_POSITIONS.sight,
-    ];
-
-    rows.forEach(({ entry, grade, submissions, summary, entryStatus }) => {
-      const tr = document.createElement("tr");
-      const perfTime = formatPerformanceAt(entry.performanceAt);
-      const schoolName =
-        entry.schoolName || getSchoolNameById(state.admin.schoolsList, entry.schoolId) || entry.schoolId || "";
-      const ensembleName = normalizeEnsembleDisplayName({
-        schoolName,
-        ensembleName: entry.ensembleName || "",
-        ensembleId: entry.ensembleId || "",
-      });
-      const gradeLabel = grade || "—";
-      const entryLabel = entryStatus === "ready" ? "Ready" : "Draft";
-
-      const statusLabel = (sub) => {
-        if (!sub) return "—";
-        if (sub.status === STATUSES.released) return "Released";
-        if (sub.locked) return "Locked";
-        if (sub.status === STATUSES.submitted) return "Submitted";
-        return "Draft";
-      };
-
-      const requiredPositions = summary?.requiredPositions || positionOrder;
-      const issues = [];
-      if (!entryStatus || entryStatus !== "ready") issues.push("No entry / Draft");
-      if (summary && !summary.requiredComplete) issues.push("Missing or incomplete score(s)");
-      const issuesText = issues.length ? issues.join("; ") : "";
-
-      const actionCell = document.createElement("td");
-      const lockBtn = document.createElement("button");
-      lockBtn.type = "button";
-      lockBtn.className = "ghost";
-      lockBtn.textContent = "Lock packet";
-      const releaseBtn = document.createElement("button");
-      releaseBtn.type = "button";
-      releaseBtn.className = "ghost";
-      releaseBtn.textContent = "Release";
-      const unreleaseBtn = document.createElement("button");
-      unreleaseBtn.type = "button";
-      unreleaseBtn.className = "ghost";
-      unreleaseBtn.textContent = "Unrelease";
-
-      const canLock =
-        summary?.requiredComplete &&
-        requiredPositions.some((pos) => submissions[pos] && !submissions[pos].locked);
-      const canRelease = summary?.requiredComplete && summary?.requiredReleased === false;
-      const canUnrelease = summary?.requiredReleased === true;
-
-      lockBtn.disabled = !canLock;
-      releaseBtn.disabled = !canRelease;
-      unreleaseBtn.disabled = !canUnrelease;
-
-      lockBtn.addEventListener("click", async () => {
-        for (const pos of requiredPositions) {
-          if (submissions[pos] && !submissions[pos].locked) {
-            await lockSubmission({ eventId, ensembleId: entry.ensembleId, judgePosition: pos });
-          }
-        }
-        refreshChairDashboard();
-      });
-      releaseBtn.addEventListener("click", async () => {
-        await releasePacket({ eventId, ensembleId: entry.ensembleId });
-        refreshChairDashboard();
-      });
-      unreleaseBtn.addEventListener("click", async () => {
-        await unreleasePacket({ eventId, ensembleId: entry.ensembleId });
-        refreshChairDashboard();
-      });
-
-      actionCell.appendChild(lockBtn);
-      actionCell.appendChild(releaseBtn);
-      actionCell.appendChild(unreleaseBtn);
-
-      tr.innerHTML = `
-        <td>${escapeHtml(perfTime || "—")}</td>
-        <td>${escapeHtml(schoolName)}</td>
-        <td>${escapeHtml(ensembleName)}</td>
-        <td>${escapeHtml(gradeLabel)}</td>
-        <td>${escapeHtml(entryLabel)}</td>
-        <td>${escapeHtml(statusLabel(submissions.stage1))}</td>
-        <td>${escapeHtml(statusLabel(submissions.stage2))}</td>
-        <td>${escapeHtml(statusLabel(submissions.stage3))}</td>
-        <td>${escapeHtml(statusLabel(submissions.sight))}</td>
-        <td>${escapeHtml(issuesText)}</td>
-      `;
-      tr.appendChild(actionCell);
-
-      tbody.appendChild(tr);
-    });
-
-    table.appendChild(tbody);
-    const dashWrap = document.createElement("div");
-    dashWrap.className = "schedule-timeline-table-wrap";
-    dashWrap.appendChild(table);
-    els.adminChairDashboardContainer.appendChild(dashWrap);
-  } catch (error) {
-    console.error("refreshChairDashboard failed", error);
-    els.adminChairMessage.textContent = "Unable to load run sheet. Check console.";
-  }
+  return getAdminLiveRenderers().closeLiveEventCheckinModal();
 }
 
 export async function refreshStageView() {
@@ -6231,9 +5402,6 @@ export function renderAdminScheduleList(entries) {
   renderAdminSchedule({ entries });
 }
 
-let registeredRenderInFlight = false;
-let registeredRenderQueued = false;
-
 function formatAdminDayOfReadOnly(entryData = {}) {
   if (!entryData || typeof entryData !== "object") {
     return "No day-of information saved yet.";
@@ -6284,443 +5452,15 @@ async function openDirectorDayOfFromAdmin({ eventId, schoolId, ensembleId }) {
 }
 
 async function renderAdminSchoolDetail() {
-  if (adminSchoolDetailRenderInFlight) {
-    adminSchoolDetailRenderQueued = true;
-    return;
-  }
-  adminSchoolDetailRenderInFlight = true;
-  try {
-    if (!els.adminSchoolDetailList || !els.adminSchoolDetailTitle || !els.adminSchoolDetailMeta || !els.adminSchoolDetailHint) return;
-    const eventId = state.event.active?.id || "";
-    const schoolId = state.admin.selectedSchoolId || "";
-    if (!eventId || !schoolId) {
-      closeAdminSchoolDetail();
-      return;
-    }
-
-    const schoolName = state.admin.selectedSchoolName || getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
-    els.adminSchoolDetailTitle.textContent = `${schoolName} - Scheduling & Day-of`;
-    els.adminSchoolDetailMeta.textContent = `Event: ${state.event.active?.name || "Active Event"}`;
-    els.adminSchoolDetailHint.textContent = "Read-only day-of snapshot appears below each ensemble. Use \"Open in Director\" to edit.";
-    els.adminSchoolDetailList.innerHTML = "";
-
-    const [registered, scheduleEntries, entriesSnap] = await Promise.all([
-      fetchRegisteredEnsembles(eventId),
-      fetchScheduleEntries(eventId),
-      getDocs(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries)),
-    ]);
-    const stale =
-      state.admin.currentView !== "preEvent" ||
-      (state.event.active?.id || "") !== eventId ||
-      state.admin.selectedSchoolId !== schoolId;
-    if (stale) return;
-    const schoolEnsembles = registered.filter((entry) => (entry.schoolId || "") === schoolId);
-    if (!schoolEnsembles.length) {
-      els.adminSchoolDetailList.innerHTML = "<li class='hint'>No registered ensembles for this school.</li>";
-      return;
-    }
-    const scheduleByEnsemble = new Map((scheduleEntries || []).map((row) => [row.ensembleId || row.id, row]));
-    const entryDataByEnsemble = new Map();
-    entriesSnap.forEach((snap) => {
-      if (!snap?.exists()) return;
-      entryDataByEnsemble.set(snap.id, snap.data());
-    });
-
-    for (const entry of schoolEnsembles) {
-      const ensembleId = entry.ensembleId || entry.id;
-      if (!ensembleId) continue;
-      const ensembleName = normalizeEnsembleDisplayName({
-        schoolName,
-        ensembleName: entry.ensembleName || "",
-        ensembleId,
-      });
-      const scheduleEntry = scheduleByEnsemble.get(ensembleId);
-      const perfValue = scheduleEntry?.performanceAt
-        ? toLocalDatetimeValue(
-            scheduleEntry.performanceAt.toDate
-              ? scheduleEntry.performanceAt.toDate()
-              : new Date(scheduleEntry.performanceAt)
-          )
-        : "";
-      const entryData = entryDataByEnsemble.get(ensembleId) || null;
-
-      const li = document.createElement("li");
-      li.className = "panel";
-      const header = document.createElement("div");
-      header.className = "row row--between";
-      const title = document.createElement("strong");
-      title.textContent = ensembleName;
-      const meta = document.createElement("span");
-      meta.className = "badge";
-      meta.textContent = `Grade ${entry.declaredGradeLevel || "—"}`;
-      header.appendChild(title);
-      header.appendChild(meta);
-      li.appendChild(header);
-
-      const scheduleRow = document.createElement("div");
-      scheduleRow.className = "row";
-      const scheduleInput = document.createElement("input");
-      scheduleInput.type = "datetime-local";
-      scheduleInput.value = perfValue;
-      const scheduleSave = document.createElement("button");
-      scheduleSave.type = "button";
-      scheduleSave.className = "ghost";
-      scheduleSave.textContent = "Save Performance Time";
-      scheduleSave.addEventListener("click", async () => {
-        const raw = scheduleInput.value;
-        if (!raw) {
-          alertUser("Enter a performance date and time.");
-          return;
-        }
-        const nextDate = new Date(raw);
-        if (Number.isNaN(nextDate.getTime())) {
-          alertUser("Invalid date/time.");
-          return;
-        }
-        scheduleSave.disabled = true;
-        try {
-          if (scheduleEntry) {
-            await updateScheduleEntryTime({ eventId, entryId: scheduleEntry.id, nextDate });
-          } else {
-            await createScheduleEntry({
-              eventId,
-              performanceAtDate: nextDate,
-              schoolId,
-              ensembleId,
-              ensembleName,
-            });
-          }
-          await renderAdminSchoolDetail();
-          await renderRegisteredEnsemblesList();
-        } finally {
-          scheduleSave.disabled = false;
-        }
-      });
-      scheduleRow.appendChild(scheduleInput);
-      scheduleRow.appendChild(scheduleSave);
-      li.appendChild(scheduleRow);
-
-      const readOnly = document.createElement("div");
-      readOnly.className = "note";
-      readOnly.textContent = formatAdminDayOfReadOnly(entryData);
-      li.appendChild(readOnly);
-
-      const actions = document.createElement("div");
-      actions.className = "row";
-      const openDirectorBtn = document.createElement("button");
-      openDirectorBtn.type = "button";
-      openDirectorBtn.className = "ghost";
-      openDirectorBtn.textContent = "Open in Director Day-of";
-      openDirectorBtn.addEventListener("click", async () => {
-        openDirectorBtn.disabled = true;
-        try {
-          await openDirectorDayOfFromAdmin({ eventId, schoolId, ensembleId });
-        } finally {
-          openDirectorBtn.disabled = false;
-        }
-      });
-      actions.appendChild(openDirectorBtn);
-      li.appendChild(actions);
-
-      els.adminSchoolDetailList.appendChild(li);
-    }
-  } finally {
-    adminSchoolDetailRenderInFlight = false;
-    if (adminSchoolDetailRenderQueued) {
-      adminSchoolDetailRenderQueued = false;
-      queueMicrotask(() => {
-        renderAdminSchoolDetail();
-      });
-    }
-  }
+  return getAdminRenderers().renderAdminSchoolDetail();
 }
 
 async function renderAdminPacketsBySchedule() {
-  if (adminPacketsRenderInFlight) {
-    adminPacketsRenderQueued = true;
-    return;
-  }
-  adminPacketsRenderInFlight = true;
-  try {
-    if (!els.adminPacketsList || !els.adminPacketsHint || !els.adminPacketsSchoolSelect) return;
-    const eventId = state.event.active?.id || "";
-    if (!eventId) {
-      els.adminPacketsHint.textContent = "Set an active event to begin.";
-      els.adminPacketsList.innerHTML = "";
-      els.adminPacketsSchoolSelect.innerHTML = "";
-      return;
-    }
-    els.adminPacketsHint.textContent = "Loading scheduled ensembles...";
-    els.adminPacketsList.innerHTML = "";
-
-    const scheduleEntries = await fetchScheduleEntries(eventId);
-    if (state.admin.currentView !== "packets" || (state.event.active?.id || "") !== eventId) return;
-
-    const ordered = [...(scheduleEntries || [])].sort((a, b) => {
-      const aMs = a.performanceAt?.toDate ? a.performanceAt.toDate().getTime() : 0;
-      const bMs = b.performanceAt?.toDate ? b.performanceAt.toDate().getTime() : 0;
-      return aMs - bMs;
-    });
-    if (!ordered.length) {
-      els.adminPacketsHint.textContent = "No scheduled ensembles for the active event.";
-      els.adminPacketsSchoolSelect.innerHTML = "";
-      return;
-    }
-
-    const schools = [];
-    const seenSchoolIds = new Set();
-    ordered.forEach((entry) => {
-      const schoolId = String(entry.schoolId || "").trim();
-      if (!schoolId || seenSchoolIds.has(schoolId)) return;
-      seenSchoolIds.add(schoolId);
-      const schoolName =
-        entry.schoolName || getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
-      schools.push({ schoolId, schoolName });
-    });
-    schools.sort((a, b) => String(a.schoolName || "").localeCompare(String(b.schoolName || "")));
-
-    const previous = state.admin.packetsSchoolId || "";
-    const validSelection =
-      previous && schools.some((item) => item.schoolId === previous) ? previous : "";
-    state.admin.packetsSchoolId = validSelection;
-
-    const previousDomValue = els.adminPacketsSchoolSelect.value || "";
-    if (previousDomValue !== validSelection || els.adminPacketsSchoolSelect.options.length !== schools.length + 1) {
-      els.adminPacketsSchoolSelect.innerHTML = "";
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Select a school";
-      els.adminPacketsSchoolSelect.appendChild(placeholder);
-      schools.forEach((item) => {
-        const option = document.createElement("option");
-        option.value = item.schoolId;
-        option.textContent = item.schoolName;
-        els.adminPacketsSchoolSelect.appendChild(option);
-      });
-      els.adminPacketsSchoolSelect.value = validSelection;
-    }
-
-    if (!state.admin.packetsSchoolId) {
-      els.adminPacketsHint.textContent = "Select a school to load packet review.";
-      return;
-    }
-    const filtered = ordered.filter((entry) => (entry.schoolId || "") === state.admin.packetsSchoolId);
-    if (!filtered.length) {
-      els.adminPacketsHint.textContent = "No scheduled ensembles found for this school.";
-      return;
-    }
-    els.adminPacketsHint.textContent = "Loading packet status for selected school...";
-
-    for (const entry of filtered) {
-      const ensembleId = entry.ensembleId || "";
-      if (!ensembleId) continue;
-      const schoolName = entry.schoolName || getSchoolNameById(state.admin.schoolsList, entry.schoolId) || "Unknown school";
-      const ensembleName = normalizeEnsembleDisplayName({
-        schoolName,
-        ensembleName: entry.ensembleName || "",
-        ensembleId,
-      });
-      const performLabel = formatPerformanceAt(entry.performanceAt);
-      const packetData = await getPacketData({ eventId, entry });
-      if (state.admin.currentView !== "packets" || (state.event.active?.id || "") !== eventId) return;
-      const summary = packetData?.summary || null;
-      const li = document.createElement("li");
-      li.className = "panel";
-
-      const top = document.createElement("div");
-      top.className = "row row--between row--center";
-      const title = document.createElement("strong");
-      title.textContent = `${schoolName} - ${ensembleName}`;
-      top.appendChild(title);
-
-      const right = document.createElement("div");
-      right.className = "row";
-      const scheduleBadge = document.createElement("span");
-      scheduleBadge.className = "badge";
-      scheduleBadge.textContent = performLabel || "Unscheduled";
-      const statusBadge = document.createElement("span");
-      statusBadge.className = "badge";
-      if (summary?.requiredReleased) {
-        statusBadge.textContent = "Released";
-      } else if (summary?.requiredComplete) {
-        statusBadge.textContent = "Ready to Release";
-      } else {
-        statusBadge.textContent = "Incomplete";
-      }
-      right.appendChild(scheduleBadge);
-      right.appendChild(statusBadge);
-      top.appendChild(right);
-      li.appendChild(top);
-
-      const meta = document.createElement("div");
-      meta.className = "note";
-      meta.textContent = `Director: ${packetData?.directorName || "Unknown"} - Grade: ${packetData?.grade || "Unknown"} - Overall: ${summary?.overall?.label || "N/A"}`;
-      li.appendChild(meta);
-
-      const actions = document.createElement("div");
-      actions.className = "row";
-      const releaseBtn = document.createElement("button");
-      releaseBtn.type = "button";
-      const shouldRelease = !summary?.requiredReleased;
-      releaseBtn.textContent = shouldRelease ? "Release Packet" : "Unrelease Packet";
-      releaseBtn.disabled = shouldRelease ? !summary?.requiredComplete : false;
-
-      releaseBtn.addEventListener("click", async () => {
-        releaseBtn.disabled = true;
-        try {
-          if (shouldRelease) {
-            await releasePacket({ eventId, ensembleId });
-          } else {
-            await unreleasePacket({ eventId, ensembleId });
-          }
-          await renderAdminPacketsBySchedule();
-        } catch (error) {
-          console.error("Update packet release failed", error);
-          alertUser(error?.message || "Unable to update packet release state.");
-        }
-      });
-      actions.appendChild(releaseBtn);
-
-      const panel = document.createElement("div");
-      panel.className = "packet-panel is-hidden";
-      const viewBtn = document.createElement("button");
-      viewBtn.type = "button";
-      viewBtn.className = "ghost";
-      viewBtn.textContent = "View Packet";
-      viewBtn.addEventListener("click", async () => {
-        const isHidden = panel.classList.contains("is-hidden");
-        if (isHidden) {
-          panel.classList.remove("is-hidden");
-          viewBtn.textContent = "Hide Packet";
-          await loadAdminPacketView(entry, panel, eventId);
-        } else {
-          panel.classList.add("is-hidden");
-          viewBtn.textContent = "View Packet";
-        }
-      });
-      actions.appendChild(viewBtn);
-      li.appendChild(actions);
-      li.appendChild(panel);
-      els.adminPacketsList.appendChild(li);
-    }
-    els.adminPacketsHint.textContent = "";
-  } catch (error) {
-    console.error("renderAdminPacketsBySchedule failed", error);
-    if (els.adminPacketsHint) {
-      els.adminPacketsHint.textContent = "Unable to load packet review right now.";
-    }
-  } finally {
-    adminPacketsRenderInFlight = false;
-    if (adminPacketsRenderQueued) {
-      adminPacketsRenderQueued = false;
-      queueMicrotask(() => {
-        renderAdminPacketsBySchedule();
-      });
-    }
-  }
+  return getAdminRenderers().renderAdminPacketsBySchedule();
 }
 
 export async function renderRegisteredEnsemblesList() {
-  if (registeredRenderInFlight) {
-    registeredRenderQueued = true;
-    return;
-  }
-  registeredRenderInFlight = true;
-  try {
-    if (!els.adminRegisteredEnsemblesList) return;
-    els.adminRegisteredEnsemblesList.innerHTML = "";
-    const eventId = state.event.active?.id;
-    if (!eventId) return;
-
-    const [registered, scheduleEntries, entriesSnap] = await Promise.all([
-      fetchRegisteredEnsembles(eventId),
-      fetchScheduleEntries(eventId),
-      getDocs(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries)),
-    ]);
-
-    if (!registered.length) {
-      els.adminRegisteredEnsemblesList.innerHTML =
-        "<li class='hint'>No ensembles have registered yet.</li>";
-      schedulePreEventGuidedFlowRender();
-      return;
-    }
-
-    const scheduleByEnsemble = new Map((scheduleEntries || []).map((row) => [row.ensembleId || row.id, row]));
-    const entryDataByEnsemble = new Map();
-    entriesSnap.forEach((snap) => {
-      if (!snap?.exists()) return;
-      entryDataByEnsemble.set(snap.id, snap.data());
-    });
-
-    const bySchool = new Map();
-    registered.forEach((entry) => {
-      const schoolId = entry.schoolId || "";
-      if (!schoolId) return;
-      if (!bySchool.has(schoolId)) bySchool.set(schoolId, []);
-      bySchool.get(schoolId).push(entry);
-    });
-
-    const schoolIds = [...bySchool.keys()].sort((a, b) => {
-      const aName = getSchoolNameById(state.admin.schoolsList, a) || a;
-      const bName = getSchoolNameById(state.admin.schoolsList, b) || b;
-      return aName.localeCompare(bName);
-    });
-
-    schoolIds.forEach((schoolId) => {
-      const schoolName = getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
-      const schoolEnsembles = bySchool.get(schoolId) || [];
-      const scheduledCount = schoolEnsembles.filter((entry) =>
-        scheduleByEnsemble.has(entry.ensembleId || entry.id)
-      ).length;
-      const readyCount = schoolEnsembles.filter((entry) => {
-        const key = entry.ensembleId || entry.id;
-        if (!scheduleByEnsemble.has(key)) return false;
-        return entryDataByEnsemble.get(key)?.status === "ready";
-      }).length;
-      const li = document.createElement("li");
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "admin-school-row-btn";
-      const row = document.createElement("div");
-      row.className = "row";
-      const title = document.createElement("strong");
-      title.textContent = schoolName;
-      const meta = document.createElement("span");
-      meta.className = "admin-school-summary-meta";
-      const ensBadge = document.createElement("span");
-      ensBadge.className = "badge";
-      ensBadge.textContent = `${schoolEnsembles.length} ensemble${schoolEnsembles.length === 1 ? "" : "s"}`;
-      const schedBadge = document.createElement("span");
-      schedBadge.className = "badge";
-      schedBadge.textContent = `Scheduled ${scheduledCount}/${schoolEnsembles.length}`;
-      const readyBadge = document.createElement("span");
-      readyBadge.className = "badge";
-      readyBadge.textContent = `Ready ${readyCount}/${scheduledCount || 0}`;
-      meta.appendChild(ensBadge);
-      meta.appendChild(schedBadge);
-      meta.appendChild(readyBadge);
-      row.appendChild(title);
-      row.appendChild(meta);
-      button.appendChild(row);
-      button.addEventListener("click", () => {
-        state.admin.selectedSchoolId = schoolId;
-        state.admin.selectedSchoolName = schoolName;
-        applyAdminView("preEvent");
-      });
-      li.appendChild(button);
-      els.adminRegisteredEnsemblesList.appendChild(li);
-    });
-
-    schedulePreEventGuidedFlowRender();
-  } finally {
-    registeredRenderInFlight = false;
-    if (registeredRenderQueued) {
-      registeredRenderQueued = false;
-      queueMicrotask(() => {
-        renderRegisteredEnsemblesList();
-      });
-    }
-  }
+  return getAdminRenderers().renderRegisteredEnsemblesList();
 }
 
 function buildMockPacketCaptions(formType, judgeLabel) {
@@ -7674,7 +6414,7 @@ export function bindAdminHandlers() {
     els.adminSubnavChairBtn,
     els.adminSubnavEventChairBtn,
     els.adminSubnavPacketsBtn,
-    els.adminSubnavDirectoryBtn,
+    els.adminSubnavSettingsBtn,
   ];
   adminSubnavButtons.forEach((btn) => {
     if (!btn) return;
@@ -7682,7 +6422,7 @@ export function bindAdminHandlers() {
     if (!view) return;
     btn.addEventListener("click", () => {
       if (view === "liveEvent" && !isAdminLiveEventEnabled()) return;
-      if (view === "directory" && !isAdminDirectoryEnabled()) return;
+      if (view === "settings" && !isAdminSettingsEnabled()) return;
       if (view === "preEvent") {
         state.admin.selectedSchoolId = null;
         state.admin.selectedSchoolName = "";

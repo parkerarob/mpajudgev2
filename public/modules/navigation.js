@@ -42,7 +42,9 @@ export function resolveHash(hash) {
   const value = (hash || "").trim();
   const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
   const liveEnabled = state.app.features?.enableAdminLiveEvent !== false;
-  const directoryEnabled = state.app.features?.enableAdminDirectory !== false;
+  const settingsEnabled =
+    state.app.features?.enableAdminSettings !== false &&
+    state.app.features?.enableAdminDirectory !== false;
   if (value.startsWith("#event/")) {
     const eventId = value.replace("#event/", "").trim();
     if (eventId) {
@@ -67,12 +69,13 @@ export function resolveHash(hash) {
       segment === "events" ? "preEvent" :
       segment === "logistics" ? "liveEvent" :
       segment === "checkin" ? "liveEvent" :
-      segment === "directory" ? "directory" :
+      segment === "directory" ? "settings" :
+      segment === "settings" ? "settings" :
       segment === "packets" ? "packets" :
       segment === "packet" ? "packets" :
       "preEvent";
     if (adminView === "liveEvent" && !liveEnabled) adminView = "preEvent";
-    if (adminView === "directory" && !directoryEnabled) adminView = "preEvent";
+    if (adminView === "settings" && !settingsEnabled) adminView = "preEvent";
     return { type: "tab", tab: "admin", adminView };
   }
   return { type: "none" };

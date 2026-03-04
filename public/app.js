@@ -52,6 +52,14 @@ let versionCheckBaseline = null;
 let versionCheckTimerId = null;
 let versionReloadTriggered = false;
 let authInitTimeoutId = null;
+let schoolDropdownsUnsub = null;
+
+function ensureSchoolDropdownsWatcher() {
+  if (schoolDropdownsUnsub) return;
+  schoolDropdownsUnsub = watchSchools(() => {
+    refreshSchoolDropdowns();
+  });
+}
 
 async function getAssetSignature(path) {
   const url = `${path}${path.includes("?") ? "&" : "?"}vcheck=${Date.now()}`;
@@ -142,9 +150,7 @@ window.addEventListener("beforeunload", (event) => {
 });
 
 refreshSchoolDropdowns();
-watchSchools(() => {
-  refreshSchoolDropdowns();
-});
+ensureSchoolDropdownsWatcher();
 // Defer handleHashChange until after auth has run (avoids race and blank state on Chrome/Mac)
 // handleHashChange is invoked from the auth callback (handleSignedOut or signed-in branch).
 
@@ -166,9 +172,7 @@ function handleSignedOut() {
   updateRoleUI();
   resetJudgeOpenState();
   stopWatchers();
-  watchSchools(() => {
-    refreshSchoolDropdowns();
-  });
+  ensureSchoolDropdownsWatcher();
   state.director.selectedEventId = null;
   state.director.adminViewSchoolId = null;
   state.director.selectedEnsembleId = null;

@@ -146,6 +146,32 @@ import {
 import { createAdminViewController } from "./ui-admin-shell.js";
 import { createAdminRenderers } from "./ui-admin-renderers.js";
 import { createAdminLiveRenderers } from "./ui-admin-live-renderers.js";
+import { createJudgeOpenRenderers } from "./ui-judge-open-renderers.js";
+import { createJudgeOpenHandlerBinder } from "./ui-judge-open-handlers.js";
+import { createDirectorEnsembleRenderer } from "./ui-director-ensembles.js";
+import { createDirectorHandlerBinder } from "./ui-director-handlers.js";
+import { createDirectorPacketRenderers } from "./ui-director-packets.js";
+import { createDirectorDayOfRenderer } from "./ui-director-dayof.js";
+import { createDirectorRegistrationRenderers } from "./ui-director-registration.js";
+import { createDirectorEventRenderers } from "./ui-director-events.js";
+import { createJudgeOpenCore } from "./ui-judge-open-core.js";
+import { createJudgeOpenDirectorReference } from "./ui-judge-open-reference.js";
+import { createAppHandlerBinder } from "./ui-app-handlers.js";
+import { createJudgeOpenSession } from "./ui-judge-open-session.js";
+import { createAuthHandlerBinder } from "./ui-auth-handlers.js";
+import { createAdminHandlerBinder } from "./ui-admin-handlers.js";
+import { createAdminMockPacketPreviewRenderer } from "./ui-admin-mock-packet.js";
+import { createDirectorEntryFormRenderers } from "./ui-director-entry-form.js";
+import {
+  escapeHtml,
+  normalizeEnsembleDisplayName,
+  formatSchoolEnsembleLabel,
+  formatTimeRange,
+  toLocalDatetimeValue,
+  formatStartTime,
+  toDateOrNull,
+  computeEnsembleCheckinStatus,
+} from "./ui-admin-formatters.js";
 
 export function alertUser(message) {
   window.alert(message);
@@ -891,22 +917,10 @@ export function renderDirectorAssignmentsDirectory() {
 }
 
 export function refreshSchoolDropdowns() {
-  const logisticsCurrentSchoolValue = els.adminLogisticsCurrentSchoolSelect?.value || "";
-  const logisticsNextSchoolValue = els.adminLogisticsNextSchoolSelect?.value || "";
   renderSchoolOptions(els.directorSchoolSelect, "Select a school");
   renderSchoolOptions(els.directorAttachSelect, "Select a school");
   renderSchoolOptions(els.provisionSchoolSelect, "Select a school (optional)");
   renderSchoolOptions(els.directorAssignSchoolSelect, "Select a school");
-  renderSchoolOptions(els.adminLogisticsCurrentSchoolSelect, "Select a school");
-  renderSchoolOptions(els.adminLogisticsNextSchoolSelect, "Select a school");
-  if (els.adminLogisticsCurrentSchoolSelect) {
-    const exists = state.admin.schoolsList.some((school) => school.id === logisticsCurrentSchoolValue);
-    els.adminLogisticsCurrentSchoolSelect.value = exists ? logisticsCurrentSchoolValue : "";
-  }
-  if (els.adminLogisticsNextSchoolSelect) {
-    const exists = state.admin.schoolsList.some((school) => school.id === logisticsNextSchoolValue);
-    els.adminLogisticsNextSchoolSelect.value = exists ? logisticsNextSchoolValue : "";
-  }
 }
 
 export function openAuthModal() {
@@ -1250,139 +1264,8 @@ export function updateAuthUI() {
   }
 }
 
-let authHandlersBound = false;
-
 export function bindAuthHandlers() {
-  if (authHandlersBound) return;
-  authHandlersBound = true;
-
-  if (els.signInBtn) {
-    els.signInBtn.addEventListener("click", () => {
-      openAuthModal();
-      setAuthView("signIn");
-    });
-  }
-  if (els.authModalBackdrop) {
-    els.authModalBackdrop.addEventListener("click", closeAuthModal);
-  }
-  if (els.authModalClose) {
-    els.authModalClose.addEventListener("click", closeAuthModal);
-  }
-
-  if (els.emailForm) {
-    els.emailForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      setRoleHint("");
-      try {
-        setAuthFormDisabled(true);
-        if (els.emailSignInBtn) {
-          setSavingState(els.emailSignInBtn, true, "Signing in...");
-        }
-        await signIn(els.emailInput?.value, els.passwordInput?.value);
-      } catch (error) {
-        console.error("Email sign-in failed", error);
-        setRoleHint("Sign-in failed. Check email/password or reset your password.");
-      } finally {
-        if (els.emailSignInBtn) {
-          setSavingState(els.emailSignInBtn, false);
-        }
-        setAuthFormDisabled(false);
-      }
-    });
-  }
-
-  if (els.anonymousBtn) {
-    if (!DEV_FLAGS.allowAnonymousSignIn) {
-      els.anonymousBtn.style.display = "none";
-    } else {
-      els.anonymousBtn.addEventListener("click", async () => {
-        try {
-          await signIn("", "", { anonymous: true });
-        } catch (error) {
-          console.error("Anonymous sign-in failed", error);
-          setRoleHint("Anonymous sign-in failed.");
-        }
-      });
-    }
-  }
-
-  if (els.forgotPasswordBtn) {
-    els.forgotPasswordBtn.addEventListener("click", async () => {
-      const email = els.emailInput?.value.trim() || "";
-      if (!email) {
-        setRoleHint("Enter your email to request a password reset.");
-        return;
-      }
-      try {
-        await requestPasswordReset(email);
-        setRoleHint("Password reset email sent.");
-      } catch (error) {
-        console.error("Password reset failed", error);
-        setRoleHint("Password reset failed. Confirm the email and try again.");
-      }
-    });
-  }
-
-  if (els.showDirectorSignupBtn) {
-    els.showDirectorSignupBtn.addEventListener("click", () => {
-      setAuthView("director");
-    });
-  }
-
-  if (els.backToSignInBtn) {
-    els.backToSignInBtn.addEventListener("click", () => {
-      setAuthView("signIn");
-    });
-  }
-
-  if (els.directorSignupBtn) {
-    els.directorSignupBtn.addEventListener("click", async () => {
-      const email = els.directorEmailInput?.value.trim() || "";
-      const password = els.directorPasswordInput?.value.trim() || "";
-      const schoolId = els.directorSchoolSelect?.value || null;
-      if (!email || !password) {
-        setRoleHint("Provide email and password to create a director account.");
-        return;
-      }
-      if (!schoolId) {
-        setRoleHint("Select your school to complete director signup.");
-        return;
-      }
-      const schoolValid = state.admin.schoolsList.some((school) => school.id === schoolId);
-      if (!schoolValid) {
-        setRoleHint("Selected school not found. Refresh and try again.");
-        return;
-      }
-      try {
-        await createDirectorAccount({ email, password, schoolId });
-        setRoleHint("Director account created.");
-        if (els.directorEmailInput) els.directorEmailInput.value = "";
-        if (els.directorPasswordInput) els.directorPasswordInput.value = "";
-        if (els.directorSchoolSelect) els.directorSchoolSelect.value = "";
-        setAuthView("signIn");
-        closeAuthModal();
-        setAuthSuccess("Director account created. Please sign in.");
-      } catch (error) {
-        console.error("Director signup failed", error);
-        const code = error?.code || "";
-        if (code.includes("auth/email-already-in-use")) {
-          setRoleHint("That email is already in use. Try signing in instead.");
-        } else if (code.includes("auth/weak-password")) {
-          setRoleHint("Password is too weak. Use at least 6 characters.");
-        } else if (code.includes("auth/invalid-email")) {
-          setRoleHint("Email address is invalid.");
-        } else {
-          setRoleHint("Director signup failed. Check inputs or try again.");
-        }
-      }
-    });
-  }
-
-  if (els.signOutBtn) {
-    els.signOutBtn.addEventListener("click", async () => {
-      await signOut();
-    });
-  }
+  return getAuthHandlerBinder()();
 }
 
 export function updateDirectorAttachUI() {
@@ -1458,6 +1341,22 @@ let preEventGuidedFlowQueued = false;
 let adminViewController = null;
 let adminRenderers = null;
 let adminLiveRenderers = null;
+let authHandlerBinder = null;
+let adminHandlerBinder = null;
+let adminMockPacketPreviewRenderer = null;
+let directorEntryFormRenderers = null;
+let judgeOpenRenderers = null;
+let judgeOpenHandlerBinder = null;
+let judgeOpenCore = null;
+let judgeOpenDirectorReference = null;
+let judgeOpenSession = null;
+let directorEnsembleRenderer = null;
+let directorHandlerBinder = null;
+let directorPacketRenderers = null;
+let directorDayOfRenderer = null;
+let directorRegistrationRenderers = null;
+let directorEventRenderers = null;
+let appHandlerBinder = null;
 
 function schedulePreEventGuidedFlowRender() {
   if (state.app.stabilityMode) return;
@@ -1498,6 +1397,61 @@ function getAdminViewController() {
   return adminViewController;
 }
 
+function getAuthHandlerBinder() {
+  if (authHandlerBinder) return authHandlerBinder;
+  authHandlerBinder = createAuthHandlerBinder({
+    els,
+    DEV_FLAGS,
+    state,
+    openAuthModal,
+    setAuthView,
+    closeAuthModal,
+    setRoleHint,
+    setAuthFormDisabled,
+    setSavingState,
+    signIn,
+    requestPasswordReset,
+    createDirectorAccount,
+    setAuthSuccess,
+    signOut,
+  });
+  return authHandlerBinder;
+}
+
+function getAdminHandlerBinder() {
+  if (adminHandlerBinder) return adminHandlerBinder;
+  adminHandlerBinder = createAdminHandlerBinder({
+    els,
+    state,
+    windowObj: window,
+    isAdminLiveEventEnabled,
+    isAdminSettingsEnabled,
+    applyAdminView,
+    closeAdminSchoolDetail,
+    renderAdminPacketsBySchedule,
+    renderMockAdminPacketPreview,
+    confirmUser,
+    releaseMockPacketForAshleyTesting,
+    alertUser,
+    createEvent,
+    saveAssignments,
+    showStatusMessage,
+    saveSchool,
+    resetAdminSchoolForm,
+    getSelectedAdminSchool,
+    startAdminSchoolEdit,
+    deleteSchool,
+    bulkImportSchools,
+    provisionUser,
+    renderDirectorAssignmentsDirectory,
+    getSelectedDirectorForAdmin,
+    assignDirectorSchool,
+    getSchoolNameById,
+    unassignDirectorSchool,
+  });
+  return adminHandlerBinder;
+}
+
 function getAdminRenderers() {
   if (adminRenderers) return adminRenderers;
   adminRenderers = createAdminRenderers({
@@ -1529,6 +1483,23 @@ function getAdminRenderers() {
   return adminRenderers;
 }
 
+function getAdminMockPacketPreviewRenderer() {
+  if (adminMockPacketPreviewRenderer) return adminMockPacketPreviewRenderer;
+  adminMockPacketPreviewRenderer = createAdminMockPacketPreviewRenderer({
+    els,
+    JUDGE_POSITIONS,
+    JUDGE_POSITION_LABELS,
+    FORM_TYPES,
+    CAPTION_TEMPLATES,
+    STATUSES,
+    calculateCaptionTotal,
+    computeFinalRating,
+    levelToRoman,
+    renderSubmissionCard,
+  });
+  return adminMockPacketPreviewRenderer;
+}
+
 function getAdminLiveRenderers() {
   if (adminLiveRenderers) return adminLiveRenderers;
   adminLiveRenderers = createAdminLiveRenderers({
@@ -1555,6 +1526,304 @@ function getAdminLiveRenderers() {
     updateEntryCheckinFields,
   });
   return adminLiveRenderers;
+}
+
+function getJudgeOpenRenderers() {
+  if (judgeOpenRenderers) return judgeOpenRenderers;
+  judgeOpenRenderers = createJudgeOpenRenderers({
+    els,
+    state,
+    confirmUser,
+    withLoading,
+    deleteOpenPacket,
+    resetJudgeOpenState,
+    setJudgeOpenDirectorReferenceState,
+    renderJudgeOpenDirectorReference,
+    renderOpenSegments,
+    renderOpenCaptionForm,
+    updateOpenHeader,
+    hideOpenDetailView,
+    updateOpenEmptyState,
+    updateOpenSubmitState,
+    saveOpenPrefs,
+    saveOpenPrefsToServer,
+    openJudgeOpenPacket,
+    setOpenPacketHint,
+  });
+  return judgeOpenRenderers;
+}
+
+function getJudgeOpenHandlerBinder() {
+  if (judgeOpenHandlerBinder) return judgeOpenHandlerBinder;
+  judgeOpenHandlerBinder = createJudgeOpenHandlerBinder({
+    els,
+    state,
+    hideOpenDetailView,
+    openJudgeOpenPacket,
+    hasLinkedOpenEnsemble,
+    setOpenPacketHint,
+    withLoading,
+    gatherOpenPacketMeta,
+    createOpenPacket,
+    renderOpenSegments,
+    saveOpenPrefsToServer,
+    renderOpenCaptionForm,
+    updateOpenHeader,
+    showOpenDetailView,
+    updateOpenEmptyState,
+    updateOpenSubmitState,
+    saveOpenPrefs,
+    setJudgeOpenDirectorReferenceState,
+    renderJudgeOpenDirectorReference,
+    syncOpenEventDefaultsUI,
+    refreshOpenEventDefaultsState,
+    getOpenEventDefaultsPreference,
+    markJudgeOpenDirty,
+    buildOpenEnsembleSnapshot,
+    updateOpenPacketDraft,
+    refreshJudgeOpenDirectorReference,
+    syncOpenFormTypeSegmented,
+    draftCaptionsFromTranscript,
+    applyOpenCaptionDraft,
+    transcribeOpenTape,
+    startOpenRecording,
+    updateOpenRecordingStatus,
+    stopOpenRecording,
+    applyOpenCaptionState,
+    submitOpenPacket,
+    selectOpenPacket,
+  });
+  return judgeOpenHandlerBinder;
+}
+
+function getJudgeOpenCore() {
+  if (judgeOpenCore) return judgeOpenCore;
+  judgeOpenCore = createJudgeOpenCore({
+    els,
+    state,
+    getOpenCaptionTemplate,
+    calculateCaptionTotal,
+    computeFinalRating,
+    formatPerformanceAt,
+    retryOpenSessionUploads,
+    transcribeOpenSegment,
+    setOpenPacketHint,
+    updateTapePlayback,
+    isOpenPacketEditable,
+    hasLinkedOpenEnsemble,
+    startOpenLevelMeter,
+    stopOpenLevelMeter,
+  });
+  return judgeOpenCore;
+}
+
+function getJudgeOpenDirectorReference() {
+  if (judgeOpenDirectorReference) return judgeOpenDirectorReference;
+  judgeOpenDirectorReference = createJudgeOpenDirectorReference({
+    els,
+    state,
+    STANDARD_INSTRUMENTS,
+    loadDirectorEntrySnapshotForJudge,
+    updateOpenPacketDraft,
+  });
+  return judgeOpenDirectorReference;
+}
+
+function getJudgeOpenSession() {
+  if (judgeOpenSession) return judgeOpenSession;
+  judgeOpenSession = createJudgeOpenSession({
+    els,
+    state,
+    selectOpenPacket,
+    renderOpenSegments,
+    setJudgeOpenDirectorReferenceState,
+    renderJudgeOpenDirectorReference,
+    refreshJudgeOpenDirectorReference,
+    renderOpenCaptionForm,
+    updateOpenHeader,
+    updateOpenEmptyState,
+    updateOpenSubmitState,
+    showOpenDetailView,
+    saveOpenPrefsToServer,
+    loadOpenPrefs,
+    canUseOpenJudge,
+    syncOpenEventDefaultsUI,
+    refreshOpenEventDefaultsState,
+    applyOpenEventAssignmentDefaults,
+    setOpenPacketHint,
+  });
+  return judgeOpenSession;
+}
+
+function getAppHandlerBinder() {
+  if (appHandlerBinder) return appHandlerBinder;
+  appHandlerBinder = createAppHandlerBinder({
+    els,
+    state,
+    hideSessionExpiredModal,
+    openAuthModal,
+    showSessionExpiredModal,
+    openUserProfileModal,
+    closeUserProfileModal,
+    closeLiveEventCheckinModal,
+    saveUserDisplayName,
+    updateAuthUI,
+  });
+  return appHandlerBinder;
+}
+
+function getDirectorEnsembleRenderer() {
+  if (directorEnsembleRenderer) return directorEnsembleRenderer;
+  directorEnsembleRenderer = createDirectorEnsembleRenderer({
+    els,
+    state,
+    withLoading,
+    handleDirectorEnsembleDelete,
+    setDirectorEnsembleFormMode,
+    handleDirectorEnsembleSelection,
+  });
+  return directorEnsembleRenderer;
+}
+
+function getDirectorHandlerBinder() {
+  if (directorHandlerBinder) return directorHandlerBinder;
+  directorHandlerBinder = createDirectorHandlerBinder({
+    els,
+    state,
+    alertUser,
+    setDirectorEvent,
+    checkDirectorHasRegistrationForEvent,
+    updateDirectorAttachUI,
+    renderDirectorRegistrationPanel,
+    openDirectorProfileModal,
+    getDirectorSchoolId,
+    upsertRegistrationForEnsemble,
+    renderDayOfEnsembleSelector,
+    loadDirectorEntry,
+    applyDirectorEntryUpdate,
+    applyDirectorEntryClear,
+    generateSignatureFormPdf,
+    uploadSignedSignatureForm,
+    setDirectorEnsembleFormMode,
+    closeDirectorEnsembleForm,
+    attachDirectorSchool,
+    setDirectorSchoolName,
+    refreshDirectorWatchers,
+    confirmUser,
+    detachDirectorSchool,
+    renderDirectorEnsembles,
+    discardDirectorDraftChanges,
+    setDirectorEntryStatusLabel,
+    setDirectorReadyControls,
+    renderDirectorChecklist,
+    computeDirectorCompletionState,
+    hasDirectorUnsavedChanges,
+    updateDirectorEventMeta,
+    renameDirectorEnsemble,
+    createDirectorEnsemble,
+    updateDirectorActiveEnsembleLabel,
+    withLoading,
+    renderInstrumentationNonStandard,
+    applyDirectorDirty,
+    markEntryDraft,
+    markEntryReady,
+    saveRepertoireSection,
+    applyDirectorSaveResult,
+    saveInstrumentationSection,
+    saveRule3cSection,
+    saveSeatingSection,
+    savePercussionSection,
+    saveLunchSection,
+    uploadEventSchedulePdf,
+    renderEventScheduleDetail,
+    setDirectorProfileStatus,
+    saveDirectorProfile,
+    closeDirectorProfileModal,
+    uploadDirectorProfileCard,
+    renderDirectorProfile,
+  });
+  return directorHandlerBinder;
+}
+
+function getDirectorPacketRenderers() {
+  if (directorPacketRenderers) return directorPacketRenderers;
+  directorPacketRenderers = createDirectorPacketRenderers({
+    els,
+    state,
+    JUDGE_POSITIONS,
+    JUDGE_POSITION_LABELS,
+    STATUSES,
+    FORM_TYPES,
+    CAPTION_TEMPLATES,
+    renderSubmissionCard,
+    fetchDirectorPacketAssets,
+  });
+  return directorPacketRenderers;
+}
+
+function getDirectorDayOfRenderer() {
+  if (directorDayOfRenderer) return directorDayOfRenderer;
+  directorDayOfRenderer = createDirectorDayOfRenderer({
+    state,
+    loadDirectorEntry,
+    applyDirectorEntryUpdate,
+    applyDirectorEntryClear,
+  });
+  return directorDayOfRenderer;
+}
+
+function getDirectorRegistrationRenderers() {
+  if (directorRegistrationRenderers) return directorRegistrationRenderers;
+  directorRegistrationRenderers = createDirectorRegistrationRenderers({
+    els,
+    state,
+    db,
+    COLLECTIONS,
+    doc,
+    getDoc,
+    getDirectorSchoolId,
+    getEventCardLabel,
+    alertUser,
+    createDirectorEnsemble,
+    refreshDirectorWatchers,
+    upsertRegistrationForEnsemble,
+  });
+  return directorRegistrationRenderers;
+}
+
+function getDirectorEventRenderers() {
+  if (directorEventRenderers) return directorEventRenderers;
+  directorEventRenderers = createDirectorEventRenderers({
+    els,
+    state,
+    hasDirectorUnsavedChanges,
+    getEventCardLabel,
+    formatDateHeading,
+    loadDirectorEntry,
+    applyDirectorEntryUpdate,
+    applyDirectorEntryClear,
+  });
+  return directorEventRenderers;
+}
+
+function getDirectorEntryFormRenderers() {
+  if (directorEntryFormRenderers) return directorEntryFormRenderers;
+  directorEntryFormRenderers = createDirectorEntryFormRenderers({
+    els,
+    state,
+    REPERTOIRE_FIELDS,
+    STANDARD_INSTRUMENTS,
+    PERCUSSION_OPTIONS,
+    romanToLevel,
+    derivePerformanceGrade,
+    normalizeGrade,
+    getMpaRepertoireForGrade,
+    applyDirectorDirty,
+    setDirectorPerformanceGradeValue,
+    setPerformanceGradeError,
+    updateLunchTotalCost,
+  });
+  return directorEntryFormRenderers;
 }
 
 function isAdminHeavyViewLoaded(view) {
@@ -1626,6 +1895,12 @@ function updateTabUI(tabName, role) {
   }
   if (showJudgeOpen) {
     refreshOpenEventDefaultsState();
+    if (state.judgeOpen.existingEnsembleIndexDirty || !state.judgeOpen.existingEnsembles.length) {
+      maybeRefreshJudgeOpenExistingEnsembles({ force: true });
+    } else {
+      renderOpenExistingOptions(state.judgeOpen.existingEnsembles || []);
+    }
+    renderOpenPacketOptions(state.judgeOpen.packets || []);
     updateOpenEmptyState();
     updateOpenSubmitState();
     if (!els.judgeOpenCaptionForm?.children?.length) {
@@ -1914,6 +2189,37 @@ export function stopWatchers() {
   state.admin.lastRosterEventId = "";
 }
 
+function maybeRefreshJudgeOpenExistingEnsembles({ force = false } = {}) {
+  if (!canUseOpenJudge(state.auth.userProfile)) return;
+  const key = JSON.stringify(
+    (state.admin.schoolsList || [])
+      .map((school) => [school.id || "", school.name || ""])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+  );
+  const changed = key !== state.judgeOpen.existingEnsembleIndexKey;
+  if (!changed && !force) {
+    if (state.app.currentTab === "judge-open") {
+      renderOpenExistingOptions(state.judgeOpen.existingEnsembles || []);
+    }
+    return;
+  }
+  state.judgeOpen.existingEnsembleIndexKey = key;
+  const loadVersion = (state.judgeOpen.existingEnsembleIndexLoadVersion || 0) + 1;
+  state.judgeOpen.existingEnsembleIndexLoadVersion = loadVersion;
+  state.judgeOpen.existingEnsembleIndexDirty = false;
+  fetchOpenEnsembleIndex(state.admin.schoolsList)
+    .then((items) => {
+      if (state.judgeOpen.existingEnsembleIndexLoadVersion !== loadVersion) return;
+      state.judgeOpen.existingEnsembles = items;
+      if (state.app.currentTab === "judge-open") {
+        renderOpenExistingOptions(items);
+      }
+    })
+    .catch((error) => {
+      console.error("fetchOpenEnsembleIndex failed", error);
+    });
+}
+
 export function startWatchers() {
   stopWatchers();
   const liveEnabled = isAdminLiveEventEnabled();
@@ -1967,14 +2273,9 @@ export function startWatchers() {
     }
   });
   watchActiveEvent(() => {
-    const activeEventId = state.event.active?.id || "";
-    if (state.admin.logisticsEntriesCacheEventId !== activeEventId) {
-      state.admin.logisticsEntriesCacheEventId = activeEventId;
-      state.admin.logisticsEntriesCache.clear();
-      if (state.admin.safeMode) {
-        state.admin.preEventHeavyLoaded = false;
-        state.admin.liveEventHeavyLoaded = false;
-      }
+    if (state.admin.safeMode) {
+      state.admin.preEventHeavyLoaded = false;
+      state.admin.liveEventHeavyLoaded = false;
     }
     invalidateDirectorSchoolLunchTotalCache({
       eventId: state.director.selectedEventId || state.event.active?.id || null,
@@ -2026,24 +2327,10 @@ export function startWatchers() {
       renderAdminPacketsBySchedule();
     }
     if (judgeEnabled && canUseOpenJudge(state.auth.userProfile)) {
-      const key = JSON.stringify(
-        (state.admin.schoolsList || [])
-          .map((school) => [school.id || "", school.name || ""])
-          .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
-      );
-      if (key !== state.judgeOpen.existingEnsembleIndexKey) {
-        state.judgeOpen.existingEnsembleIndexKey = key;
-        const loadVersion = (state.judgeOpen.existingEnsembleIndexLoadVersion || 0) + 1;
-        state.judgeOpen.existingEnsembleIndexLoadVersion = loadVersion;
-        fetchOpenEnsembleIndex(state.admin.schoolsList)
-          .then((items) => {
-            if (state.judgeOpen.existingEnsembleIndexLoadVersion !== loadVersion) return;
-            state.judgeOpen.existingEnsembles = items;
-            renderOpenExistingOptions(items);
-          })
-          .catch((error) => {
-            console.error("fetchOpenEnsembleIndex failed", error);
-          });
+      if (state.app.currentTab === "judge-open") {
+        maybeRefreshJudgeOpenExistingEnsembles();
+      } else {
+        state.judgeOpen.existingEnsembleIndexDirty = true;
       }
     }
   });
@@ -2059,10 +2346,20 @@ export function startWatchers() {
   if (state.app.currentTab === "director" || state.director.view === "dayOfForms") {
     refreshDirectorWatchers();
   }
-  if (judgeEnabled) refreshOpenEventDefaultsState();
+  if (judgeEnabled) {
+    refreshOpenEventDefaultsState();
+    if (state.app.currentTab === "judge-open") {
+      maybeRefreshJudgeOpenExistingEnsembles({ force: true });
+    } else {
+      state.judgeOpen.existingEnsembleIndexDirty = true;
+    }
+  }
   if (judgeEnabled && canUseOpenJudge(state.auth.userProfile)) {
     state.subscriptions.openPackets = watchOpenPackets((packets) => {
-      renderOpenPacketOptions(packets || []);
+      state.judgeOpen.packets = packets || [];
+      if (state.app.currentTab === "judge-open") {
+        renderOpenPacketOptions(state.judgeOpen.packets);
+      }
     });
   }
   if (judgeEnabled && getEffectiveRole(state.auth.userProfile) === "admin") {
@@ -2306,165 +2603,19 @@ export function updateOpenEmptyState() {
 }
 
 export function renderOpenPacketOptions(packets) {
-  if (!els.judgeOpenPacketSelect) return;
-  els.judgeOpenPacketSelect.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = packets.length ? "Select a packet" : "No packets yet";
-  els.judgeOpenPacketSelect.appendChild(placeholder);
-  packets.forEach((packet) => {
-    const option = document.createElement("option");
-    option.value = packet.id;
-    option.textContent = packet.display || packet.id;
-    els.judgeOpenPacketSelect.appendChild(option);
-  });
-  renderOpenPacketCards(packets);
-}
-
-function formatPacketUpdatedAt(packet) {
-  const raw = packet.updatedAt?.toMillis ? packet.updatedAt.toMillis() : null;
-  if (!raw) return "Updated recently";
-  return new Date(raw).toLocaleString();
-}
-
-function computePacketProgress(packet) {
-  if (!packet) return 0;
-  if (["submitted", "locked", "released"].includes(packet.status)) return 100;
-  const hasTranscript = Boolean(packet.transcriptFull || packet.transcript);
-  const hasCaptions = packet.captions && Object.keys(packet.captions).length > 0;
-  if (hasTranscript && hasCaptions) return 75;
-  if (packet.segmentCount || packet.audioSessionCount) return 40;
-  return 10;
-}
-
-function renderOpenPacketCards(packets) {
-  if (!els.judgeOpenPacketList) return;
-  els.judgeOpenPacketList.innerHTML = "";
-  packets.forEach((packet) => {
-    const card = document.createElement("div");
-    card.className = "packet-card";
-    card.dataset.packetId = packet.id;
-    const progress = computePacketProgress(packet);
-    const statusRaw = packet.status || "draft";
-    const status = statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1);
-    const creator =
-      packet.createdByJudgeName ||
-      packet.createdByJudgeEmail ||
-      packet.createdByJudgeUid ||
-      "Unknown judge";
-    card.innerHTML = `
-      <div class="packet-card-header">
-        <div class="packet-card-title">${packet.schoolName || "Unknown school"} - ${packet.ensembleName || "Unknown ensemble"}</div>
-        <span class="status-badge">${status}</span>
-      </div>
-      <div class="packet-card-meta">Judge: ${creator}</div>
-      <div class="packet-card-meta">${formatPacketUpdatedAt(packet)}</div>
-      <div class="progress-bar"><span style="width: ${progress}%"></span></div>
-    `;
-    const actions = document.createElement("div");
-    actions.className = "row";
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "ghost";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const label = `${packet.schoolName || "Unknown school"} - ${packet.ensembleName || "Unknown ensemble"}`;
-      if (!confirmUser(`Delete open packet for ${label}? This removes packet audio and sessions.`)) {
-        return;
-      }
-      deleteBtn.dataset.loadingLabel = "Deleting...";
-      deleteBtn.dataset.spinner = "true";
-      await withLoading(deleteBtn, async () => {
-        await deleteOpenPacket({ packetId: packet.id });
-        if (state.judgeOpen.currentPacketId === packet.id) {
-          resetJudgeOpenState();
-          setJudgeOpenDirectorReferenceState(
-            "not-linked",
-            "Link an existing ensemble to load Director repertoire/instrumentation.",
-            null
-          );
-          renderJudgeOpenDirectorReference();
-          if (els.judgeOpenPacketSelect) els.judgeOpenPacketSelect.value = "";
-          if (els.judgeOpenExistingSelect) els.judgeOpenExistingSelect.value = "";
-          if (els.judgeOpenSchoolNameInput) els.judgeOpenSchoolNameInput.value = "";
-          if (els.judgeOpenEnsembleNameInput) els.judgeOpenEnsembleNameInput.value = "";
-          if (els.judgeOpenTranscriptInput) els.judgeOpenTranscriptInput.value = "";
-          if (els.judgeOpenDraftStatus) els.judgeOpenDraftStatus.textContent = "";
-          renderOpenSegments([]);
-          renderOpenCaptionForm();
-          updateOpenHeader();
-          hideOpenDetailView();
-          updateOpenEmptyState();
-          updateOpenSubmitState();
-          saveOpenPrefs({ lastPacketId: "" });
-          try {
-            await saveOpenPrefsToServer({ lastJudgeOpenPacketId: "" });
-          } catch (error) {
-            console.error("Clear open packet preference failed", error);
-          }
-          if (state.auth.userProfile) {
-            state.auth.userProfile.preferences = {
-              ...(state.auth.userProfile.preferences || {}),
-              lastJudgeOpenPacketId: "",
-            };
-          }
-        }
-        setOpenPacketHint("Packet deleted.");
-      });
-    });
-    actions.appendChild(deleteBtn);
-    card.appendChild(actions);
-    card.addEventListener("click", () => {
-      if (els.judgeOpenPacketSelect) {
-        els.judgeOpenPacketSelect.value = packet.id;
-      }
-      openJudgeOpenPacket(packet.id);
-    });
-    els.judgeOpenPacketList.appendChild(card);
-  });
+  return getJudgeOpenRenderers().renderOpenPacketOptions(packets || []);
 }
 
 function updateOpenHeader() {
-  if (!els.judgeOpenHeaderTitle || !els.judgeOpenHeaderSub) return;
-  const packet = state.judgeOpen.currentPacket || {};
-  const school = packet.schoolName || "School";
-  const ensemble = packet.ensembleName || "Ensemble";
-  const statusRaw = String(packet.status || "draft");
-  const statusLabel = statusRaw ? statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1) : "Draft";
-  const title = `${school} - ${ensemble}`;
-  els.judgeOpenHeaderTitle.textContent = title;
-  els.judgeOpenHeaderSub.textContent = statusLabel;
-  if (els.judgeOpenSummaryTitle) {
-    els.judgeOpenSummaryTitle.textContent = title;
-  }
-  if (els.judgeOpenSummaryStatus) {
-    els.judgeOpenSummaryStatus.textContent = statusLabel;
-  }
-  if (els.judgeOpenSummaryMeta) {
-    const formLabel = (packet.formType || state.judgeOpen.formType || "stage") === "sight"
-      ? "Sight Reading"
-      : "Stage";
-    const segments = Number(packet.segmentCount || packet.audioSessionCount || 0);
-    els.judgeOpenSummaryMeta.textContent = `${formLabel} packet - ${segments} segment${segments === 1 ? "" : "s"}`;
-  }
-  if (els.judgeOpenSummaryHint) {
-    if (!state.judgeOpen.currentPacketId) {
-      els.judgeOpenSummaryHint.textContent = "Create or select a packet to begin.";
-    } else if (statusRaw === "released") {
-      els.judgeOpenSummaryHint.textContent = "This packet has been released.";
-    } else if (statusRaw === "submitted" || statusRaw === "locked") {
-      els.judgeOpenSummaryHint.textContent = "Packet is submitted and locked.";
-    } else {
-      els.judgeOpenSummaryHint.textContent = "Complete the steps below, then submit the packet.";
-    }
-  }
+  return getJudgeOpenCore().updateOpenHeader();
 }
 
 function setJudgeOpenDirectorReferenceState(status, message = "", snapshot = null) {
-  state.judgeOpen.directorEntryReferenceStatus = status;
-  state.judgeOpen.directorEntryReferenceMessage = message || "";
-  state.judgeOpen.directorEntryReference = snapshot || null;
+  return getJudgeOpenDirectorReference().setJudgeOpenDirectorReferenceState(
+    status,
+    message,
+    snapshot
+  );
 }
 
 function hasLinkedOpenEnsemble() {
@@ -2473,230 +2624,15 @@ function hasLinkedOpenEnsemble() {
 }
 
 function renderJudgeOpenDirectorReference() {
-  if (!els.judgeOpenDirectorRefStatus || !els.judgeOpenDirectorRefContent) return;
-  const status = state.judgeOpen.directorEntryReferenceStatus || "idle";
-  const message = state.judgeOpen.directorEntryReferenceMessage || "";
-  const snapshot = state.judgeOpen.directorEntryReference || null;
-  els.judgeOpenDirectorRefStatus.textContent =
-    message ||
-    (status === "loading"
-      ? "Loading Director repertoire/instrumentation..."
-      : "Link an existing ensemble to load Director repertoire/instrumentation.");
-  els.judgeOpenDirectorRefContent.innerHTML = "";
-
-  if (!snapshot || status !== "loaded") return;
-
-  const sourceRow = document.createElement("div");
-  sourceRow.className = "note";
-  const sourceName = snapshot.source?.eventName || snapshot.source?.eventId || "Active Event";
-  sourceRow.textContent = `Loaded from Director entry for ${sourceName}`;
-  els.judgeOpenDirectorRefContent.appendChild(sourceRow);
-
-  const repPanel = document.createElement("div");
-  repPanel.className = "panel";
-  const repTitle = document.createElement("strong");
-  repTitle.textContent = "Repertoire";
-  repPanel.appendChild(repTitle);
-  const repList = document.createElement("div");
-  repList.className = "stack";
-  const rep = snapshot.repertoire || {};
-  const gradeText = snapshot.performanceGrade
-    ? `${snapshot.performanceGrade}${snapshot.performanceGradeFlex ? "-Flex" : ""}`
-    : "N/A";
-  [
-    ["Performance Grade", gradeText],
-    ["March", [rep.march?.title, rep.march?.composer].filter(Boolean).join(" - ") || "Not provided"],
-    [
-      "Selection #1",
-      [
-        rep.selection1?.grade || "",
-        rep.selection1?.title || "",
-        rep.selection1?.composer || "",
-      ]
-        .filter(Boolean)
-        .join(" - ") || "Not provided",
-    ],
-    [
-      "Selection #2",
-      [
-        rep.selection2?.grade || "",
-        rep.selection2?.title || "",
-        rep.selection2?.composer || "",
-      ]
-        .filter(Boolean)
-        .join(" - ") || "Not provided",
-    ],
-    [
-      "Masterwork Exception",
-      rep.repertoireRuleMode === "masterwork" ? "Yes" : "No",
-    ],
-  ].forEach(([label, value]) => {
-    const row = document.createElement("div");
-    row.className = "note";
-    row.textContent = `${label}: ${value}`;
-    repList.appendChild(row);
-  });
-  repPanel.appendChild(repList);
-  els.judgeOpenDirectorRefContent.appendChild(repPanel);
-
-  const instrumentation = snapshot.instrumentation || {};
-  const instPanel = document.createElement("div");
-  instPanel.className = "panel";
-  const instTitle = document.createElement("strong");
-  instTitle.textContent = "Instrumentation";
-  instPanel.appendChild(instTitle);
-  const instList = document.createElement("div");
-  instList.className = "stack";
-  const standardCounts = instrumentation.standardCounts || {};
-  const leftColumnKeys = [
-    "flute",
-    "oboe",
-    "bassoon",
-    "clarinet",
-    "bassClarinet",
-    "altoSax",
-    "tenorSax",
-    "bariSax",
-  ];
-  const rightColumnKeys = [
-    "trumpetCornet",
-    "horn",
-    "trombone",
-    "euphoniumBaritone",
-    "tuba",
-  ];
-  const labelsByKey = Object.fromEntries(
-    STANDARD_INSTRUMENTS.map((item) => [item.key, item.label])
-  );
-  const grid = document.createElement("div");
-  grid.style.display = "grid";
-  grid.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
-  grid.style.gap = "8px 16px";
-  const col1 = document.createElement("div");
-  col1.className = "stack";
-  col1.style.gap = "4px";
-  const col2 = document.createElement("div");
-  col2.className = "stack";
-  col2.style.gap = "4px";
-  const addCountRow = (parent, label, count) => {
-    const row = document.createElement("div");
-    row.className = "note";
-    row.textContent = `${label}: ${Number(count || 0)}`;
-    parent.appendChild(row);
-  };
-  leftColumnKeys.forEach((key) => {
-    addCountRow(col1, labelsByKey[key] || key, standardCounts[key]);
-  });
-  rightColumnKeys.forEach((key) => {
-    addCountRow(col2, labelsByKey[key] || key, standardCounts[key]);
-  });
-  addCountRow(col2, "Percussion", instrumentation.totalPercussion);
-  grid.appendChild(col1);
-  grid.appendChild(col2);
-  instList.appendChild(grid);
-  if (Array.isArray(instrumentation.nonStandard) && instrumentation.nonStandard.length) {
-    const nonStandardRow = document.createElement("div");
-    nonStandardRow.className = "note";
-    nonStandardRow.textContent = `Non-standard: ${instrumentation.nonStandard
-      .filter((row) => row?.instrumentName)
-      .map((row) => `${row.instrumentName}${Number(row.count || 0) ? ` (${Number(row.count || 0)})` : ""}`)
-      .join(" - ")}`;
-    instList.appendChild(nonStandardRow);
-  }
-  if (instrumentation.otherInstrumentationNotes) {
-    const noteRow = document.createElement("div");
-    noteRow.className = "note";
-    noteRow.textContent = `Notes: ${instrumentation.otherInstrumentationNotes}`;
-    instList.appendChild(noteRow);
-  }
-  instPanel.appendChild(instList);
-  els.judgeOpenDirectorRefContent.appendChild(instPanel);
+  return getJudgeOpenDirectorReference().renderJudgeOpenDirectorReference();
 }
 
 async function refreshJudgeOpenDirectorReference({ persistToPacket = true } = {}) {
-  if (!els.judgeOpenDirectorRefStatus || !els.judgeOpenDirectorRefContent) return;
-  const existing = state.judgeOpen.selectedExisting;
-  if (!existing?.schoolId || !existing?.ensembleId) {
-    setJudgeOpenDirectorReferenceState(
-      "not-linked",
-      "Link an existing ensemble to load Director repertoire/instrumentation.",
-      null
-    );
-    renderJudgeOpenDirectorReference();
-    if (persistToPacket) {
-      syncOpenDirectorEntrySnapshotDraft(null);
-    }
-    return;
-  }
-  const activeEvent = state.event.active || null;
-  if (!activeEvent?.id) {
-    setJudgeOpenDirectorReferenceState(
-      "no-active-event",
-      "No active event. Director repertoire/instrumentation unavailable.",
-      null
-    );
-    renderJudgeOpenDirectorReference();
-    if (persistToPacket) {
-      syncOpenDirectorEntrySnapshotDraft(null);
-    }
-    return;
-  }
-
-  const version = (state.judgeOpen.directorEntryReferenceLoadVersion || 0) + 1;
-  state.judgeOpen.directorEntryReferenceLoadVersion = version;
-  setJudgeOpenDirectorReferenceState("loading", "Loading Director repertoire/instrumentation...", null);
-  renderJudgeOpenDirectorReference();
-  try {
-    const result = await loadDirectorEntrySnapshotForJudge({
-      eventId: activeEvent.id,
-      ensembleId: existing.ensembleId,
-    });
-    if (state.judgeOpen.directorEntryReferenceLoadVersion !== version) return;
-    if (!result?.ok) {
-      const message =
-        result?.reason === "not-found"
-          ? "No Director entry found for this ensemble in the active event."
-          : result?.reason === "no-event"
-            ? "No active event. Director repertoire/instrumentation unavailable."
-            : (result?.message || "Unable to load Director entry reference.");
-      setJudgeOpenDirectorReferenceState(result?.reason || "error", message, null);
-      renderJudgeOpenDirectorReference();
-      if (persistToPacket) {
-        syncOpenDirectorEntrySnapshotDraft(null);
-      }
-      return;
-    }
-    setJudgeOpenDirectorReferenceState("loaded", "", result.snapshot);
-    renderJudgeOpenDirectorReference();
-    if (persistToPacket) {
-      syncOpenDirectorEntrySnapshotDraft(result.snapshot);
-    }
-  } catch (error) {
-    console.error("refreshJudgeOpenDirectorReference failed", error);
-    if (state.judgeOpen.directorEntryReferenceLoadVersion !== version) return;
-    setJudgeOpenDirectorReferenceState("error", "Unable to load Director entry reference.", null);
-    renderJudgeOpenDirectorReference();
-  }
-}
-
-function areDirectorEntrySnapshotsEqual(a, b) {
-  return JSON.stringify(a || null) === JSON.stringify(b || null);
+  return getJudgeOpenDirectorReference().refreshJudgeOpenDirectorReference({ persistToPacket });
 }
 
 function syncOpenDirectorEntrySnapshotDraft(nextSnapshot) {
-  const currentPacket = state.judgeOpen.currentPacket || {};
-  const currentSnapshot = currentPacket.directorEntrySnapshot || null;
-  if (areDirectorEntrySnapshotsEqual(currentSnapshot, nextSnapshot || null)) {
-    return;
-  }
-  state.judgeOpen.currentPacket = {
-    ...currentPacket,
-    directorEntrySnapshot: nextSnapshot || null,
-  };
-  if (!state.judgeOpen.currentPacketId) return;
-  updateOpenPacketDraft({ directorEntrySnapshot: nextSnapshot || null }).catch((error) => {
-    console.error("Failed syncing open packet director snapshot", error);
-  });
+  return getJudgeOpenDirectorReference().syncOpenDirectorEntrySnapshotDraft(nextSnapshot);
 }
 
 function updateRoleTabBar(_role) {
@@ -2728,415 +2664,39 @@ function hideOpenDetailView() {
 }
 
 function syncOpenFormTypeSegmented() {
-  if (!els.judgeOpenFormTypeSegmented) return;
-  const buttons = els.judgeOpenFormTypeSegmented.querySelectorAll("[data-form]");
-  buttons.forEach((button) => {
-    const isActive = button.dataset.form === (state.judgeOpen.formType || "stage");
-    button.classList.toggle("is-active", isActive);
-  });
-  if (els.judgeOpenPrepTimePanel) {
-    els.judgeOpenPrepTimePanel.classList.toggle(
-      "is-hidden",
-      (state.judgeOpen.formType || "stage") !== "sight"
-    );
-  }
+  return getJudgeOpenSession().syncOpenFormTypeSegmented();
 }
 
 async function openJudgeOpenPacket(packetId) {
-  if (!packetId) return;
-  const result = await selectOpenPacket(packetId, { onSessions: renderOpenSegments });
-  if (result?.ok) {
-    state.judgeOpen.tapePlaylistIndex = 0;
-    if (els.judgeOpenSchoolNameInput) {
-      els.judgeOpenSchoolNameInput.value = result.packet.schoolName || "";
-    }
-    if (els.judgeOpenEnsembleNameInput) {
-      els.judgeOpenEnsembleNameInput.value = result.packet.ensembleName || "";
-    }
-    if (els.judgeOpenFormTypeSelect) {
-      els.judgeOpenFormTypeSelect.value = result.packet.formType || "stage";
-    }
-    syncOpenFormTypeSegmented();
-    if (els.judgeOpenExistingSelect) {
-      if (result.packet.ensembleId) {
-        els.judgeOpenExistingSelect.value = `${result.packet.schoolId}:${result.packet.ensembleId}`;
-      } else {
-        els.judgeOpenExistingSelect.value = "";
-      }
-    }
-    if (els.judgeOpenTranscriptInput) {
-      els.judgeOpenTranscriptInput.value =
-        result.packet.transcriptFull || result.packet.transcript || "";
-    }
-    if (result.packet.directorEntrySnapshot) {
-      setJudgeOpenDirectorReferenceState("loaded", "", result.packet.directorEntrySnapshot);
-    } else {
-      setJudgeOpenDirectorReferenceState("idle", "", null);
-    }
-    renderJudgeOpenDirectorReference();
-    refreshJudgeOpenDirectorReference({ persistToPacket: false });
-    renderOpenCaptionForm();
-    updateOpenHeader();
-    updateOpenEmptyState();
-    updateOpenSubmitState();
-    showOpenDetailView();
-    await saveOpenPrefsToServer({
-      lastJudgeOpenPacketId: packetId,
-      lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
-    });
-    if (state.auth.userProfile) {
-      state.auth.userProfile.preferences = {
-        ...(state.auth.userProfile.preferences || {}),
-        lastJudgeOpenPacketId: packetId,
-        lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
-      };
-    }
-  }
+  return getJudgeOpenSession().openJudgeOpenPacket(packetId);
 }
 
 export function renderOpenExistingOptions(items) {
-  if (!els.judgeOpenExistingSelect) return;
-  els.judgeOpenExistingSelect.innerHTML = "";
-  const sorted = [...items].sort((a, b) => {
-    const school = (a.schoolName || "").localeCompare(b.schoolName || "");
-    if (school !== 0) return school;
-    return (a.ensembleName || "").localeCompare(b.ensembleName || "");
-  });
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = items.length ? "Select existing ensemble" : "No ensembles available";
-  els.judgeOpenExistingSelect.appendChild(placeholder);
-  sorted.forEach((item) => {
-    const option = document.createElement("option");
-    option.value = `${item.schoolId}:${item.ensembleId}`;
-    option.textContent = `${item.schoolName} — ${item.ensembleName}`;
-    option.dataset.schoolId = item.schoolId;
-    option.dataset.schoolName = item.schoolName;
-    option.dataset.ensembleId = item.ensembleId;
-    option.dataset.ensembleName = item.ensembleName;
-    els.judgeOpenExistingSelect.appendChild(option);
-  });
-  if (state.judgeOpen.selectedExisting?.ensembleId) {
-    els.judgeOpenExistingSelect.value = `${state.judgeOpen.selectedExisting.schoolId}:${state.judgeOpen.selectedExisting.ensembleId}`;
-  }
+  return getJudgeOpenRenderers().renderOpenExistingOptions(items || []);
 }
 
 export function renderOpenCaptionForm() {
-  if (!els.judgeOpenCaptionForm) return;
-  els.judgeOpenCaptionForm.innerHTML = "";
-  const template = getOpenCaptionTemplate();
-  template.forEach(({ key, label }) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "caption-card";
-    wrapper.dataset.key = key;
-    wrapper.innerHTML = `
-      <div class="caption-body">
-        <div class="caption-main">
-          <div class="caption-header-row">
-            <div class="caption-title">${label}</div>
-            <div class="caption-segments" data-grade-group>
-              <button type="button" data-grade="A">A</button>
-              <button type="button" data-grade="B">B</button>
-              <button type="button" data-grade="C">C</button>
-              <button type="button" data-grade="D">D</button>
-              <button type="button" data-grade="F">F</button>
-            </div>
-          </div>
-          <textarea rows="2" data-comment></textarea>
-        </div>
-        <div class="caption-grade-rail">
-          <div class="caption-modifiers" data-modifier-group>
-            <button type="button" data-modifier="+">+</button>
-            <button type="button" data-modifier="-">-</button>
-          </div>
-        </div>
-      </div>
-    `;
-    els.judgeOpenCaptionForm.appendChild(wrapper);
-  });
-  applyOpenCaptionState();
-}
-
-function areOpenCaptionsComplete() {
-  const template = getOpenCaptionTemplate();
-  return template.every(({ key }) => {
-    const grade = state.judgeOpen.captions[key]?.gradeLetter;
-    return Boolean(grade);
-  });
+  return getJudgeOpenCore().renderOpenCaptionForm();
 }
 
 export function applyOpenCaptionState() {
-  const template = getOpenCaptionTemplate();
-  template.forEach(({ key }) => {
-    const wrapper = els.judgeOpenCaptionForm?.querySelector(`[data-key="${key}"]`);
-    if (!wrapper) return;
-    const caption = state.judgeOpen.captions[key] || {};
-    const comment = wrapper.querySelector("[data-comment]");
-    const gradeButtons = wrapper.querySelectorAll("[data-grade]");
-    gradeButtons.forEach((btn) => {
-      const active = btn.dataset.grade === caption.gradeLetter;
-      btn.classList.toggle("is-active", active);
-    });
-    const modifierButtons = wrapper.querySelectorAll("[data-modifier]");
-    modifierButtons.forEach((btn) => {
-      const active = btn.dataset.modifier === caption.gradeModifier;
-      btn.classList.toggle("is-active", active);
-    });
-    if (comment) comment.value = caption.comment || "";
-  });
-  const complete = areOpenCaptionsComplete();
-  const total = calculateCaptionTotal(state.judgeOpen.captions);
-  const rating = complete ? computeFinalRating(total) : { label: "N/A", value: null };
-  if (els.judgeOpenCaptionTotal) {
-    els.judgeOpenCaptionTotal.textContent = complete ? String(total) : "Incomplete";
-  }
-  if (els.judgeOpenFinalRating) {
-    els.judgeOpenFinalRating.textContent = rating.label;
-  }
+  return getJudgeOpenCore().applyOpenCaptionState();
 }
 
 export function renderOpenSegments(sessions) {
-  if (!els.judgeOpenSegmentsList) return;
-  els.judgeOpenSegmentsList.innerHTML = "";
-  const ordered = [...sessions].sort((a, b) => {
-    const aTime = a.startedAt?.toMillis
-      ? a.startedAt.toMillis()
-      : a.createdAt?.toMillis
-        ? a.createdAt.toMillis()
-        : 0;
-    const bTime = b.startedAt?.toMillis
-      ? b.startedAt.toMillis()
-      : b.createdAt?.toMillis
-        ? b.createdAt.toMillis()
-        : 0;
-    if (aTime && bTime) return aTime - bTime;
-    return 0;
-  });
-  if (els.judgeOpenSegmentsDetails) {
-    const hint = els.judgeOpenSegmentsDetails.querySelector(".readiness-hint");
-    if (hint) hint.textContent = `${ordered.length} segments`;
-  }
-  if (els.judgeOpenSegmentsSummary) {
-    els.judgeOpenSegmentsSummary.textContent = `Segments (${ordered.length})`;
-  }
-  ordered.forEach((session, index) => {
-    const item = document.createElement("li");
-    item.className = "list-item";
-    const status = session.status || "recording";
-    const meta = document.createElement("div");
-    meta.className = "stack";
-    const title = document.createElement("strong");
-    title.textContent = `Segment ${index + 1}`;
-    const hint = document.createElement("div");
-    hint.className = "note";
-    const duration = formatDuration(Number(session.durationSec || 0));
-    const transcriptStatus = session.transcriptStatus || "idle";
-    const startedAtLabel = session.startedAt ? formatPerformanceAt(session.startedAt) : "";
-    const startedText = startedAtLabel ? ` - ${startedAtLabel}` : "";
-    hint.textContent = `${status} - ${duration}${startedText} - transcript ${transcriptStatus}${
-      session.needsUpload ? " - needs upload" : ""
-    }`;
-    meta.appendChild(title);
-    meta.appendChild(hint);
-    item.appendChild(meta);
-
-    const actions = document.createElement("div");
-    actions.className = "actions";
-    if (session.needsUpload) {
-      const retryBtn = document.createElement("button");
-      retryBtn.className = "ghost";
-      retryBtn.textContent = "Retry Upload";
-      retryBtn.addEventListener("click", async () => {
-        const result = await retryOpenSessionUploads(session.id);
-        if (!result?.ok) {
-          setOpenPacketHint(result?.message || "Retry failed.");
-        } else {
-          setOpenPacketHint("Retry completed.");
-        }
-      });
-      actions.appendChild(retryBtn);
-    }
-    const retryTranscriptBtn = document.createElement("button");
-    retryTranscriptBtn.className = "ghost";
-    retryTranscriptBtn.textContent = "Retry Transcription";
-    retryTranscriptBtn.addEventListener("click", async () => {
-      const result = await transcribeOpenSegment({ sessionId: session.id });
-      if (!result?.ok) {
-        setOpenPacketHint(result?.message || "Segment transcription failed.");
-      } else {
-        setOpenPacketHint("Segment transcription complete.");
-      }
-    });
-    actions.appendChild(retryTranscriptBtn);
-    item.appendChild(actions);
-
-    if (session.masterAudioUrl) {
-      const audio = document.createElement("audio");
-      audio.controls = true;
-      audio.src = session.masterAudioUrl;
-      audio.className = "audio";
-      item.appendChild(audio);
-    }
-
-    els.judgeOpenSegmentsList.appendChild(item);
-  });
-  updateTapePlayback(ordered);
+  return getJudgeOpenCore().renderOpenSegments(sessions || []);
 }
 
 export function updateOpenSubmitState() {
-  const packet = state.judgeOpen.currentPacket || {};
-  const editable = isOpenPacketEditable(packet);
-  const complete = areOpenCaptionsComplete();
-  const linkedEnsemble = hasLinkedOpenEnsemble();
-  const pendingUploads = state.judgeOpen.pendingUploads > 0;
-  const recordingActive = state.judgeOpen.mediaRecorder?.state === "recording";
-  const canSubmit =
-    editable && complete && linkedEnsemble && !pendingUploads && !recordingActive;
-  if (els.judgeOpenSubmitBtn) {
-    els.judgeOpenSubmitBtn.disabled = !canSubmit;
-  }
-  if (els.judgeOpenTranscriptInput) {
-    els.judgeOpenTranscriptInput.disabled = !editable;
-  }
-  if (els.judgeOpenDraftBtn) {
-    els.judgeOpenDraftBtn.disabled = !editable;
-  }
-  if (els.judgeOpenTranscribeBtn) {
-    els.judgeOpenTranscribeBtn.disabled = !editable;
-  }
-  if (els.judgeOpenRecordBtn) {
-    els.judgeOpenRecordBtn.disabled = !editable;
-  }
-  if (els.judgeOpenStopBtn) {
-    els.judgeOpenStopBtn.disabled = !editable;
-  }
+  return getJudgeOpenCore().updateOpenSubmitState();
 }
 
 export async function restoreOpenPacketFromPrefs() {
-  if (state.judgeOpen.restoreAttempted) return;
-  state.judgeOpen.restoreAttempted = true;
-  if (!canUseOpenJudge(state.auth.userProfile)) return;
-  const local = loadOpenPrefs();
-  const prefs = state.auth.userProfile?.preferences || {};
-  state.judgeOpen.useActiveEventDefaults =
-    typeof prefs.judgeOpenUseActiveEventDefaults === "boolean"
-      ? prefs.judgeOpenUseActiveEventDefaults
-      : local.useActiveEventDefaults !== false;
-  syncOpenEventDefaultsUI();
-  refreshOpenEventDefaultsState();
-  const defaultFormType = prefs.judgeOpenDefaultFormType || local.defaultFormType || "stage";
-  const lastFormType = prefs.lastJudgeOpenFormType || local.lastFormType || defaultFormType;
-  state.judgeOpen.formType = lastFormType || "stage";
-  if (els.judgeOpenFormTypeSelect) {
-    els.judgeOpenFormTypeSelect.value = state.judgeOpen.formType;
-  }
-  syncOpenFormTypeSegmented();
-  renderOpenCaptionForm();
-  applyOpenEventAssignmentDefaults();
-
-  const lastPacketId = prefs.lastJudgeOpenPacketId || local.lastPacketId;
-  if (!lastPacketId) {
-    updateOpenEmptyState();
-    updateOpenSubmitState();
-    return;
-  }
-  const result = await selectOpenPacket(lastPacketId, { onSessions: renderOpenSegments });
-  if (result?.ok) {
-    if (els.judgeOpenPacketSelect) {
-      els.judgeOpenPacketSelect.value = lastPacketId;
-    }
-    if (els.judgeOpenSchoolNameInput) {
-      els.judgeOpenSchoolNameInput.value = result.packet.schoolName || "";
-    }
-    if (els.judgeOpenEnsembleNameInput) {
-      els.judgeOpenEnsembleNameInput.value = result.packet.ensembleName || "";
-    }
-    if (els.judgeOpenExistingSelect) {
-      els.judgeOpenExistingSelect.value = result.packet.ensembleId
-        ? `${result.packet.schoolId}:${result.packet.ensembleId}`
-        : "";
-    }
-    if (els.judgeOpenTranscriptInput) {
-      els.judgeOpenTranscriptInput.value =
-        result.packet.transcriptFull || result.packet.transcript || "";
-    }
-    if (result.packet.directorEntrySnapshot) {
-      setJudgeOpenDirectorReferenceState("loaded", "", result.packet.directorEntrySnapshot);
-    } else {
-      setJudgeOpenDirectorReferenceState("idle", "", null);
-    }
-    renderJudgeOpenDirectorReference();
-    refreshJudgeOpenDirectorReference({ persistToPacket: false });
-    renderOpenCaptionForm();
-    updateOpenHeader();
-    showOpenDetailView();
-    updateOpenEmptyState();
-    updateOpenSubmitState();
-    return;
-  }
-  setOpenPacketHint("Last packet not found.");
-  updateOpenEmptyState();
-  updateOpenSubmitState();
-}
-
-function formatDuration(totalSec) {
-  if (!Number.isFinite(totalSec)) return "0:00";
-  const seconds = Math.max(0, Math.floor(totalSec || 0));
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-  if (hrs > 0) {
-    return `${hrs}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-  }
-  return `${mins}:${String(secs).padStart(2, "0")}`;
-}
-
-function buildTapePlaylist(sessions) {
-  return sessions
-    .filter((session) => session.masterAudioUrl)
-    .map((session) => ({
-      id: session.id,
-      url: session.masterAudioUrl,
-      durationSec: Number(session.durationSec || 0),
-    }));
+  return getJudgeOpenSession().restoreOpenPacketFromPrefs();
 }
 
 function updateTapePlayback(sessions) {
-  if (!els.judgeOpenTapePlayback) return;
-  const playlist = buildTapePlaylist(sessions);
-  state.judgeOpen.tapePlaylist = playlist;
-  const totalDuration = sessions.reduce(
-    (sum, item) => {
-      const value = Number(item.durationSec);
-      return sum + (Number.isFinite(value) && value > 0 ? value : 0);
-    },
-    0
-  );
-  const safeDuration = Number.isFinite(totalDuration) ? totalDuration : 0;
-  state.judgeOpen.tapeDurationSec = safeDuration;
-  if (els.judgeOpenTapeDuration) {
-    els.judgeOpenTapeDuration.textContent = formatDuration(safeDuration);
-  }
-  const hasAudio = playlist.length > 0;
-  if (els.judgeOpenTapeEmpty) {
-    els.judgeOpenTapeEmpty.style.display = hasAudio ? "none" : "block";
-  }
-  if (els.judgeOpenTapePlayback) {
-    els.judgeOpenTapePlayback.style.display = hasAudio ? "block" : "none";
-  }
-  if (els.judgeOpenTapeDurationRow) {
-    els.judgeOpenTapeDurationRow.style.display = safeDuration > 0 ? "block" : "none";
-  }
-  if (!hasAudio) {
-    els.judgeOpenTapePlayback.removeAttribute("src");
-    return;
-  }
-  const current = state.judgeOpen.tapePlaylistIndex || 0;
-  const bounded = current < playlist.length ? current : 0;
-  state.judgeOpen.tapePlaylistIndex = bounded;
-  if (els.judgeOpenTapePlayback.src !== playlist[bounded].url) {
-    els.judgeOpenTapePlayback.src = playlist[bounded].url;
-  }
+  return getJudgeOpenSession().updateTapePlayback(sessions || []);
 }
 
 export function setStageJudgeSelectValues({
@@ -3152,463 +2712,27 @@ export function setStageJudgeSelectValues({
 }
 
 export function renderDirectorEventOptions() {
-  if (hasDirectorUnsavedChanges()) {
-    return;
-  }
-  const events = state.event.list || [];
-  const exists = events.some((event) => event.id === state.director.selectedEventId);
-  if (!exists) {
-    state.director.selectedEventId = state.event.active?.id || events[0]?.id || null;
-  }
-  if (els.directorEventSelect) {
-    els.directorEventSelect.innerHTML = "";
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select an event";
-    els.directorEventSelect.appendChild(placeholder);
-    events.forEach((event) => {
-      const option = document.createElement("option");
-      option.value = event.id;
-      option.textContent = getEventCardLabel(event);
-      els.directorEventSelect.appendChild(option);
-    });
-    if (state.director.selectedEventId) {
-      els.directorEventSelect.value = state.director.selectedEventId;
-    }
-  }
-  updateDirectorEventMeta();
-  loadDirectorEntry({
-    onUpdate: applyDirectorEntryUpdate,
-    onClear: applyDirectorEntryClear,
-  });
+  return getDirectorEventRenderers().renderDirectorEventOptions();
 }
 
 export function updateDirectorEventMeta() {
-  if (!els.directorEventMeta) return;
-  const event = state.event.list.find((item) => item.id === state.director.selectedEventId);
-  if (!event) {
-    if (els.directorEventName) {
-      els.directorEventName.textContent = "No event selected.";
-    } else {
-      els.directorEventMeta.textContent = "No event selected.";
-    }
-    if (els.directorEventDetail) {
-      els.directorEventDetail.textContent = "";
-    }
-    if (els.directorScheduleBtn) {
-      els.directorScheduleBtn.disabled = true;
-    }
-    return;
-  }
-  const name = event.name || "Event";
-  const startDate = event.startAt ? formatDateHeading(event.startAt) : "";
-  const endDate = event.endAt ? formatDateHeading(event.endAt) : "";
-  const dateLabel =
-    startDate && endDate && startDate !== endDate
-      ? `${startDate} â€“ ${endDate}`
-      : startDate || endDate || "";
-  if (els.directorEventName) {
-    els.directorEventName.textContent = name;
-  } else {
-    els.directorEventMeta.textContent = name;
-  }
-  if (els.directorEventDetail) {
-    els.directorEventDetail.textContent = dateLabel;
-  }
-  if (els.directorScheduleBtn) {
-    els.directorScheduleBtn.disabled = false;
-  }
-}
-
-const REGISTRATION_GRADES = ["I", "II", "III", "IV", "V", "VI"];
-
-function getEventDaysForRegistration(activeEvent) {
-  if (!activeEvent) return [];
-  const start = activeEvent.startAt?.toDate ? activeEvent.startAt.toDate() : null;
-  const end = activeEvent.endAt?.toDate ? activeEvent.endAt.toDate() : null;
-  if (!start) return [];
-  const endDate = end && end.getTime() >= start.getTime() ? end : start;
-  const days = [];
-  const cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-  const endDay = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
-  let dayNum = 1;
-  while (cursor.getTime() <= endDay.getTime()) {
-    const label = `Day ${dayNum} – ${cursor.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}`;
-    days.push({ value: label, label });
-    cursor.setDate(cursor.getDate() + 1);
-    dayNum += 1;
-  }
-  return days;
+  return getDirectorEventRenderers().updateDirectorEventMeta();
 }
 
 export async function checkDirectorHasRegistrationForEvent(eventId) {
-  const schoolId = getDirectorSchoolId();
-  const ensembles = state.director.ensemblesCache || [];
-  if (!schoolId || !eventId || !ensembles.length) return false;
-  for (const ensemble of ensembles) {
-    const entryRef = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensemble.id);
-    const snap = await getDoc(entryRef);
-    if (snap.exists()) return true;
-  }
-  return false;
+  return getDirectorRegistrationRenderers().checkDirectorHasRegistrationForEvent(eventId);
 }
 
 export async function renderDirectorRegistrationPanel() {
-  if (!els.directorRegistrationPanel) return;
-  const schoolId = getDirectorSchoolId();
-  const eventId = state.director.selectedEventId || null;
-  const event = eventId ? (state.event.list || []).find((e) => e.id === eventId) : null;
-  const ensembles = state.director.ensemblesCache || [];
-  const activeEvent = event;
-
-  if (!schoolId || !event) return;
-
-  if (els.directorRegistrationEventName) {
-    els.directorRegistrationEventName.textContent = getEventCardLabel(event);
-  }
-  if (els.directorRegistrationEventDates) {
-    const startDate = event.startAt?.toDate ? event.startAt.toDate().toLocaleDateString() : "";
-    const endDate = event.endAt?.toDate ? event.endAt.toDate().toLocaleDateString() : "";
-    els.directorRegistrationEventDates.textContent =
-      startDate && endDate && startDate !== endDate
-        ? `${startDate} – ${endDate}`
-        : startDate || endDate || "—";
-  }
-  if (els.directorRegistrationDeadline) {
-    const deadline = event.registrationDeadline?.toDate
-      ? event.registrationDeadline.toDate().toLocaleDateString()
-      : null;
-    els.directorRegistrationDeadline.textContent = deadline
-      ? `Registration deadline: ${deadline}`
-      : "";
-  }
-
-  let hasRegistration = false;
-  const entryDataByEnsemble = new Map();
-
-  if (eventId && ensembles.length) {
-    await Promise.all(
-      ensembles.map(async (ensemble) => {
-        const entryRef = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensemble.id);
-        const snap = await getDoc(entryRef);
-        if (snap.exists()) {
-          hasRegistration = true;
-          entryDataByEnsemble.set(ensemble.id, snap.data());
-        }
-      })
-    );
-  }
-
-  state.director.selectedEnsemblesForRegistration = state.director.selectedEnsemblesForRegistration || [];
-  if (state.director.selectedEnsemblesForRegistration.length === 0 && entryDataByEnsemble.size > 0) {
-    state.director.selectedEnsemblesForRegistration = Array.from(entryDataByEnsemble.keys());
-  }
-  const selectedIds = state.director.selectedEnsemblesForRegistration;
-  const selectedEnsembles = ensembles.filter((e) => selectedIds.includes(e.id));
-  const ensembleById = new Map(ensembles.map((e) => [e.id, e]));
-
-  if (els.directorRegistrationEnsembleList) {
-    els.directorRegistrationEnsembleList.innerHTML = "";
-    ensembles.forEach((ensemble) => {
-      const row = document.createElement("label");
-      row.className = "row";
-      row.style.alignItems = "center";
-      row.style.gap = "0.5rem";
-      const check = document.createElement("input");
-      check.type = "checkbox";
-      check.checked = selectedIds.includes(ensemble.id);
-      check.addEventListener("change", () => {
-        if (check.checked) {
-          if (!state.director.selectedEnsemblesForRegistration.includes(ensemble.id)) {
-            state.director.selectedEnsemblesForRegistration.push(ensemble.id);
-          }
-        } else {
-          state.director.selectedEnsemblesForRegistration = state.director.selectedEnsemblesForRegistration.filter((x) => x !== ensemble.id);
-        }
-        renderDirectorRegistrationPanel();
-      });
-      const nameSpan = document.createElement("span");
-      nameSpan.textContent = ensemble.name || "Untitled";
-      row.appendChild(check);
-      row.appendChild(nameSpan);
-      els.directorRegistrationEnsembleList.appendChild(row);
-    });
-    const createRow = document.createElement("div");
-    createRow.className = "stack registration-add-ensemble";
-    createRow.style.marginTop = "1rem";
-    const createHint = document.createElement("p");
-    createHint.className = "hint";
-    createHint.textContent = "Don't see your ensemble? Create one:";
-    createRow.appendChild(createHint);
-    const createLabel = document.createElement("label");
-    createLabel.className = "row";
-    createLabel.style.alignItems = "center";
-    createLabel.style.gap = "0.5rem";
-    const createInput = document.createElement("input");
-    createInput.type = "text";
-    createInput.placeholder = "Ensemble name";
-    createInput.id = "directorRegistrationNewEnsembleInput";
-    const createBtn = document.createElement("button");
-    createBtn.type = "button";
-    createBtn.className = "btn--secondary";
-    createBtn.textContent = "Create ensemble";
-    createBtn.addEventListener("click", async () => {
-      const name = (createInput.value || "").trim();
-      if (!name) {
-        alertUser("Enter an ensemble name.");
-        return;
-      }
-      const result = await createDirectorEnsemble(name);
-      if (result?.ok) {
-        createInput.value = "";
-        if (result.id && !state.director.selectedEnsemblesForRegistration.includes(result.id)) {
-          state.director.selectedEnsemblesForRegistration.push(result.id);
-        }
-        refreshDirectorWatchers();
-        await renderDirectorRegistrationPanel();
-      } else {
-        alertUser(result?.message || "Could not create ensemble.");
-      }
-    });
-    createLabel.appendChild(createInput);
-    createLabel.appendChild(createBtn);
-    createRow.appendChild(createLabel);
-    els.directorRegistrationEnsembleList.appendChild(createRow);
-  }
-
-  state.director._registrationGradeFlexMap = new Map();
-  const eventDays = getEventDaysForRegistration(activeEvent);
-
-  if (els.directorRegistrationGradeFlexList) {
-    els.directorRegistrationGradeFlexList.innerHTML = "";
-    selectedEnsembles.forEach((ensemble) => {
-      const data = entryDataByEnsemble.get(ensemble.id) || {};
-      const row = document.createElement("div");
-      row.className = "stack registration-ensemble-row";
-      row.dataset.registrationEnsembleId = ensemble.id;
-      const nameEl = document.createElement("strong");
-      nameEl.textContent = ensemble.name || "Untitled";
-      row.appendChild(nameEl);
-
-      const gradeLabel = document.createElement("label");
-      gradeLabel.textContent = "Performance grade (declared for scheduling) ";
-      const gradeSelect = document.createElement("select");
-      gradeSelect.dataset.ensembleId = ensemble.id;
-      REGISTRATION_GRADES.forEach((g) => {
-        const opt = document.createElement("option");
-        opt.value = g;
-        opt.textContent = g;
-        if ((data.declaredGradeLevel || "").trim() === g) opt.selected = true;
-        gradeSelect.appendChild(opt);
-      });
-      gradeLabel.appendChild(gradeSelect);
-      row.appendChild(gradeLabel);
-
-      const flexLabel = document.createElement("label");
-      flexLabel.className = "row";
-      const flexCheck = document.createElement("input");
-      flexCheck.type = "checkbox";
-      flexCheck.dataset.ensembleId = ensemble.id;
-      flexCheck.checked = Boolean(data.declaredGradeFlex);
-      flexLabel.appendChild(flexCheck);
-      flexLabel.appendChild(document.createTextNode(" Flex"));
-      row.appendChild(flexLabel);
-
-      const commentsLabel = document.createElement("label");
-      commentsLabel.className = "row";
-      const commentsCheck = document.createElement("input");
-      commentsCheck.type = "checkbox";
-      commentsCheck.dataset.ensembleId = ensemble.id;
-      commentsCheck.checked = Boolean(data.commentsOnly);
-      commentsLabel.appendChild(commentsCheck);
-      commentsLabel.appendChild(document.createTextNode(" Comments only"));
-      row.appendChild(commentsLabel);
-
-      const waiverLabel = document.createElement("label");
-      waiverLabel.className = "row";
-      const waiverCheck = document.createElement("input");
-      waiverCheck.type = "checkbox";
-      waiverCheck.dataset.ensembleId = ensemble.id;
-      waiverCheck.checked = Boolean(data.feeWaiverRequested);
-      if (waiverCheck.checked) commentsCheck.checked = true;
-      waiverLabel.appendChild(waiverCheck);
-      waiverLabel.appendChild(document.createTextNode(" Apply for fee waiver"));
-      row.appendChild(waiverLabel);
-
-      const dateLabel = document.createElement("label");
-      dateLabel.textContent = "Date preference ";
-      const dateInput = document.createElement("select");
-      dateInput.dataset.ensembleId = ensemble.id;
-      const datePlaceholder = document.createElement("option");
-      datePlaceholder.value = "";
-      datePlaceholder.textContent = "Select day…";
-      dateInput.appendChild(datePlaceholder);
-      eventDays.forEach((d) => {
-        const opt = document.createElement("option");
-        opt.value = d.value;
-        opt.textContent = d.label;
-        if ((data.datePreference || "").trim() === d.value) opt.selected = true;
-        dateInput.appendChild(opt);
-      });
-      if (!dateInput.value && (data.datePreference || "").trim()) {
-        const existing = (data.datePreference || "").trim();
-        const match = eventDays.find((d) => d.value === existing);
-        if (!match) {
-          const legacyOpt = document.createElement("option");
-          legacyOpt.value = existing;
-          legacyOpt.textContent = existing;
-          legacyOpt.selected = true;
-          dateInput.appendChild(legacyOpt);
-        }
-      }
-      dateLabel.appendChild(dateInput);
-      row.appendChild(dateLabel);
-
-      const noteLabel = document.createElement("label");
-      noteLabel.textContent = "Special requests / scheduling note";
-      const noteInput = document.createElement("textarea");
-      noteInput.rows = 2;
-      noteInput.placeholder = "Time window or other requests";
-      noteInput.value = data.registrationNote || "";
-      noteInput.dataset.ensembleId = ensemble.id;
-      noteLabel.appendChild(noteInput);
-      row.appendChild(noteLabel);
-
-      state.director._registrationGradeFlexMap.set(ensemble.id, {
-        ensembleName: ensemble.name || "",
-        gradeSelect,
-        flexCheck,
-        commentsCheck,
-        waiverCheck,
-        datePref: dateInput,
-        note: noteInput,
-      });
-
-      const doUpsert = async () => {
-        const commentsOnly = waiverCheck.checked || commentsCheck.checked;
-        if (waiverCheck.checked) commentsCheck.checked = true;
-        await upsertRegistrationForEnsemble({
-          eventId,
-          schoolId,
-          ensembleId: ensemble.id,
-          ensembleName: ensemble.name || "",
-          declaredGradeLevel: gradeSelect.value,
-          declaredGradeFlex: flexCheck.checked,
-          commentsOnly,
-          feeWaiverRequested: waiverCheck.checked,
-          datePreference: dateInput.value.trim(),
-          registrationNote: noteInput.value.trim(),
-        });
-        renderDirectorRegistrationPanel();
-      };
-
-      gradeSelect.addEventListener("change", doUpsert);
-      flexCheck.addEventListener("change", doUpsert);
-      commentsCheck.addEventListener("change", () => {
-        if (waiverCheck.checked) {
-          commentsCheck.checked = true;
-          return;
-        }
-        doUpsert();
-      });
-      waiverCheck.addEventListener("change", () => {
-        if (waiverCheck.checked) commentsCheck.checked = true;
-        doUpsert();
-      });
-      dateInput.addEventListener("blur", doUpsert);
-      noteInput.addEventListener("blur", doUpsert);
-
-      els.directorRegistrationGradeFlexList.appendChild(row);
-    });
-  }
-
-  if (els.directorRegistrationFeesHint) {
-    const count = selectedIds.length;
-    const total = count * 225;
-    els.directorRegistrationFeesHint.textContent =
-      count > 0
-        ? `${count} ensemble(s) x $225 = $${total}. A Signature Form will be available after saving.`
-        : "Each registered ensemble is $225.";
-  }
+  return getDirectorRegistrationRenderers().renderDirectorRegistrationPanel();
 }
 
 export async function renderDirectorPostRegistration() {
-  const eventId = state.director.selectedEventId;
-  const event = eventId ? (state.event.list || []).find((e) => e.id === eventId) : null;
-  const schoolId = getDirectorSchoolId();
-  const ensembles = state.director.ensemblesCache || [];
-  if (!event || !schoolId) return;
-
-  if (els.directorRegisteredEventName) {
-    els.directorRegisteredEventName.textContent = getEventCardLabel(event);
-  }
-  if (els.directorRegisteredEventDates) {
-    const startDate = event.startAt?.toDate ? event.startAt.toDate().toLocaleDateString() : "";
-    const endDate = event.endAt?.toDate ? event.endAt.toDate().toLocaleDateString() : "";
-    els.directorRegisteredEventDates.textContent =
-      startDate && endDate && startDate !== endDate
-        ? `${startDate} – ${endDate}`
-        : startDate || endDate || "—";
-  }
-  if (els.directorRegisteredEnsemblesSummary) {
-    els.directorRegisteredEnsemblesSummary.innerHTML = "";
-    const heading = document.createElement("h4");
-    heading.textContent = "Registered Ensembles";
-    els.directorRegisteredEnsemblesSummary.appendChild(heading);
-    for (const ensemble of ensembles) {
-      const entryRef = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensemble.id);
-      const snap = await getDoc(entryRef);
-      if (!snap.exists()) continue;
-      const data = snap.data();
-      const row = document.createElement("div");
-      row.className = "stack registration-ensemble-row";
-      const name = document.createElement("strong");
-      name.textContent = ensemble.name || "Untitled";
-      row.appendChild(name);
-      const meta = document.createElement("div");
-      meta.className = "hint";
-      const parts = [];
-      if (data.declaredGradeLevel) parts.push(`Grade ${data.declaredGradeLevel}`);
-      if (data.declaredGradeFlex) parts.push("Flex");
-      if (data.commentsOnly) parts.push("Comments Only");
-      if (data.feeWaiverRequested) parts.push("Fee Waiver");
-      if (data.datePreference) parts.push(data.datePreference);
-      meta.textContent = parts.join(" · ") || "No preferences set";
-      row.appendChild(meta);
-      if (data.registrationNote) {
-        const note = document.createElement("div");
-        note.className = "hint";
-        note.textContent = `Note: ${data.registrationNote}`;
-        row.appendChild(note);
-      }
-      els.directorRegisteredEnsemblesSummary.appendChild(row);
-    }
-  }
+  return getDirectorRegistrationRenderers().renderDirectorPostRegistration();
 }
 
 function renderDayOfEnsembleSelector() {
-  const sel = document.getElementById("directorDayOfEnsembleSelect");
-  if (!sel) return;
-  sel.innerHTML = "";
-  const eventId = state.director.selectedEventId;
-  const ensembles = state.director.ensemblesCache || [];
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "Select ensemble...";
-  sel.appendChild(placeholder);
-  ensembles.forEach((ensemble) => {
-    const opt = document.createElement("option");
-    opt.value = ensemble.id;
-    opt.textContent = ensemble.name || "Untitled";
-    if (ensemble.id === state.director.selectedEnsembleId) opt.selected = true;
-    sel.appendChild(opt);
-  });
-  if (state.director.selectedEnsembleId) {
-    loadDirectorEntry({
-      onUpdate: applyDirectorEntryUpdate,
-      onClear: applyDirectorEntryClear,
-    });
-  }
+  return getDirectorDayOfRenderer()();
 }
 
 function generateSignatureFormPdf() {
@@ -3712,701 +2836,39 @@ function generateSignatureFormPdf() {
 }
 
 export function updateRepertoirePreview(wrapper, key) {
-  if (!wrapper || !state.director.entryDraft) return;
-  const preview = wrapper.querySelector(`[data-preview-key="${key}"]`);
-  if (!preview) return;
-  const grade = state.director.entryDraft.repertoire?.[key]?.grade || "";
-  const title = state.director.entryDraft.repertoire?.[key]?.title || "";
-  const composer = state.director.entryDraft.repertoire?.[key]?.composer || "";
-  const parts = [];
-  if (grade) parts.push(grade);
-  if (title) parts.push(title);
-  if (composer) parts.push(`- ${composer}`);
-  preview.textContent = parts.length ? `Selected: ${parts.join(" ")}` : "";
+  return getDirectorEntryFormRenderers().updateRepertoirePreview(wrapper, key);
 }
 
 export function renderRepertoireFields() {
-  if (!els.repertoireFields || !state.director.entryDraft) return;
-  els.repertoireFields.innerHTML = "";
-  if (!state.director.entryDraft.repertoire) {
-    state.director.entryDraft.repertoire = {};
-  }
-  const repertoire = state.director.entryDraft.repertoire;
-  if (!repertoire.repertoireRuleMode) {
-    repertoire.repertoireRuleMode = "standard";
-  }
-  const flexCheckboxes = [];
-  const syncRepertoireFlexCheckboxes = () => {
-    const checked = Boolean(state.director.entryDraft?.performanceGradeFlex);
-    flexCheckboxes.forEach((cb) => {
-      cb.checked = checked;
-    });
-  };
-
-  REPERTOIRE_FIELDS.forEach((piece) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "stack";
-    if (!repertoire[piece.key]) {
-      repertoire[piece.key] = {
-        pieceId: null,
-        grade: "",
-        title: "",
-        composer: "",
-      };
-    }
-    const pieceData = repertoire[piece.key];
-    if (piece.key === "march") {
-      const titleLabel = document.createElement("label");
-      titleLabel.textContent = `${piece.label} Title`;
-      const titleInput = document.createElement("input");
-      titleInput.type = "text";
-      titleInput.placeholder = "Enter march title...";
-      titleInput.value = pieceData?.title || "";
-      titleLabel.appendChild(titleInput);
-      wrapper.appendChild(titleLabel);
-
-      const composerLabel = document.createElement("label");
-      composerLabel.textContent = `${piece.label} Composer/Arranger`;
-      const composerInput = document.createElement("input");
-      composerInput.type = "text";
-      composerInput.value = pieceData?.composer || "";
-      composerLabel.appendChild(composerInput);
-      wrapper.appendChild(composerLabel);
-
-      titleInput.addEventListener("input", () => {
-        pieceData.title = titleInput.value.trim();
-        applyDirectorDirty("repertoire");
-        updateRepertoirePreview(wrapper, piece.key);
-      });
-      composerInput.addEventListener("input", () => {
-        pieceData.composer = composerInput.value.trim();
-        applyDirectorDirty("repertoire");
-        updateRepertoirePreview(wrapper, piece.key);
-      });
-
-      const preview = document.createElement("div");
-      preview.className = "hint";
-      preview.dataset.previewKey = piece.key;
-      wrapper.appendChild(preview);
-      updateRepertoirePreview(wrapper, piece.key);
-
-      els.repertoireFields.appendChild(wrapper);
-      return;
-    }
-
-    const row = document.createElement("div");
-    row.className = "repertoire-row";
-
-    const gradeLabel = document.createElement("label");
-    gradeLabel.textContent = "Grade";
-    const gradeSelect = document.createElement("select");
-    gradeLabel.appendChild(gradeSelect);
-    const baseOption = document.createElement("option");
-    baseOption.value = "";
-    baseOption.textContent = "Grade";
-    gradeSelect.appendChild(baseOption);
-    ["I", "II", "III", "IV", "V", "VI"].forEach((roman) => {
-      const option = document.createElement("option");
-      option.value = roman;
-      option.textContent = roman;
-      gradeSelect.appendChild(option);
-    });
-    gradeSelect.value = pieceData?.grade || "";
-
-    const titleLabel = document.createElement("label");
-    titleLabel.textContent = `${piece.label} Title`;
-    const combo = document.createElement("div");
-    combo.className = "mpa-combobox";
-    const titleInput = document.createElement("input");
-    titleInput.type = "text";
-    titleInput.placeholder = "Start typing a title...";
-    titleInput.value = pieceData?.title || "";
-    const list = document.createElement("div");
-    list.className = "mpa-combobox-list";
-    list.hidden = true;
-    let suggestionRenderVersion = 0;
-    const closeSuggestions = () => {
-      suggestionRenderVersion += 1;
-      list.hidden = true;
-    };
-    combo.appendChild(titleInput);
-    combo.appendChild(list);
-    titleLabel.appendChild(combo);
-
-    row.appendChild(gradeLabel);
-    row.appendChild(titleLabel);
-    wrapper.appendChild(row);
-
-    const composerRow = document.createElement("div");
-    composerRow.className = "row repertoire-composer-row";
-    const composerLabel = document.createElement("label");
-    composerLabel.textContent = `${piece.label} Composer/Arranger`;
-    const composerInput = document.createElement("input");
-    composerInput.type = "text";
-    composerInput.value = pieceData?.composer || "";
-    composerInput.readOnly = Boolean(pieceData?.pieceId);
-    composerLabel.appendChild(composerInput);
-    const composerEditBtn = document.createElement("button");
-    composerEditBtn.type = "button";
-    composerEditBtn.className = "ghost btn--sm";
-    composerEditBtn.textContent = "Edit";
-    composerEditBtn.addEventListener("click", () => {
-      composerInput.readOnly = !composerInput.readOnly;
-      composerEditBtn.textContent = composerInput.readOnly ? "Edit" : "Lock";
-      if (!composerInput.readOnly) {
-        composerInput.focus();
-      }
-    });
-    composerRow.appendChild(composerLabel);
-    composerRow.appendChild(composerEditBtn);
-    wrapper.appendChild(composerRow);
-
-    if (piece.key === "selection1" || piece.key === "selection2") {
-      const flexRow = document.createElement("label");
-      flexRow.className = "director-flex-row";
-      const flexCheckbox = document.createElement("input");
-      flexCheckbox.type = "checkbox";
-      flexCheckbox.checked = Boolean(state.director.entryDraft.performanceGradeFlex);
-      flexCheckbox.addEventListener("change", () => {
-        state.director.entryDraft.performanceGradeFlex = Boolean(flexCheckbox.checked);
-        syncRepertoireFlexCheckboxes();
-        setDirectorPerformanceGradeValue(state.director.entryDraft.performanceGrade || "");
-        applyDirectorDirty("repertoire");
-      });
-      flexCheckboxes.push(flexCheckbox);
-      const flexText = document.createElement("span");
-      flexText.textContent = "Flex";
-      flexRow.appendChild(flexCheckbox);
-      flexRow.appendChild(flexText);
-      wrapper.appendChild(flexRow);
-    }
-
-    if (piece.key === "selection2") {
-      const masterworkWrap = document.createElement("label");
-      masterworkWrap.className = "row";
-      masterworkWrap.style.alignItems = "center";
-      const masterworkCheckbox = document.createElement("input");
-      masterworkCheckbox.type = "checkbox";
-      masterworkCheckbox.checked = repertoire.repertoireRuleMode === "masterwork";
-      masterworkCheckbox.addEventListener("change", () => {
-        repertoire.repertoireRuleMode = masterworkCheckbox.checked ? "masterwork" : "standard";
-        applyDirectorDirty("repertoire");
-      });
-      const masterworkText = document.createElement("span");
-      masterworkText.textContent =
-        "Masterwork Exception (Selection #2 optional if Selection #1 is a Masterwork)";
-      masterworkWrap.appendChild(masterworkCheckbox);
-      masterworkWrap.appendChild(masterworkText);
-      wrapper.appendChild(masterworkWrap);
-    }
-
-    const preview = document.createElement("div");
-    preview.className = "hint";
-    preview.dataset.previewKey = piece.key;
-    wrapper.appendChild(preview);
-    updateRepertoirePreview(wrapper, piece.key);
-
-    const updatePerformanceGrade = () => {
-      const selection1Level = romanToLevel(
-        state.director.entryDraft.repertoire?.selection1?.grade
-      );
-      const selection2Level = romanToLevel(
-        state.director.entryDraft.repertoire?.selection2?.grade
-      );
-      const derived = derivePerformanceGrade(selection1Level, selection2Level);
-      if (derived.ok) {
-        state.director.entryDraft.performanceGrade = derived.value;
-        if (els.directorPerformanceGradeInput) {
-          els.directorPerformanceGradeInput.value = derived.value;
-        }
-        setPerformanceGradeError("");
-      }
-    };
-
-    const renderSuggestions = async () => {
-      const renderVersion = ++suggestionRenderVersion;
-      list.innerHTML = "";
-      const grade = pieceData.grade;
-      if (!grade) {
-        const empty = document.createElement("div");
-        empty.className = "mpa-combobox-empty";
-        empty.textContent = "Select a grade to browse titles.";
-        list.appendChild(empty);
-        list.hidden = false;
-        return;
-      }
-      list.hidden = false;
-      const loading = document.createElement("div");
-      loading.className = "mpa-combobox-empty";
-      loading.textContent = "Loading titles...";
-      list.appendChild(loading);
-      const options = await getMpaRepertoireForGrade(grade);
-      if (renderVersion !== suggestionRenderVersion) return;
-      const queryText = titleInput.value.trim().toLowerCase();
-      const filtered = options.filter((item) => {
-        const hay = item.titleLower || item.title.toLowerCase();
-        return !queryText || hay.includes(queryText);
-      });
-      const top = filtered.slice(0, 20);
-      list.innerHTML = "";
-      if (!top.length) {
-        const empty = document.createElement("div");
-        empty.className = "mpa-combobox-empty";
-        empty.textContent = "No matches found.";
-        list.appendChild(empty);
-        return;
-      }
-      top.forEach((item) => {
-        const option = document.createElement("button");
-        option.type = "button";
-        option.className = "mpa-combobox-option";
-        const masterworkBadge = item.isMasterwork ? " [Masterwork]" : "";
-        option.textContent = `${item.title}${item.composer ? ` - ${item.composer}` : ""}${masterworkBadge}`;
-        option.addEventListener("click", () => {
-          pieceData.pieceId = item.id;
-          pieceData.grade = grade;
-          pieceData.title = item.title || "";
-          pieceData.composer = item.composer || "";
-          titleInput.value = pieceData.title;
-          composerInput.value = pieceData.composer;
-          composerInput.readOnly = true;
-          composerEditBtn.textContent = "Edit";
-          closeSuggestions();
-          applyDirectorDirty("repertoire");
-          updatePerformanceGrade();
-          updateRepertoirePreview(wrapper, piece.key);
-        });
-        list.appendChild(option);
-      });
-    };
-
-    gradeSelect.addEventListener("change", async () => {
-      const nextGrade = gradeSelect.value || "";
-      if (pieceData.grade !== nextGrade) {
-        pieceData.grade = nextGrade;
-        pieceData.pieceId = null;
-        pieceData.title = "";
-        pieceData.composer = "";
-        titleInput.value = "";
-        composerInput.value = "";
-        composerInput.readOnly = false;
-        composerEditBtn.textContent = "Edit";
-        closeSuggestions();
-        list.innerHTML = "";
-      }
-      applyDirectorDirty("repertoire");
-      updatePerformanceGrade();
-      updateRepertoirePreview(wrapper, piece.key);
-      if (nextGrade) {
-        await getMpaRepertoireForGrade(nextGrade);
-      }
-    });
-
-    titleInput.addEventListener("input", () => {
-      pieceData.title = titleInput.value.trim();
-      pieceData.pieceId = null;
-      composerInput.readOnly = false;
-      composerEditBtn.textContent = "Edit";
-      applyDirectorDirty("repertoire");
-      updateRepertoirePreview(wrapper, piece.key);
-      renderSuggestions();
-    });
-
-    titleInput.addEventListener("focus", () => {
-      renderSuggestions();
-    });
-
-    titleInput.addEventListener("blur", () => {
-      window.setTimeout(() => {
-        closeSuggestions();
-      }, 120);
-    });
-
-    composerInput.addEventListener("input", () => {
-      pieceData.composer = composerInput.value.trim();
-      applyDirectorDirty("repertoire");
-      updateRepertoirePreview(wrapper, piece.key);
-    });
-
-    const selectedMeta = document.createElement("div");
-    selectedMeta.className = "hint";
-    const updateSelectedMeta = async () => {
-      const selection = state.director.entryDraft.repertoire?.[piece.key] || {};
-      const grade = normalizeGrade(selection.grade);
-      if (!selection.pieceId || !grade) {
-        selectedMeta.textContent = "";
-        return;
-      }
-      const options = await getMpaRepertoireForGrade(grade);
-      const match = options.find((item) => item.id === selection.pieceId);
-      if (!match) {
-        selectedMeta.textContent = "";
-        return;
-      }
-      const tags = [];
-      if (match.isMasterwork || `${match.specialInstructions || ""} ${match.status || ""} ${(match.tags || []).join(" ")}`.toLowerCase().includes("masterwork")) {
-        tags.push("Masterwork");
-      }
-      if (match.grade === "VI") {
-        tags.push("Grade VI");
-      }
-      selectedMeta.textContent = tags.length ? `Tags: ${tags.join(" - ")}` : "";
-    };
-    wrapper.appendChild(selectedMeta);
-    updateSelectedMeta();
-
-    els.repertoireFields.appendChild(wrapper);
-  });
-  syncRepertoireFlexCheckboxes();
+  return getDirectorEntryFormRenderers().renderRepertoireFields();
 }
 
 export function renderInstrumentationStandard() {
-  if (!els.instrumentationStandard || !state.director.entryDraft) return;
-  els.instrumentationStandard.innerHTML = "";
-  STANDARD_INSTRUMENTS.forEach((instrument) => {
-    const label = document.createElement("label");
-    label.textContent = instrument.label;
-    const input = document.createElement("input");
-    input.type = "number";
-    input.min = "0";
-    input.value = "0";
-    label.appendChild(input);
-    const current =
-      state.director.entryDraft.instrumentation?.standardCounts?.[instrument.key] ?? 0;
-    input.value = Number(current || 0);
-    input.dataset.instrumentKey = instrument.key;
-    input.addEventListener("change", () => {
-      state.director.entryDraft.instrumentation.standardCounts[instrument.key] = Number(
-        input.value || 0
-      );
-      applyDirectorDirty("instrumentation");
-    });
-    els.instrumentationStandard.appendChild(label);
-  });
+  return getDirectorEntryFormRenderers().renderInstrumentationStandard();
 }
 
 export function renderInstrumentationNonStandard() {
-  if (!els.instrumentationNonStandard || !state.director.entryDraft) return;
-  els.instrumentationNonStandard.innerHTML = "";
-  state.director.entryDraft.instrumentation.nonStandard.forEach((row, index) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "entry-row";
-    const nameLabel = document.createElement("label");
-    nameLabel.textContent = "Instrument";
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameLabel.appendChild(nameInput);
-    nameInput.value = row.instrumentName || "";
-    nameInput.addEventListener("blur", () => {
-      if (!state.director.entryDraft) return;
-      state.director.entryDraft.instrumentation.nonStandard[index].instrumentName =
-        nameInput.value.trim();
-      applyDirectorDirty("instrumentation");
-    });
-
-    const countLabel = document.createElement("label");
-    countLabel.textContent = "Count";
-    const countInput = document.createElement("input");
-    countInput.type = "number";
-    countInput.min = "0";
-    countInput.value = "0";
-    countLabel.appendChild(countInput);
-    countInput.value = Number(row.count || 0);
-    countInput.addEventListener("change", () => {
-      if (!state.director.entryDraft) return;
-      state.director.entryDraft.instrumentation.nonStandard[index].count = Number(
-        countInput.value || 0
-      );
-      applyDirectorDirty("instrumentation");
-    });
-
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "ghost";
-    removeBtn.textContent = "Remove";
-    removeBtn.addEventListener("click", () => {
-      state.director.entryDraft.instrumentation.nonStandard.splice(index, 1);
-      renderInstrumentationNonStandard();
-      applyDirectorDirty("instrumentation");
-    });
-
-    wrapper.appendChild(nameLabel);
-    wrapper.appendChild(countLabel);
-    wrapper.appendChild(removeBtn);
-    els.instrumentationNonStandard.appendChild(wrapper);
-  });
+  return getDirectorEntryFormRenderers().renderInstrumentationNonStandard();
 }
 
 export function renderRule3cRows() {
-  if (!els.rule3cRows || !state.director.entryDraft) return;
-  els.rule3cRows.innerHTML = "";
-  const otherEnsembles = state.director.ensemblesCache.filter(
-    (ensemble) => ensemble.id !== state.director.selectedEnsembleId
-  );
-  state.director.entryDraft.rule3c.entries.forEach((row, index) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "entry-row";
-    const studentLabel = document.createElement("label");
-    studentLabel.textContent = "Student Name/Identifier";
-    const studentInput = document.createElement("input");
-    studentInput.type = "text";
-    studentLabel.appendChild(studentInput);
-    studentInput.value = row.studentNameOrIdentifier || "";
-    studentInput.addEventListener("blur", () => {
-      state.director.entryDraft.rule3c.entries[index].studentNameOrIdentifier =
-        studentInput.value.trim();
-      applyDirectorDirty("rule3c");
-    });
-
-    const instrumentLabel = document.createElement("label");
-    instrumentLabel.textContent = "Instrument";
-    const instrumentInput = document.createElement("input");
-    instrumentInput.type = "text";
-    instrumentLabel.appendChild(instrumentInput);
-    instrumentInput.value = row.instrument || "";
-    instrumentInput.addEventListener("blur", () => {
-      state.director.entryDraft.rule3c.entries[index].instrument =
-        instrumentInput.value.trim();
-      applyDirectorDirty("rule3c");
-    });
-
-    const ensembleLabel = document.createElement("label");
-    ensembleLabel.textContent = "Also doubles in ensemble";
-    const ensembleSelect = document.createElement("select");
-    ensembleLabel.appendChild(ensembleSelect);
-    const baseOption = document.createElement("option");
-    baseOption.value = "";
-    baseOption.textContent = "Select ensemble";
-    ensembleSelect.appendChild(baseOption);
-    otherEnsembles.forEach((ensemble) => {
-      const option = document.createElement("option");
-      option.value = ensemble.id;
-      option.textContent = ensemble.name || ensemble.id;
-      ensembleSelect.appendChild(option);
-    });
-    ensembleSelect.value = row.alsoDoublesInEnsembleId || "";
-    ensembleSelect.addEventListener("change", () => {
-      state.director.entryDraft.rule3c.entries[index].alsoDoublesInEnsembleId =
-        ensembleSelect.value;
-      applyDirectorDirty("rule3c");
-    });
-
-    wrapper.appendChild(studentLabel);
-    wrapper.appendChild(instrumentLabel);
-    wrapper.appendChild(ensembleLabel);
-    els.rule3cRows.appendChild(wrapper);
-  });
+  return getDirectorEntryFormRenderers().renderRule3cRows();
 }
 
 export function renderSeatingRows() {
-  if (!els.seatingRows || !state.director.entryDraft) return;
-  els.seatingRows.innerHTML = "";
-  state.director.entryDraft.seating.rows.forEach((row, index) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "entry-row";
-    const chairsLabel = document.createElement("label");
-    chairsLabel.textContent = `Chairs (Row ${index + 1})`;
-    const chairsInput = document.createElement("input");
-    chairsInput.type = "number";
-    chairsInput.min = "0";
-    chairsInput.value = "0";
-    chairsLabel.appendChild(chairsInput);
-    chairsInput.value = Number(row.chairs || 0);
-    chairsInput.addEventListener("change", () => {
-      state.director.entryDraft.seating.rows[index].chairs = Number(
-        chairsInput.value || 0
-      );
-      applyDirectorDirty("seating");
-    });
-
-    const standsLabel = document.createElement("label");
-    standsLabel.textContent = `Stands (Row ${index + 1})`;
-    const standsInput = document.createElement("input");
-    standsInput.type = "number";
-    standsInput.min = "0";
-    standsInput.value = "0";
-    standsLabel.appendChild(standsInput);
-    standsInput.value = Number(row.stands || 0);
-    standsInput.addEventListener("change", () => {
-      state.director.entryDraft.seating.rows[index].stands = Number(
-        standsInput.value || 0
-      );
-      applyDirectorDirty("seating");
-    });
-
-    wrapper.appendChild(chairsLabel);
-    wrapper.appendChild(standsLabel);
-    els.seatingRows.appendChild(wrapper);
-  });
+  return getDirectorEntryFormRenderers().renderSeatingRows();
 }
 
 export function renderPercussionOptions() {
-  if (!els.percussionOptions || !state.director.entryDraft) return;
-  els.percussionOptions.innerHTML = "";
-  const selected = new Set(state.director.entryDraft.percussionNeeds.selected || []);
-  PERCUSSION_OPTIONS.forEach((item) => {
-    const label = document.createElement("label");
-    label.className = "row";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = selected.has(item);
-    checkbox.addEventListener("change", () => {
-      if (!state.director.entryDraft) return;
-      const current = new Set(state.director.entryDraft.percussionNeeds.selected || []);
-      if (checkbox.checked) {
-        current.add(item);
-      } else {
-        current.delete(item);
-      }
-      state.director.entryDraft.percussionNeeds.selected = Array.from(current);
-      applyDirectorDirty("percussion");
-    });
-    const text = document.createElement("span");
-    text.textContent = item;
-    label.appendChild(checkbox);
-    label.appendChild(text);
-    els.percussionOptions.appendChild(label);
-  });
+  return getDirectorEntryFormRenderers().renderPercussionOptions();
 }
 
 export function renderDirectorEntryForm() {
-  if (!state.director.entryDraft) {
-    if (els.directorEntryForm) els.directorEntryForm.reset?.();
-    return;
-  }
-  if (els.directorPerformanceGradeInput) {
-    setDirectorPerformanceGradeValue(state.director.entryDraft.performanceGrade || "");
-    els.directorPerformanceGradeInput.oninput = null;
-  }
-  if (els.directorPerformanceGradeFlex) {
-    els.directorPerformanceGradeFlex.checked = Boolean(
-      state.director.entryDraft.performanceGradeFlex
-    );
-    els.directorPerformanceGradeFlex.onchange = () => {
-      state.director.entryDraft.performanceGradeFlex =
-        els.directorPerformanceGradeFlex.checked;
-      setDirectorPerformanceGradeValue(state.director.entryDraft.performanceGrade || "");
-      applyDirectorDirty("repertoire");
-    };
-  }
-  if (els.directorCommentsOnlyInput) {
-    els.directorCommentsOnlyInput.checked = Boolean(state.director.entryDraft.commentsOnly);
-    els.directorCommentsOnlyInput.onchange = () => {
-      if (els.directorFeeWaiverInput?.checked) {
-        els.directorCommentsOnlyInput.checked = true;
-        state.director.entryDraft.commentsOnly = true;
-      } else {
-        state.director.entryDraft.commentsOnly = els.directorCommentsOnlyInput.checked;
-      }
-      applyDirectorDirty("registration");
-    };
-  }
-  if (els.directorFeeWaiverInput) {
-    els.directorFeeWaiverInput.checked = Boolean(state.director.entryDraft.feeWaiverRequested);
-    els.directorFeeWaiverInput.onchange = () => {
-      state.director.entryDraft.feeWaiverRequested = els.directorFeeWaiverInput.checked;
-      if (els.directorFeeWaiverInput.checked) {
-        state.director.entryDraft.commentsOnly = true;
-        if (els.directorCommentsOnlyInput) els.directorCommentsOnlyInput.checked = true;
-      }
-      applyDirectorDirty("registration");
-    };
-  }
-  if (els.directorDatePreferenceInput) {
-    els.directorDatePreferenceInput.value = state.director.entryDraft.datePreference || "";
-    els.directorDatePreferenceInput.oninput = () => {
-      state.director.entryDraft.datePreference = els.directorDatePreferenceInput.value.trim();
-      applyDirectorDirty("registration");
-    };
-  }
-  if (els.directorRegistrationNoteInput) {
-    els.directorRegistrationNoteInput.value = state.director.entryDraft.registrationNote || "";
-    els.directorRegistrationNoteInput.oninput = () => {
-      state.director.entryDraft.registrationNote = els.directorRegistrationNoteInput.value;
-      applyDirectorDirty("registration");
-    };
-  }
-  if (els.instrumentationTotalPercussion) {
-    els.instrumentationTotalPercussion.value = Number(
-      state.director.entryDraft.instrumentation?.totalPercussion || 0
-    );
-    els.instrumentationTotalPercussion.onchange = () => {
-      state.director.entryDraft.instrumentation.totalPercussion = Number(
-        els.instrumentationTotalPercussion.value || 0
-      );
-      applyDirectorDirty("instrumentation");
-    };
-  }
-  if (els.otherInstrumentationNotesInput) {
-    els.otherInstrumentationNotesInput.value =
-      state.director.entryDraft.instrumentation?.otherInstrumentationNotes || "";
-    els.otherInstrumentationNotesInput.oninput = () => {
-      state.director.entryDraft.instrumentation.otherInstrumentationNotes =
-        els.otherInstrumentationNotesInput.value || "";
-      applyDirectorDirty("instrumentation");
-    };
-  }
-  if (els.rule3cNotesInput) {
-    els.rule3cNotesInput.value = state.director.entryDraft.rule3c?.notes || "";
-    els.rule3cNotesInput.oninput = () => {
-      state.director.entryDraft.rule3c.notes = els.rule3cNotesInput.value || "";
-      applyDirectorDirty("rule3c");
-    };
-  }
-  if (els.seatingNotesInput) {
-    els.seatingNotesInput.value = state.director.entryDraft.seating?.notes || "";
-    els.seatingNotesInput.oninput = () => {
-      state.director.entryDraft.seating.notes = els.seatingNotesInput.value || "";
-      applyDirectorDirty("seating");
-    };
-  }
-  if (els.percussionNotesInput) {
-    els.percussionNotesInput.value =
-      state.director.entryDraft.percussionNeeds?.notes || "";
-    els.percussionNotesInput.oninput = () => {
-      state.director.entryDraft.percussionNeeds.notes =
-        els.percussionNotesInput.value || "";
-      applyDirectorDirty("percussion");
-    };
-  }
-  if (els.lunchPepperoniInput) {
-    els.lunchPepperoniInput.value = Number(
-      state.director.entryDraft.lunchOrder?.pepperoniQty || 0
-    );
-    els.lunchPepperoniInput.onchange = () => {
-      state.director.entryDraft.lunchOrder.pepperoniQty = Number(
-        els.lunchPepperoniInput.value || 0
-      );
-      applyDirectorDirty("lunch");
-      updateLunchTotalCost();
-    };
-  }
-  if (els.lunchCheeseInput) {
-    els.lunchCheeseInput.value = Number(
-      state.director.entryDraft.lunchOrder?.cheeseQty || 0
-    );
-    els.lunchCheeseInput.onchange = () => {
-      state.director.entryDraft.lunchOrder.cheeseQty = Number(
-        els.lunchCheeseInput.value || 0
-      );
-      applyDirectorDirty("lunch");
-      updateLunchTotalCost();
-    };
-  }
-  
-  updateLunchTotalCost();
-
-  renderRepertoireFields();
-  renderInstrumentationStandard();
-  renderInstrumentationNonStandard();
-  renderRule3cRows();
-  renderSeatingRows();
-  renderPercussionOptions();
+  return getDirectorEntryFormRenderers().renderDirectorEntryForm();
 }
 
 export function setDirectorEntryHint(message) {
-  if (!els.directorEntryHint) return;
-  els.directorEntryHint.textContent = message || "";
+  return getDirectorEntryFormRenderers().setDirectorEntryHint(message);
 }
 
 export function renderStatusSummary({
@@ -4419,125 +2881,28 @@ export function renderStatusSummary({
   hintText,
   openWhenIncomplete = true,
 }) {
-  const resolvedRoot = root || (rootId ? document.getElementById(rootId) : null);
-  if (!resolvedRoot) return;
-  const titleEl = resolvedRoot.querySelector(".readiness-title");
-  const metaEl = resolvedRoot.querySelector(".readiness-meta");
-  const barEl = resolvedRoot.querySelector(".progress-bar");
-  const pillEl = resolvedRoot.querySelector(".pill");
-  const detailsEl = resolvedRoot.querySelector("details");
-  const hintEl = resolvedRoot.querySelector(".readiness-hint");
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-
-  if (titleEl) titleEl.textContent = title;
-  if (metaEl) metaEl.textContent = `${done}/${total} complete`;
-  if (barEl) barEl.style.width = `${pct}%`;
-  if (pillEl) pillEl.textContent = pillText;
-  if (hintEl) hintEl.textContent = hintText;
-  if (detailsEl && openWhenIncomplete) detailsEl.open = done !== total;
+  return getDirectorEntryFormRenderers().renderStatusSummary({
+    rootId,
+    root,
+    title,
+    done,
+    total,
+    pillText,
+    hintText,
+    openWhenIncomplete,
+  });
 }
 
 export function renderChecklist(listEl, items, status) {
-  if (!listEl) return;
-  listEl.innerHTML = "";
-  items.forEach((item) => {
-    const li = document.createElement("li");
-    li.className = "checklist-item";
-
-    const label = document.createElement("span");
-    label.textContent = item.label;
-
-    const check = document.createElement("span");
-    const ok = Boolean(status[item.key]);
-    check.textContent = ok ? "" : "Missing";
-    check.className = ok ? "check" : "check is-missing";
-
-    li.appendChild(label);
-    li.appendChild(check);
-    listEl.appendChild(li);
-  });
+  return getDirectorEntryFormRenderers().renderChecklist(listEl, items, status);
 }
 
 export function renderDirectorChecklist(entry, completionState) {
-  if (!els.directorChecklist) return;
-  const s = completionState || {};
-  const items = [
-    { key: "ensemble", label: "Ensemble" },
-    { key: "repertoire", label: "Repertoire" },
-    { key: "instrumentation", label: "Instrumentation" },
-    { key: "seating", label: "Seating" },
-    { key: "percussion", label: "Percussion" },
-    { key: "lunch", label: "Lunch" },
-    { key: "grade", label: "Grade" },
-  ];
-
-  const total = items.length;
-  const done = items.filter((item) => Boolean(s[item.key])).length;
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    renderStatusSummary({
-      rootId: "directorChecklistPanel",
-      title: done === total ? "Ready to submit" : "Not ready yet",
-      done,
-      total,
-      pillText: done === total ? "Complete" : "Incomplete",
-      hintText: done === total ? "" : `${total - done} missing`,
-    });
-
-    if (els.directorSummaryStatus) {
-      els.directorSummaryStatus.textContent = done === total ? "Ready" : "Incomplete";
-    }
-  if (els.directorSummaryCompletion) {
-    els.directorSummaryCompletion.textContent = `${pct}%`;
-  }
-  if (els.directorSummaryProgressBar) {
-    els.directorSummaryProgressBar.style.width = `${pct}%`;
-  }
-
-  renderChecklist(els.directorChecklist, items, s);
-
-  const parent = els.directorChecklist?.parentElement;
-  if (parent) {
-    let reminder = parent.querySelector(".registration-paper-reminder");
-    if (!reminder) {
-      reminder = document.createElement("div");
-      reminder.className = "registration-paper-reminder hint";
-      parent.appendChild(reminder);
-    }
-    reminder.textContent = "Paper scores (3 per piece) – bring to Registration.";
-  }
+  return getDirectorEntryFormRenderers().renderDirectorChecklist(entry, completionState);
 }
 
 export function renderAdminReadiness() {
-  if (!els.adminReadinessChecklist) return;
-  const hasEvent = Boolean(state.event.active);
-  const assignments = state.event.assignments || {};
-  const hasAssignments =
-    hasEvent &&
-    Boolean(assignments.stage1Uid) &&
-    Boolean(assignments.stage2Uid) &&
-    Boolean(assignments.stage3Uid) &&
-    Boolean(assignments.sightUid);
-  const items = [
-    { key: "event", label: "Active event" },
-    { key: "assignments", label: "Judge assignments" },
-  ];
-  const status = {
-    event: hasEvent,
-    assignments: hasAssignments,
-  };
-  const total = items.length;
-  const done = items.filter((item) => Boolean(status[item.key])).length;
-
-  renderStatusSummary({
-    rootId: "adminReadinessPanel",
-    title: done === total ? "Ready to run event" : "Setup in progress",
-    done,
-    total,
-    pillText: done === total ? "Complete" : "Draft",
-    hintText: done === total ? "" : `${total - done} missing`,
-  });
-
-  renderChecklist(els.adminReadinessChecklist, items, status);
+  return getDirectorEntryFormRenderers().renderAdminReadiness();
 }
 
 function setPreEventStatusBadge(el, label, tone) {
@@ -4682,35 +3047,6 @@ export function updateDirectorActiveEnsembleLabel() {
   }
 }
 
-function renderAdminLogisticsEnsembleOptions(select, ensembles = []) {
-  if (!select) return;
-  const previous = select.value || "";
-  select.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = ensembles.length ? "Select an ensemble" : "No ensembles available";
-  select.appendChild(placeholder);
-  ensembles.forEach((ensemble) => {
-    const option = document.createElement("option");
-    option.value = ensemble.id;
-    option.textContent = ensemble.name || ensemble.id;
-    select.appendChild(option);
-  });
-  if (previous && ensembles.some((ensemble) => ensemble.id === previous)) {
-    select.value = previous;
-  }
-}
-
-function setAdminLogisticsStatus(message) {
-  if (!els.adminLogisticsStatus) return;
-  els.adminLogisticsStatus.textContent = message || "";
-}
-
-function clearAdminLogisticsContent() {
-  if (!els.adminLogisticsContent) return;
-  els.adminLogisticsContent.innerHTML = "";
-}
-
 function buildAdminLogisticsEntryPanel(entry, titleText) {
   const seating = entry.seating || {};
   const seatingRows = Array.isArray(seating.rows) ? seating.rows : [];
@@ -4838,184 +3174,6 @@ function buildAdminLogisticsDiffPanel(currentEntry, nextEntry) {
   panel.appendChild(removedRow);
 
   return panel;
-}
-
-async function fetchAdminLogisticsEnsembles(schoolId) {
-  if (!schoolId) return [];
-  if (state.admin.logisticsEnsemblesCache.has(schoolId)) {
-    return state.admin.logisticsEnsemblesCache.get(schoolId);
-  }
-  const snap = await getDocs(
-    query(collection(db, COLLECTIONS.schools, schoolId, COLLECTIONS.ensembles), orderBy("name"))
-  );
-  const items = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
-  state.admin.logisticsEnsemblesCache.set(schoolId, items);
-  return items;
-}
-
-async function loadAdminLogisticsEntry(eventId, ensembleId) {
-  if (!eventId || !ensembleId) return null;
-  if (state.admin.logisticsEntriesCacheEventId !== eventId) {
-    state.admin.logisticsEntriesCacheEventId = eventId;
-    state.admin.logisticsEntriesCache.clear();
-  }
-  const cacheKey = `${eventId}:${ensembleId}`;
-  const cached = state.admin.logisticsEntriesCache.get(cacheKey);
-  const now = Date.now();
-  if (cached && now - cached.cachedAt < 15000) {
-    return cached.value;
-  }
-  const snap = await getDoc(doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId));
-  const value = snap.exists() ? (snap.data() || {}) : null;
-  state.admin.logisticsEntriesCache.set(cacheKey, { cachedAt: now, value });
-  return value;
-}
-
-async function refreshAdminLogisticsEntry() {
-  if (!els.adminLogisticsStatus || !els.adminLogisticsContent) return;
-  if (!state.event.active?.id) {
-    setAdminLogisticsStatus("Set an active event first.");
-    clearAdminLogisticsContent();
-    return;
-  }
-  const currentSchoolId = els.adminLogisticsCurrentSchoolSelect?.value || "";
-  const currentEnsembleId = els.adminLogisticsCurrentEnsembleSelect?.value || "";
-  const nextSchoolId = els.adminLogisticsNextSchoolSelect?.value || "";
-  const nextEnsembleId = els.adminLogisticsNextEnsembleSelect?.value || "";
-  if (!currentSchoolId || !nextSchoolId) {
-    setAdminLogisticsStatus("Choose schools for Band On Stage and Next Band.");
-    clearAdminLogisticsContent();
-    return;
-  }
-  if (!currentEnsembleId || !nextEnsembleId) {
-    setAdminLogisticsStatus("Choose ensembles for Band On Stage and Next Band.");
-    clearAdminLogisticsContent();
-    return;
-  }
-  setAdminLogisticsStatus("Loading logistics from Director entry...");
-  const loadVersion = (state.admin.logisticsLoadVersion || 0) + 1;
-  state.admin.logisticsLoadVersion = loadVersion;
-  try {
-    const [currentEntry, nextEntry] = await Promise.all([
-      loadAdminLogisticsEntry(state.event.active.id, currentEnsembleId),
-      loadAdminLogisticsEntry(state.event.active.id, nextEnsembleId),
-    ]);
-    if (state.admin.logisticsLoadVersion !== loadVersion) return;
-    if (!currentEntry || !nextEntry) {
-      const missing = [];
-      if (!currentEntry) missing.push("Band On Stage");
-      if (!nextEntry) missing.push("Next Band");
-      setAdminLogisticsStatus(
-        `No Director entry found for ${missing.join(" and ")} in the active event.`
-      );
-      clearAdminLogisticsContent();
-      return;
-    }
-    clearAdminLogisticsContent();
-    els.adminLogisticsContent.appendChild(buildAdminLogisticsEntryPanel(currentEntry, "Band On Stage"));
-    els.adminLogisticsContent.appendChild(buildAdminLogisticsEntryPanel(nextEntry, "Next Band"));
-    els.adminLogisticsContent.appendChild(buildAdminLogisticsDiffPanel(currentEntry, nextEntry));
-    setAdminLogisticsStatus(`Loaded from ${state.event.active.name || state.event.active.id}.`);
-  } catch (error) {
-    console.error("refreshAdminLogisticsEntry failed", error);
-    if (state.admin.logisticsLoadVersion !== loadVersion) return;
-    setAdminLogisticsStatus("Unable to load logistics.");
-    clearAdminLogisticsContent();
-  }
-}
-
-function escapeHtml(s) {
-  if (s == null) return "";
-  const t = String(s);
-  return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-function normalizeEnsembleDisplayName({ schoolName, ensembleName, ensembleId }) {
-  const fallback = String(ensembleName || ensembleId || "").trim();
-  return normalizeEnsembleNameForSchool({
-    schoolName: String(schoolName || "").trim(),
-    ensembleName: fallback,
-  }) || fallback;
-}
-
-function formatSchoolEnsembleLabel({ schoolName, ensembleName, ensembleId }) {
-  const school = String(schoolName || "").trim();
-  const ensemble = normalizeEnsembleDisplayName({ schoolName: school, ensembleName, ensembleId });
-  if (school && ensemble) return `${school} ${ensemble}`;
-  return school || ensemble || "—";
-}
-
-function formatTimeRange(startDate, endDate) {
-  if (!startDate || !endDate) return "";
-  const start = startDate instanceof Date ? startDate : startDate.toDate?.() || new Date(startDate);
-  const end = endDate instanceof Date ? endDate : endDate.toDate?.() || new Date(endDate);
-  const opts = { hour: "2-digit", minute: "2-digit" };
-  return `${start.toLocaleTimeString([], opts)} – ${end.toLocaleTimeString([], opts)}`;
-}
-
-function toLocalDatetimeValue(date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  const h = String(date.getHours()).padStart(2, "0");
-  const min = String(date.getMinutes()).padStart(2, "0");
-  return `${y}-${m}-${d}T${h}:${min}`;
-}
-
-function formatStartTime(dateLike) {
-  const d = dateLike instanceof Date ? dateLike : dateLike?.toDate?.() || new Date(dateLike);
-  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
-function getEntryLunchRequestCount(entry = {}) {
-  const lunchOrder = entry?.lunchOrder || {};
-  const cheese = Number(lunchOrder.cheeseQty) || 0;
-  const pepperoni = Number(lunchOrder.pepperoniQty) || 0;
-  const fromOrder = cheese + pepperoni;
-  const fromCount = Number(entry?.lunchCount) || 0;
-  return Math.max(fromOrder, fromCount, 0);
-}
-
-function toDateOrNull(value) {
-  if (!value) return null;
-  if (value?.toDate) {
-    const d = value.toDate();
-    return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
-  }
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function isDirectorNafmeValid(profile = {}) {
-  const membership = String(profile.nafmeMembershipNumber || "").trim();
-  if (!membership) return false;
-  const expDate = toDateOrNull(profile.nafmeMembershipExp);
-  if (!expDate) return false;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return expDate.getTime() >= today.getTime();
-}
-
-function computeEnsembleCheckinStatus({ entry = {}, directorProfile = {} }) {
-  const lunchRequired = getEntryLunchRequestCount(entry) > 0;
-  const nafmeValidFromProfile = isDirectorNafmeValid(directorProfile);
-  const nafmeManualVerified = Boolean(entry.checkinNafmeManualVerified);
-  const nafmeValid = nafmeValidFromProfile || nafmeManualVerified;
-  const scoresReceived = Boolean(entry.checkinScoresReceived);
-  const changesReviewed = Boolean(entry.checkinChangesReviewed);
-  const lunchConfirmed = lunchRequired ? Boolean(entry.checkinLunchConfirmed) : true;
-  const checkedIn = nafmeValid && scoresReceived && changesReviewed && lunchConfirmed;
-  return {
-    nafmeValidFromProfile,
-    nafmeManualVerified,
-    nafmeValid,
-    scoresReceived,
-    changesReviewed,
-    lunchRequired,
-    lunchConfirmed,
-    checkedIn,
-  };
 }
 
 async function refreshPreEventScheduleTimelineStarts(entries = state.event.rosterEntries || []) {
@@ -5241,123 +3399,6 @@ function closeLiveEventCheckinModal() {
   return getAdminLiveRenderers().closeLiveEventCheckinModal();
 }
 
-export async function refreshStageView() {
-  if (!els.stageViewMessage || !els.stageViewContent) return;
-  const eventId = state.event.active?.id;
-  const roster = state.event.rosterEntries || [];
-
-  if (!eventId || !roster.length) {
-    els.stageViewMessage.textContent = "Set an active event and add bands to the schedule.";
-    els.stageViewContent.innerHTML = "";
-    if (els.stageViewPositionLabel) els.stageViewPositionLabel.textContent = "—";
-    if (els.stageViewPrevBtn) els.stageViewPrevBtn.disabled = true;
-    if (els.stageViewNextBtn) els.stageViewNextBtn.disabled = true;
-    return;
-  }
-
-  let index = Math.max(0, Math.min(state.admin.stageViewIndex || 0, roster.length - 1));
-  state.admin.stageViewIndex = index;
-  const entry = roster[index];
-  const ensembleId = entry.ensembleId;
-
-  if (els.stageViewPositionLabel) {
-    els.stageViewPositionLabel.textContent = `${index + 1} of ${roster.length}`;
-  }
-  if (els.stageViewPrevBtn) els.stageViewPrevBtn.disabled = roster.length <= 1;
-  if (els.stageViewNextBtn) els.stageViewNextBtn.disabled = roster.length <= 1;
-
-  els.stageViewMessage.textContent = "";
-  els.stageViewContent.innerHTML = "";
-
-  const entryData = await loadAdminLogisticsEntry(eventId, ensembleId);
-  const schoolName =
-    entry.schoolName || getSchoolNameById(state.admin.schoolsList, entry.schoolId) || entry.schoolId || "";
-  const ensembleName = normalizeEnsembleDisplayName({
-    schoolName,
-    ensembleName: entry.ensembleName || "",
-    ensembleId: entry.ensembleId || "",
-  });
-
-  const wrap = document.createElement("div");
-  wrap.className = "stage-view-card";
-
-  const title = document.createElement("div");
-  title.className = "stage-view-title";
-  title.textContent = formatSchoolEnsembleLabel({
-    schoolName,
-    ensembleName,
-    ensembleId: entry.ensembleId || "",
-  });
-  wrap.appendChild(title);
-
-  const school = document.createElement("div");
-  school.className = "stage-view-school";
-  school.textContent = `Ensemble setup details`;
-  wrap.appendChild(school);
-
-  if (!entryData) {
-    const noEntry = document.createElement("div");
-    noEntry.className = "stage-view-empty";
-    noEntry.textContent = "No director entry yet (no stage setup).";
-    wrap.appendChild(noEntry);
-  } else {
-    const seating = entryData.seating || {};
-    const rows = Array.isArray(seating.rows) ? seating.rows : [];
-    let totalChairs = 0;
-    let totalStands = 0;
-    const seatingBlock = document.createElement("div");
-    seatingBlock.className = "stage-view-seating";
-    const seatingTitle = document.createElement("div");
-    seatingTitle.className = "stage-view-block-title";
-    seatingTitle.textContent = "Seating";
-    seatingBlock.appendChild(seatingTitle);
-    for (let i = 0; i < Math.max(rows.length, 6); i++) {
-      const row = rows[i] || {};
-      const c = Number(row.chairs || 0);
-      const s = Number(row.stands || 0);
-      totalChairs += c;
-      totalStands += s;
-      const line = document.createElement("div");
-      line.className = "stage-view-row";
-      line.textContent = `Row ${i + 1}: ${c} chairs, ${s} stands`;
-      seatingBlock.appendChild(line);
-    }
-    const totals = document.createElement("div");
-    totals.className = "stage-view-totals";
-    totals.textContent = `Total: ${totalChairs} chairs, ${totalStands} stands`;
-    seatingBlock.appendChild(totals);
-    if (seating.notes) {
-      const notes = document.createElement("div");
-      notes.className = "stage-view-notes";
-      notes.textContent = `Notes: ${seating.notes}`;
-      seatingBlock.appendChild(notes);
-    }
-    wrap.appendChild(seatingBlock);
-
-    const perc = entryData.percussionNeeds || {};
-    const percSelected = Array.isArray(perc.selected) ? perc.selected.filter(Boolean) : [];
-    const percBlock = document.createElement("div");
-    percBlock.className = "stage-view-percussion";
-    const percTitle = document.createElement("div");
-    percTitle.className = "stage-view-block-title";
-    percTitle.textContent = "Percussion";
-    percBlock.appendChild(percTitle);
-    const percText = document.createElement("div");
-    percText.className = "stage-view-row";
-    percText.textContent = percSelected.length ? percSelected.join(" · ") : "None selected";
-    percBlock.appendChild(percText);
-    if (perc.notes) {
-      const pn = document.createElement("div");
-      pn.className = "stage-view-notes";
-      pn.textContent = `Notes: ${perc.notes}`;
-      percBlock.appendChild(pn);
-    }
-    wrap.appendChild(percBlock);
-  }
-
-  els.stageViewContent.appendChild(wrap);
-}
-
 export function renderJudgeOptions(judges) {
   const selects = [
     els.stage1JudgeSelect,
@@ -5463,83 +3504,8 @@ export async function renderRegisteredEnsemblesList() {
   return getAdminRenderers().renderRegisteredEnsemblesList();
 }
 
-function buildMockPacketCaptions(formType, judgeLabel) {
-  const template = CAPTION_TEMPLATES[formType] || CAPTION_TEMPLATES.stage || [];
-  const gradeCycle = ["A", "A", "B", "A", "B", "A", "B"];
-  const captions = {};
-  template.forEach((item, index) => {
-    captions[item.key] = {
-      gradeLetter: gradeCycle[index % gradeCycle.length],
-      gradeModifier: index % 3 === 0 ? "+" : "",
-      comment: `${judgeLabel}: ${item.label} is consistent with strong clarity, balance, and musical intent.`,
-    };
-  });
-  return captions;
-}
-
-function buildMockPacketSubmission(position) {
-  const formType = position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
-  const judgeLabel = JUDGE_POSITION_LABELS[position] || "Judge";
-  const captions = buildMockPacketCaptions(formType, judgeLabel);
-  const captionScoreTotal = calculateCaptionTotal(captions);
-  const rating = computeFinalRating(captionScoreTotal);
-  return {
-    status: STATUSES.locked,
-    locked: true,
-    judgeName: `${judgeLabel} Mock Judge`,
-    judgeEmail: `${position}@mock.mpa`,
-    judgeTitle: "Judge",
-    judgeAffiliation: "NCBA Mock Panel",
-    formType,
-    transcript:
-      `${judgeLabel} mock transcript: consistent tone quality, rhythmic clarity, and ensemble balance with minor precision adjustments noted.`,
-    captions,
-    captionScoreTotal,
-    computedFinalRatingLabel: rating.label,
-  };
-}
-
 function renderMockAdminPacketPreview() {
-  if (!els.adminPacketsMockPanel) return;
-  const submissions = {
-    [JUDGE_POSITIONS.stage1]: buildMockPacketSubmission(JUDGE_POSITIONS.stage1),
-    [JUDGE_POSITIONS.stage2]: buildMockPacketSubmission(JUDGE_POSITIONS.stage2),
-    [JUDGE_POSITIONS.stage3]: buildMockPacketSubmission(JUDGE_POSITIONS.stage3),
-    [JUDGE_POSITIONS.sight]: buildMockPacketSubmission(JUDGE_POSITIONS.sight),
-  };
-  const ratingValues = Object.values(submissions)
-    .map((sub) => computeFinalRating(Number(sub.captionScoreTotal || 0)).value)
-    .filter((value) => Number.isFinite(value));
-  const avgValue = ratingValues.length
-    ? Math.max(1, Math.min(5, Math.round(ratingValues.reduce((sum, value) => sum + value, 0) / ratingValues.length)))
-    : null;
-  const overallLabel = avgValue ? levelToRoman(avgValue) : "N/A";
-
-  els.adminPacketsMockPanel.innerHTML = "";
-  const mockBadge = document.createElement("span");
-  mockBadge.className = "badge";
-  mockBadge.textContent = "Mock Preview - No live data";
-  els.adminPacketsMockPanel.appendChild(mockBadge);
-
-  const title = document.createElement("div");
-  title.className = "note";
-  title.textContent = "Ashley High School - Concert Band";
-  els.adminPacketsMockPanel.appendChild(title);
-
-  const header = document.createElement("div");
-  header.className = "packet-header";
-  header.textContent = `Director: Robert Parker - Grade: IV - Overall: ${overallLabel}`;
-  els.adminPacketsMockPanel.appendChild(header);
-
-  const grid = document.createElement("div");
-  grid.className = "packet-grid";
-  Object.values(JUDGE_POSITIONS).forEach((position) => {
-    const wrapper = document.createElement("div");
-    wrapper.className = "packet-slot";
-    wrapper.appendChild(renderSubmissionCard(submissions[position], position));
-    grid.appendChild(wrapper);
-  });
-  els.adminPacketsMockPanel.appendChild(grid);
+  return getAdminMockPacketPreviewRenderer().renderMockAdminPacketPreview();
 }
 
 export function renderSubmissionCard(submission, position, { showTranscript = true } = {}) {
@@ -5742,1439 +3708,24 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
   }
 }
 
-function getDirectorPacketAssetCacheKey(group) {
-  return `${group.eventId || ""}_${group.ensembleId || ""}`;
-}
-
 function renderDirectorPacketAssetsSection(group, wrapper) {
-  const eventId = String(group.eventId || "").trim();
-  const ensembleId = String(group.ensembleId || "").trim();
-  if (!eventId || !ensembleId) return;
-  const key = getDirectorPacketAssetCacheKey(group);
-  const section = document.createElement("div");
-  section.className = "panel stack";
-  const title = document.createElement("strong");
-  title.textContent = "Official Packet Files";
-  const hint = document.createElement("div");
-  hint.className = "note";
-  hint.textContent = "Load downloadable/printable PDF forms and audio files for each judge.";
-  const actions = document.createElement("div");
-  actions.className = "row";
-  const loadBtn = document.createElement("button");
-  loadBtn.type = "button";
-  loadBtn.className = "ghost";
-  loadBtn.textContent = "Load Files";
-  actions.appendChild(loadBtn);
-  section.appendChild(title);
-  section.appendChild(hint);
-  section.appendChild(actions);
-
-  const output = document.createElement("div");
-  output.className = "stack";
-  section.appendChild(output);
-
-  const renderAssets = (assets) => {
-    output.innerHTML = "";
-    if (!assets || assets.status !== "ready") {
-      const pending = document.createElement("div");
-      pending.className = "note";
-      pending.textContent = assets?.status === "failed" ?
-        `Export failed: ${assets?.error || "Unknown error"}` :
-        "Packet files are still generating. Try again in a moment.";
-      output.appendChild(pending);
-      return;
-    }
-    const combined = assets.combined || null;
-    if (combined?.url) {
-      const combinedRow = document.createElement("div");
-      combinedRow.className = "row";
-      const viewCombined = document.createElement("a");
-      viewCombined.className = "ghost";
-      viewCombined.href = combined.url;
-      viewCombined.target = "_blank";
-      viewCombined.rel = "noopener";
-      viewCombined.textContent = "View Full Packet PDF";
-      const printCombined = document.createElement("a");
-      printCombined.className = "ghost";
-      printCombined.href = combined.url;
-      printCombined.target = "_blank";
-      printCombined.rel = "noopener";
-      printCombined.textContent = "Print Full Packet PDF";
-      combinedRow.appendChild(viewCombined);
-      combinedRow.appendChild(printCombined);
-      output.appendChild(combinedRow);
-    } else {
-      const combinedMissing = document.createElement("div");
-      combinedMissing.className = "note";
-      combinedMissing.textContent = "Combined packet PDF is not available yet.";
-      output.appendChild(combinedMissing);
-    }
-    const judgeAssets = assets.judges && typeof assets.judges === "object" ? assets.judges : {};
-    Object.values(JUDGE_POSITIONS).forEach((position) => {
-      const item = judgeAssets[position];
-      if (!item) return;
-      const row = document.createElement("div");
-      row.className = "packet-card";
-      const label = document.createElement("div");
-      label.className = "badge";
-      label.textContent = item.judgeLabel || JUDGE_POSITION_LABELS[position] || position;
-      row.appendChild(label);
-      const fileActions = document.createElement("div");
-      fileActions.className = "row";
-      if (item.pdfUrl) {
-        const pdfView = document.createElement("a");
-        pdfView.className = "ghost";
-        pdfView.href = item.pdfUrl;
-        pdfView.target = "_blank";
-        pdfView.rel = "noopener";
-        pdfView.textContent = "View Form PDF";
-        const pdfDownload = document.createElement("a");
-        pdfDownload.className = "ghost";
-        pdfDownload.href = item.pdfUrl;
-        pdfDownload.target = "_blank";
-        pdfDownload.rel = "noopener";
-        pdfDownload.textContent = "Download PDF";
-        fileActions.appendChild(pdfView);
-        fileActions.appendChild(pdfDownload);
-      }
-      if (item.audioUrl) {
-        const audioLink = document.createElement("a");
-        audioLink.className = "ghost";
-        audioLink.href = item.audioUrl;
-        audioLink.target = "_blank";
-        audioLink.rel = "noopener";
-        audioLink.textContent = "Open Audio";
-        fileActions.appendChild(audioLink);
-      }
-      if (!item.pdfUrl && !item.audioUrl) {
-        const unavailable = document.createElement("div");
-        unavailable.className = "note";
-        unavailable.textContent = "Files are not available yet for this judge.";
-        row.appendChild(unavailable);
-      }
-      row.appendChild(fileActions);
-      output.appendChild(row);
-    });
-  };
-
-  loadBtn.addEventListener("click", async () => {
-    loadBtn.disabled = true;
-    loadBtn.textContent = "Loading...";
-    try {
-      const result = await fetchDirectorPacketAssets({ eventId, ensembleId });
-      if (!result?.ok) {
-        hint.textContent = result?.message || "Unable to load packet files.";
-        return;
-      }
-      state.director.packetAssetsCache.set(key, result);
-      renderAssets(result);
-      hint.textContent = "Official packet files loaded.";
-      loadBtn.textContent = "Refresh Files";
-    } finally {
-      loadBtn.disabled = false;
-    }
-  });
-
-  const cached = state.director.packetAssetsCache.get(key);
-  if (cached) {
-    renderAssets(cached);
-    loadBtn.textContent = "Refresh Files";
-  }
-
-  wrapper.appendChild(section);
+  return getDirectorPacketRenderers().renderDirectorPacketAssetsSection(group, wrapper);
 }
 
 export function renderDirectorPackets(groups) {
-  els.directorPackets.innerHTML = "";
-  if (els.directorEmpty) {
-    els.directorEmpty.style.display = groups.length ? "none" : "block";
-  }
-  if (!groups.length) {
-    return;
-  }
-
-  for (const group of groups) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "packet";
-
-    if (group.type === "open-assembled") {
-      const header = document.createElement("div");
-      header.className = "packet-header";
-      const ensembleRow = document.createElement("div");
-      const ensembleLabel = document.createElement("strong");
-      ensembleLabel.textContent = "Open Judge Packet Set:";
-      ensembleRow.appendChild(ensembleLabel);
-      ensembleRow.appendChild(
-        document.createTextNode(` ${group.ensembleName || group.ensembleId || "Unknown ensemble"}`)
-      );
-      const schoolRow = document.createElement("div");
-      schoolRow.className = "note";
-      schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
-      const eventRow = document.createElement("div");
-      eventRow.className = "note";
-      eventRow.textContent = `Event: ${group.eventId || "Unassigned"}`;
-      const directorRow = document.createElement("div");
-      directorRow.className = "note";
-      directorRow.textContent = `Director: ${group.directorName || "Unknown"}`;
-      const gradeRow = document.createElement("div");
-      gradeRow.className = "note";
-      gradeRow.textContent = `Grade: ${group.grade || "Unknown"}`;
-      const overallRow = document.createElement("div");
-      overallRow.className = "note";
-      overallRow.textContent = `Overall: ${group.overall?.label || "N/A"}`;
-      header.appendChild(ensembleRow);
-      header.appendChild(schoolRow);
-      header.appendChild(eventRow);
-      header.appendChild(directorRow);
-      header.appendChild(gradeRow);
-      header.appendChild(overallRow);
-      if (group.hasConflicts) {
-        const conflictRow = document.createElement("div");
-        conflictRow.className = "note";
-        conflictRow.textContent = `Conflict: duplicate packet(s) for ${group.conflicts.join(", ")}`;
-        header.appendChild(conflictRow);
-      }
-
-      const grid = document.createElement("div");
-      grid.className = "packet-grid";
-      Object.values(JUDGE_POSITIONS).forEach((position) => {
-        const submission = group.submissions[position];
-        if (submission && submission.status === STATUSES.released) {
-          grid.appendChild(renderSubmissionCard(submission, position, { showTranscript: false }));
-        }
-      });
-
-      wrapper.appendChild(header);
-      wrapper.appendChild(grid);
-      els.directorPackets.appendChild(wrapper);
-      continue;
-    }
-
-    if (group.type === "open") {
-      const header = document.createElement("div");
-      header.className = "packet-header";
-      const ensembleRow = document.createElement("div");
-      const ensembleLabel = document.createElement("strong");
-      ensembleLabel.textContent = "Open Packet";
-      ensembleRow.appendChild(ensembleLabel);
-      const schoolRow = document.createElement("div");
-      schoolRow.className = "note";
-      schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
-      const ensembleNameRow = document.createElement("div");
-      ensembleNameRow.className = "note";
-      ensembleNameRow.textContent = `Ensemble: ${group.ensembleName || group.ensembleId || "Unknown"}`;
-      const ratingRow = document.createElement("div");
-      ratingRow.className = "note";
-      ratingRow.textContent = `Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
-      const slotRow = document.createElement("div");
-      slotRow.className = "note";
-      slotRow.textContent = `Slot: ${
-        JUDGE_POSITION_LABELS[group.judgePosition] ||
-        (group.judgePosition ? group.judgePosition : "Unassigned")
-      }`;
-      header.appendChild(ensembleRow);
-      header.appendChild(schoolRow);
-      header.appendChild(ensembleNameRow);
-      header.appendChild(slotRow);
-      header.appendChild(ratingRow);
-
-      const grid = document.createElement("div");
-      grid.className = "packet-grid";
-      const scoringCard = document.createElement("div");
-      scoringCard.className = "packet-card";
-      const scoringHeader = document.createElement("div");
-      scoringHeader.className = "row";
-      const scoringBadge = document.createElement("span");
-      scoringBadge.className = "badge";
-      scoringBadge.textContent = "Judge";
-      const scoringStatus = document.createElement("span");
-      scoringStatus.className = "note";
-      scoringStatus.textContent = `Status: ${group.status || "released"}`;
-      const scoringLocked = document.createElement("span");
-      scoringLocked.className = "note";
-      scoringLocked.textContent = `Locked: ${group.locked ? "yes" : "no"}`;
-      scoringHeader.appendChild(scoringBadge);
-      scoringHeader.appendChild(scoringStatus);
-      scoringHeader.appendChild(scoringLocked);
-
-      const judgeInfo = document.createElement("div");
-      judgeInfo.className = "note";
-      judgeInfo.textContent =
-        group.judgeName && group.judgeEmail
-          ? `${group.judgeName} - ${group.judgeEmail}`
-          : group.judgeName || group.judgeEmail || "Unknown judge";
-
-      const captionSummary = renderPacketCaptionSummary(
-        group.captions || {},
-        group.formType || FORM_TYPES.stage
-      );
-      if (!Object.keys(group.captions || {}).length) {
-        const empty = document.createElement("div");
-        empty.className = "note";
-        empty.textContent = "No captions available.";
-        captionSummary.appendChild(empty);
-      }
-
-      const scoringFooter = document.createElement("div");
-      scoringFooter.className = "note";
-      scoringFooter.textContent =
-        `Caption Total: ${group.captionScoreTotal || 0} - Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
-
-      scoringCard.appendChild(scoringHeader);
-      scoringCard.appendChild(judgeInfo);
-      scoringCard.appendChild(captionSummary);
-      scoringCard.appendChild(scoringFooter);
-      grid.appendChild(scoringCard);
-
-      if (group.latestAudioUrl) {
-        const audioCard = document.createElement("div");
-        audioCard.className = "packet-card";
-        const audioBadge = document.createElement("div");
-        audioBadge.className = "badge";
-        audioBadge.textContent = "Audio";
-        const audio = document.createElement("audio");
-        audio.controls = true;
-        audio.src = group.latestAudioUrl;
-        audio.className = "audio";
-        audioCard.appendChild(audioBadge);
-        audioCard.appendChild(audio);
-        grid.appendChild(audioCard);
-      }
-
-      wrapper.appendChild(header);
-      wrapper.appendChild(grid);
-      els.directorPackets.appendChild(wrapper);
-      continue;
-    }
-
-    const header = document.createElement("div");
-    header.className = "packet-header";
-    const directorName = group.directorName || "Unknown";
-    const ensembleRow = document.createElement("div");
-    const ensembleLabel = document.createElement("strong");
-    ensembleLabel.textContent = "Ensemble:";
-    ensembleRow.appendChild(ensembleLabel);
-    ensembleRow.appendChild(document.createTextNode(` ${group.ensembleId}`));
-    const schoolRow = document.createElement("div");
-    schoolRow.className = "note";
-    schoolRow.textContent = `School: ${group.schoolId}`;
-    const directorRow = document.createElement("div");
-    directorRow.className = "note";
-    directorRow.textContent = `Director: ${directorName}`;
-    const eventRow = document.createElement("div");
-    eventRow.className = "note";
-    eventRow.textContent = `Event: ${group.eventId}`;
-    const gradeRow = document.createElement("div");
-    gradeRow.className = "note";
-    gradeRow.textContent = `Grade: ${group.grade || "Unknown"}`;
-    const overallRow = document.createElement("div");
-    overallRow.className = "note";
-    overallRow.textContent = `Overall: ${group.overall.label}`;
-    header.appendChild(ensembleRow);
-    header.appendChild(schoolRow);
-    header.appendChild(directorRow);
-    header.appendChild(eventRow);
-    header.appendChild(gradeRow);
-    header.appendChild(overallRow);
-
-    const grid = document.createElement("div");
-    grid.className = "packet-grid";
-    Object.values(JUDGE_POSITIONS).forEach((position) => {
-      const submission = group.submissions[position];
-      if (submission && submission.status === STATUSES.released) {
-        grid.appendChild(renderSubmissionCard(submission, position, { showTranscript: false }));
-      }
-    });
-
-    const siteRatingCard = document.createElement("div");
-    siteRatingCard.className = "packet-card";
-    const siteBadge = document.createElement("div");
-    siteBadge.className = "badge";
-    siteBadge.textContent = "Site Rating";
-    const siteNote = document.createElement("div");
-    siteNote.className = "note";
-    siteNote.textContent = "Site rating details coming soon.";
-    siteRatingCard.appendChild(siteBadge);
-    siteRatingCard.appendChild(siteNote);
-    grid.appendChild(siteRatingCard);
-
-    wrapper.appendChild(header);
-    wrapper.appendChild(grid);
-    renderDirectorPacketAssetsSection(group, wrapper);
-    els.directorPackets.appendChild(wrapper);
-  }
+  return getDirectorPacketRenderers().renderDirectorPackets(groups || []);
 }
 
 export function renderDirectorEnsembles(ensembles) {
-  if (!els.directorEnsembleList) return;
-  els.directorEnsembleList.innerHTML = "";
-  ensembles.forEach((ensemble) => {
-    const li = document.createElement("li");
-    li.className = "ensemble-row";
-    const isActive = ensemble.id === state.director.selectedEnsembleId;
-    if (isActive) {
-      return;
-    }
-    const name = document.createElement("div");
-    name.className = isActive ? "ensemble-name is-active" : "ensemble-name";
-    name.textContent = ensemble.name || "Untitled";
-    li.appendChild(name);
-      const deleteBtn = document.createElement("button");
-      deleteBtn.type = "button";
-      deleteBtn.className = "ghost";
-      deleteBtn.textContent = "Delete";
-      deleteBtn.addEventListener("click", async () => {
-      deleteBtn.dataset.loadingLabel = "Deleting...";
-      deleteBtn.dataset.spinner = "true";
-      await withLoading(deleteBtn, async () => {
-        await handleDirectorEnsembleDelete(ensemble.id, ensemble.name);
-      });
-    });
-      const actions = document.createElement("div");
-      actions.className = "ensemble-actions";
-      if (!isActive) {
-        const editBtn = document.createElement("button");
-        editBtn.type = "button";
-        editBtn.className = "ghost";
-        editBtn.textContent = "Edit";
-        editBtn.addEventListener("click", () => {
-          setDirectorEnsembleFormMode({ mode: "edit", ensemble });
-          els.directorEnsembleNameInput?.focus();
-        });
-        actions.appendChild(editBtn);
-
-        const selectBtn = document.createElement("button");
-        selectBtn.type = "button";
-        selectBtn.textContent = "Set Active";
-        selectBtn.addEventListener("click", () => handleDirectorEnsembleSelection(ensemble.id));
-        actions.appendChild(selectBtn);
-      }
-      actions.appendChild(deleteBtn);
-      li.appendChild(actions);
-      els.directorEnsembleList.appendChild(li);
-    });
-}
-
-let adminHandlersBound = false;
-let judgeOpenHandlersBound = false;
-let tapePlaybackBound = false;
-let directorHandlersBound = false;
-let appHandlersBound = false;
-
-/* ── Check-in tab helpers ─────────────────────────────────── */
-
-export async function renderCheckinList() {
-  if (!els.checkinList) return;
-  const active = state.event.active;
-  const eventId = active && (typeof active === "string" ? active : active.id);
-  if (!eventId) {
-    els.checkinList.innerHTML = '<p class="hint">No active event.</p>';
-    return;
-  }
-
-  els.checkinList.innerHTML = '<p class="hint">Loading…</p>';
-  if (els.checkinDetailPanel) els.checkinDetailPanel.classList.add("is-hidden");
-  state.admin.checkinDetailEnsembleId = null;
-
-  try {
-    const [schedEntries, regEntries] = await Promise.all([
-      fetchScheduleEntries(eventId),
-      fetchRegisteredEnsembles(eventId),
-    ]);
-
-    const entryMap = {};
-    regEntries.forEach((e) => { entryMap[e.id] = e; });
-
-    const merged = schedEntries.map((s) => ({
-      ...s,
-      entry: entryMap[s.ensembleId || s.id] || {},
-    }));
-
-    if (!merged.length) {
-      els.checkinList.innerHTML = '<p class="hint">No ensembles scheduled yet.</p>';
-      return;
-    }
-
-    const table = document.createElement("table");
-    table.className = "schedule-timeline-table";
-    table.innerHTML = `<thead><tr>
-      <th>#</th><th>Time</th><th>School</th><th>Ensemble</th><th>Arrived</th><th>Confirmed</th><th></th>
-    </tr></thead>`;
-    const tbody = document.createElement("tbody");
-
-    merged.forEach((item, idx) => {
-      const entry = item.entry || {};
-      const perfAt = item.performanceAt?.toDate?.() ?? (item.performanceAt ? new Date(item.performanceAt) : null);
-      const timeStr = perfAt ? perfAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
-      const arrived = entry.arrivedAt ? "✓" : "";
-      const confirmed = entry.directorConfirmedAt ? "✓" : "";
-      const arrivedClass = entry.arrivedAt ? "badge--success" : "";
-      const confirmedClass = entry.directorConfirmedAt ? "badge--success" : "";
-      const ensId = item.ensembleId || item.id;
-
-      const schoolName = item.schoolName || entry.schoolName || "—";
-      const ensembleName = normalizeEnsembleDisplayName({
-        schoolName,
-        ensembleName: item.ensembleName || entry.ensembleName || "",
-        ensembleId: ensId,
-      });
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${idx + 1}</td>
-        <td>${timeStr}</td>
-        <td>${schoolName}</td>
-        <td>${ensembleName || ensId}</td>
-        <td><span class="badge ${arrivedClass}">${arrived || "—"}</span></td>
-        <td><span class="badge ${confirmedClass}">${confirmed || "—"}</span></td>
-        <td><button type="button" class="ghost checkin-detail-btn" data-ens-id="${ensId}">Details</button></td>
-      `;
-      tbody.appendChild(tr);
-    });
-
-    table.appendChild(tbody);
-    els.checkinList.innerHTML = "";
-    const wrap = document.createElement("div");
-    wrap.className = "schedule-timeline-table-wrap";
-    wrap.appendChild(table);
-    els.checkinList.appendChild(wrap);
-
-    els.checkinList.querySelectorAll(".checkin-detail-btn").forEach((btn) => {
-      btn.addEventListener("click", () => showCheckinDetail(btn.dataset.ensId));
-    });
-  } catch (err) {
-    console.error("renderCheckinList error", err);
-    els.checkinList.innerHTML = '<p class="hint">Failed to load check-in list.</p>';
-  }
-}
-
-export async function showCheckinDetail(ensembleId) {
-  if (!ensembleId || !els.checkinDetailPanel) return;
-  const active = state.event.active;
-  const eventId = active && (typeof active === "string" ? active : active.id);
-  if (!eventId) return;
-
-  state.admin.checkinDetailEnsembleId = ensembleId;
-  els.checkinDetailPanel.classList.remove("is-hidden");
-  if (els.checkinList) els.checkinList.classList.add("is-hidden");
-  if (els.checkinDetailContent) els.checkinDetailContent.innerHTML = '<p class="hint">Loading…</p>';
-
-  try {
-    const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      if (els.checkinDetailContent) els.checkinDetailContent.innerHTML = '<p class="hint">Entry not found.</p>';
-      return;
-    }
-    const data = snap.data();
-
-    const schoolName = data.schoolName || "";
-    const ensembleName = normalizeEnsembleDisplayName({
-      schoolName,
-      ensembleName: data.ensembleName || "",
-      ensembleId,
-    });
-    if (els.checkinDetailTitle) {
-      els.checkinDetailTitle.textContent = formatSchoolEnsembleLabel({
-        schoolName,
-        ensembleName,
-        ensembleId,
-      });
-    }
-    if (els.checkinDetailMeta) els.checkinDetailMeta.textContent = `Grade ${data.performanceGrade || "?"}`;
-
-    if (els.checkinArrivalBtn) {
-      els.checkinArrivalBtn.textContent = data.arrivedAt ? "Undo Arrival" : "Mark Arrived";
-      els.checkinArrivalBtn.className = data.arrivedAt ? "ghost" : "";
-    }
-    if (els.checkinConfirmBtn) {
-      els.checkinConfirmBtn.textContent = data.directorConfirmedAt ? "Undo Confirmation" : "Director Confirmed";
-      els.checkinConfirmBtn.className = data.directorConfirmedAt ? "ghost" : "";
-    }
-
-    const html = buildAdminEntryEditorHtml(data);
-
-    if (els.checkinDetailContent) els.checkinDetailContent.innerHTML = html;
-    if (els.checkinSaveEditsBtn) els.checkinSaveEditsBtn.classList.remove("is-hidden");
-  } catch (err) {
-    console.error("showCheckinDetail error", err);
-    if (els.checkinDetailContent) els.checkinDetailContent.innerHTML = '<p class="hint">Failed to load entry.</p>';
-  }
-}
-
-function escapeAttr(str) {
-  return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function buildAdminEntryEditorHtml(data = {}) {
-  const rep = data.repertoire || {};
-  const inst = data.instrumentation || {};
-  const rule3c = data.rule3c || {};
-  const seating = data.seating || {};
-  const perc = data.percussionNeeds || {};
-
-  let html = "";
-
-  html += '<details open class="panel"><summary>Repertoire</summary><div class="stack">';
-  REPERTOIRE_FIELDS.forEach((f) => {
-    const piece = rep[f.key] || {};
-    html += `<label>${f.label}</label>
-      <input type="text" data-field="repertoire.${f.key}.title" value="${escapeAttr(piece.title || "")}" placeholder="Title" />
-      <input type="text" data-field="repertoire.${f.key}.composer" value="${escapeAttr(piece.composer || "")}" placeholder="Composer" />`;
-    if (f.key !== "march") {
-      html += `<input type="text" data-field="repertoire.${f.key}.grade" value="${escapeAttr(piece.grade || "")}" placeholder="Grade" />`;
-    }
-  });
-  html += "</div></details>";
-
-  html += '<details class="panel"><summary>Instrumentation</summary><div class="stack">';
-  const counts = inst.standardCounts || {};
-  STANDARD_INSTRUMENTS.forEach((si) => {
-    html += `<label>${si.label}</label><input type="number" data-field="instrumentation.standardCounts.${si.key}" value="${counts[si.key] ?? ""}" />`;
-  });
-  html += `<label>Percussion</label><input type="number" data-field="instrumentation.totalPercussion" value="${inst.totalPercussion ?? ""}" />`;
-  if (Array.isArray(inst.nonStandard) && inst.nonStandard.length) {
-    html += "<label>Non-standard</label>";
-    inst.nonStandard.forEach((ns, i) => {
-      html += `<div class="row"><input type="text" data-field="instrumentation.nonStandard.${i}.name" value="${escapeAttr(ns.name || "")}" placeholder="Name" />
-        <input type="number" data-field="instrumentation.nonStandard.${i}.count" value="${ns.count ?? ""}" placeholder="#" /></div>`;
-    });
-  }
-  html += `<label>Other Notes</label><input type="text" data-field="instrumentation.otherInstrumentationNotes" value="${escapeAttr(inst.otherInstrumentationNotes || "")}" />`;
-  html += "</div></details>";
-
-  html += '<details class="panel"><summary>Percussion Needs</summary><div class="stack">';
-  const percSelected = Array.isArray(perc.selected) ? perc.selected : [];
-  PERCUSSION_OPTIONS.forEach((opt) => {
-    const checked = percSelected.includes(opt) ? "checked" : "";
-    html += `<label><input type="checkbox" data-perc-option="${escapeAttr(opt)}" ${checked} /> ${opt}</label>`;
-  });
-  html += `<label>Notes</label><input type="text" data-field="percussionNeeds.notes" value="${escapeAttr(perc.notes || "")}" />`;
-  html += "</div></details>";
-
-  html += '<details class="panel"><summary>Rule 3C</summary><div class="stack">';
-  html += `<label>Rule Mode</label><input type="text" data-field="rule3c.ruleMode" value="${escapeAttr(rule3c.ruleMode || "")}" />`;
-  if (Array.isArray(rule3c.entries)) {
-    rule3c.entries.forEach((e, i) => {
-      html += `<div class="row"><input type="text" data-field="rule3c.entries.${i}.name" value="${escapeAttr(e?.name || "")}" placeholder="Name" />
-        <input type="text" data-field="rule3c.entries.${i}.instrument" value="${escapeAttr(e?.instrument || "")}" placeholder="Instrument" /></div>`;
-    });
-  }
-  html += "</div></details>";
-
-  html += '<details class="panel"><summary>Seating</summary><div class="stack">';
-  html += `<label>Chair Count</label><input type="number" data-field="seating.chairCount" value="${seating.chairCount ?? ""}" />`;
-  if (Array.isArray(seating.rows)) {
-    seating.rows.forEach((r, i) => {
-      html += `<label>Row ${i + 1}</label><input type="number" data-field="seating.rows.${i}" value="${r ?? ""}" />`;
-    });
-  }
-  html += "</div></details>";
-
-  html += '<details class="panel"><summary>Lunch / Other</summary><div class="stack">';
-  html += `<label>Lunch Count</label><input type="number" data-field="lunchCount" value="${data.lunchCount ?? ""}" />`;
-  html += `<label>Director Cell Phone</label><input type="text" data-field="directorCellPhone" value="${escapeAttr(data.directorCellPhone || "")}" />`;
-  html += "</div></details>";
-  return html;
-}
-
-function collectCheckinEdits(root = els.checkinDetailContent) {
-  if (!root) return {};
-  const edits = {};
-
-  root.querySelectorAll("[data-field]").forEach((input) => {
-    const path = input.dataset.field;
-    const val = input.type === "number" ? (input.value === "" ? null : Number(input.value)) : input.value;
-    const parts = path.split(".");
-    let obj = edits;
-    for (let i = 0; i < parts.length - 1; i++) {
-      const k = parts[i];
-      const nextKey = parts[i + 1];
-      if (!obj[k]) obj[k] = /^\d+$/.test(nextKey) ? [] : {};
-      obj = obj[k];
-    }
-    const lastKey = parts[parts.length - 1];
-    obj[lastKey] = val;
-  });
-
-  const percSelected = [];
-  root.querySelectorAll("[data-perc-option]").forEach((cb) => {
-    if (cb.checked) percSelected.push(cb.dataset.percOption);
-  });
-  if (!edits.percussionNeeds) edits.percussionNeeds = {};
-  edits.percussionNeeds.selected = percSelected;
-
-  return edits;
+  return getDirectorEnsembleRenderer()(ensembles || []);
 }
 
 export function bindAdminHandlers() {
-  if (adminHandlersBound) return;
-  adminHandlersBound = true;
-
-  const adminSubnavButtons = [
-    els.adminSubnavChairBtn,
-    els.adminSubnavEventChairBtn,
-    els.adminSubnavPacketsBtn,
-    els.adminSubnavSettingsBtn,
-  ];
-  adminSubnavButtons.forEach((btn) => {
-    if (!btn) return;
-    const view = btn.getAttribute("data-admin-view");
-    if (!view) return;
-    btn.addEventListener("click", () => {
-      if (view === "liveEvent" && !isAdminLiveEventEnabled()) return;
-      if (view === "settings" && !isAdminSettingsEnabled()) return;
-      if (view === "preEvent") {
-        state.admin.selectedSchoolId = null;
-        state.admin.selectedSchoolName = "";
-      }
-      state.admin.currentView = view;
-      applyAdminView(view);
-      const hash =
-        view === "preEvent"
-          ? "#admin"
-          : view === "liveEvent"
-            ? "#admin/live"
-            : `#admin/${view}`;
-      if (window.location.hash !== hash) {
-        window.location.hash = hash;
-      }
-    });
-  });
-
-  if (els.adminSchoolDetailBackBtn) {
-    els.adminSchoolDetailBackBtn.addEventListener("click", () => {
-      closeAdminSchoolDetail();
-    });
-  }
-
-  if (els.adminSafeModeLoadBtn) {
-    els.adminSafeModeLoadBtn.addEventListener("click", () => {
-      const view = state.admin.currentView;
-      if (view === "preEvent") state.admin.preEventHeavyLoaded = true;
-      if (view === "liveEvent") state.admin.liveEventHeavyLoaded = true;
-      applyAdminView(view);
-    });
-  }
-
-  if (els.adminPacketsSchoolSelect) {
-    els.adminPacketsSchoolSelect.addEventListener("change", () => {
-      state.admin.packetsSchoolId = els.adminPacketsSchoolSelect?.value || "";
-      if (state.admin.currentView === "packets") {
-        renderAdminPacketsBySchedule();
-      }
-    });
-  }
-
-  if (els.adminPacketsMockPreviewBtn) {
-    els.adminPacketsMockPreviewBtn.addEventListener("click", () => {
-      if (!els.adminPacketsMockPanel) return;
-      const isHidden = els.adminPacketsMockPanel.classList.contains("is-hidden");
-      if (isHidden) {
-        renderMockAdminPacketPreview();
-        els.adminPacketsMockPanel.classList.remove("is-hidden");
-        els.adminPacketsMockPreviewBtn.textContent = "Hide Mock Preview";
-      } else {
-        els.adminPacketsMockPanel.classList.add("is-hidden");
-        els.adminPacketsMockPanel.innerHTML = "";
-        els.adminPacketsMockPreviewBtn.textContent = "Preview Full Packet (Mock)";
-      }
-    });
-  }
-  if (els.adminPacketsReleaseAshleyMockBtn) {
-    els.adminPacketsReleaseAshleyMockBtn.addEventListener("click", async () => {
-      const ok = confirmUser("Release a mock 4-judge packet to Ashley High School for testing?");
-      if (!ok) return;
-      els.adminPacketsReleaseAshleyMockBtn.disabled = true;
-      const originalLabel = els.adminPacketsReleaseAshleyMockBtn.textContent;
-      els.adminPacketsReleaseAshleyMockBtn.textContent = "Releasing...";
-      try {
-        const result = await releaseMockPacketForAshleyTesting();
-        alertUser(
-          `Mock packet released for ${result.schoolName || "Ashley High School"} - ${result.ensembleName || result.ensembleId}.`
-        );
-        if (state.admin.currentView === "packets") {
-          renderAdminPacketsBySchedule();
-        }
-      } catch (error) {
-        console.error("releaseMockPacketForAshleyTesting failed", error);
-        alertUser(error?.message || "Unable to release mock packet.");
-      } finally {
-        els.adminPacketsReleaseAshleyMockBtn.disabled = false;
-        els.adminPacketsReleaseAshleyMockBtn.textContent = originalLabel || "Release Mock to Ashley HS";
-      }
-    });
-  }
-
-  if (els.createEventBtn) {
-    els.createEventBtn.addEventListener("click", async () => {
-      const name = els.eventNameInput?.value.trim() || "";
-      if (!name) {
-        alertUser("Enter an event name.");
-        return;
-      }
-      const now = new Date();
-      const startAtDate = new Date(now);
-      const endAtDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      await createEvent({ name, startAtDate, endAtDate });
-      if (els.eventNameInput) els.eventNameInput.value = "";
-    });
-  }
-
-  if (els.assignmentsForm) {
-    els.assignmentsForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (!state.event.active) {
-        if (els.assignmentsError) {
-          els.assignmentsError.textContent = "Create and activate an event first.";
-        }
-        return;
-      }
-      const stage1Uid = els.stage1JudgeSelect?.value || "";
-      const stage2Uid = els.stage2JudgeSelect?.value || "";
-      const stage3Uid = els.stage3JudgeSelect?.value || "";
-      const sightUid = els.sightJudgeSelect?.value || "";
-      if (!stage1Uid || !stage2Uid || !stage3Uid || !sightUid) {
-        if (els.assignmentsError) {
-          els.assignmentsError.textContent = "Select all judge assignments.";
-        }
-        return;
-      }
-      if (els.assignmentsError) els.assignmentsError.textContent = "";
-      try {
-        await saveAssignments({
-          eventId: state.event.active.id,
-          stage1Uid,
-          stage2Uid,
-          stage3Uid,
-          sightUid,
-        });
-        showStatusMessage(els.assignmentsError, "Assignments saved.");
-      } catch (error) {
-        console.error("Assignments save failed", error);
-        showStatusMessage(
-          els.assignmentsError,
-          "Unable to save assignments. Check console for details.",
-          "error"
-        );
-      }
-    });
-  }
-
-  // Live Event legacy handlers removed in stability reset.
-
-  if (els.schoolForm) {
-    els.schoolForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const schoolId = state.admin.schoolEditId || (els.schoolIdCreateInput?.value.trim() || "");
-      const name = els.schoolNameCreateInput?.value.trim() || "";
-      if (!schoolId || !name) {
-        alertUser("Enter a school ID and name.");
-        return;
-      }
-      await saveSchool({ schoolId, name });
-      if (els.schoolResult) {
-        els.schoolResult.textContent = state.admin.schoolEditId
-          ? `Updated ${schoolId}.`
-          : `Added ${schoolId}.`;
-      }
-      resetAdminSchoolForm();
-    });
-  }
-
-  if (els.schoolEditCancelBtn) {
-    els.schoolEditCancelBtn.addEventListener("click", () => {
-      resetAdminSchoolForm();
-      if (els.schoolResult) els.schoolResult.textContent = "";
-    });
-  }
-
-  if (els.adminSchoolManageSelect) {
-    els.adminSchoolManageSelect.addEventListener("change", () => {
-      const hasSelection = Boolean(els.adminSchoolManageSelect?.value);
-      if (els.adminSchoolManageEditBtn) {
-        els.adminSchoolManageEditBtn.disabled = !hasSelection;
-      }
-      if (els.adminSchoolManageDeleteBtn) {
-        els.adminSchoolManageDeleteBtn.disabled = !hasSelection;
-      }
-    });
-  }
-
-  if (els.adminSchoolManageEditBtn) {
-    els.adminSchoolManageEditBtn.addEventListener("click", () => {
-      const school = getSelectedAdminSchool();
-      if (!school) return;
-      startAdminSchoolEdit(school);
-    });
-  }
-
-  if (els.adminSchoolManageDeleteBtn) {
-    els.adminSchoolManageDeleteBtn.addEventListener("click", async () => {
-      const school = getSelectedAdminSchool();
-      if (!school) return;
-      const label = school.name || school.id;
-      const ok = confirmUser(
-        `Delete school ${label}? This only works if no ensembles, users, entries, schedule items, or open packets reference it.`
-      );
-      if (!ok) return;
-      try {
-        await deleteSchool({ schoolId: school.id });
-        if (state.admin.schoolEditId === school.id) {
-          resetAdminSchoolForm();
-        }
-        if (els.schoolResult) {
-          els.schoolResult.textContent = `Deleted ${school.id}.`;
-        }
-      } catch (error) {
-        console.error("Delete school failed", error);
-        const message = error?.message || "Unable to delete school.";
-        alertUser(message);
-      }
-    });
-  }
-
-  if (els.schoolBulkBtn) {
-    els.schoolBulkBtn.addEventListener("click", async () => {
-      const raw = els.schoolBulkInput?.value || "";
-      const lines = raw
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const [schoolId, ...nameParts] = line.split(",");
-          return { schoolId: (schoolId || "").trim(), name: nameParts.join(",").trim() };
-        });
-      const result = await bulkImportSchools(lines);
-      if (els.schoolResult) {
-        els.schoolResult.textContent = `Imported ${result.count} schools.`;
-      }
-    });
-  }
-
-  if (els.provisionForm) {
-    els.provisionForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const email = els.provisionEmailInput?.value.trim() || "";
-      const name = els.provisionNameInput?.value.trim() || "";
-      const role = els.provisionRoleSelect?.value || "judge";
-      const schoolId = els.provisionSchoolSelect?.value || null;
-      const tempPassword = els.provisionTempPasswordInput?.value.trim() || "";
-      if (!email || !name) {
-        alertUser("Email and name are required.");
-        return;
-      }
-      const result = await provisionUser({
-        email,
-        displayName: name,
-        role,
-        schoolId,
-        tempPassword: tempPassword || null,
-      });
-      if (els.provisionResult) {
-        const password = result?.generatedPassword || tempPassword || "";
-        els.provisionResult.textContent = password
-          ? `Provisioned. Temp password: ${password}`
-          : "Provisioned.";
-      }
-      renderDirectorAssignmentsDirectory();
-    });
-  }
-
-  if (els.directorAssignDirectorSelect) {
-    els.directorAssignDirectorSelect.addEventListener("change", () => {
-      renderDirectorAssignmentsDirectory();
-    });
-  }
-  if (els.directorAssignSchoolSelect) {
-    els.directorAssignSchoolSelect.addEventListener("change", () => {
-      renderDirectorAssignmentsDirectory();
-    });
-  }
-  if (els.directorAssignBtn) {
-    els.directorAssignBtn.addEventListener("click", async () => {
-      const director = getSelectedDirectorForAdmin();
-      const schoolId = els.directorAssignSchoolSelect?.value || "";
-      if (!director || !schoolId) return;
-      els.directorAssignBtn.disabled = true;
-      try {
-        await assignDirectorSchool({ directorUid: director.uid, schoolId });
-        if (els.directorManageResult) {
-          const schoolName = getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
-          els.directorManageResult.textContent = `Assigned ${director.displayName || director.email || director.uid} to ${schoolName}.`;
-        }
-      } catch (error) {
-        console.error("assignDirectorSchool failed", error);
-        if (els.directorManageResult) {
-          els.directorManageResult.textContent = error?.message || "Unable to assign director.";
-        }
-      } finally {
-        els.directorAssignBtn.disabled = false;
-      }
-    });
-  }
-  if (els.directorUnassignBtn) {
-    els.directorUnassignBtn.addEventListener("click", async () => {
-      const director = getSelectedDirectorForAdmin();
-      if (!director || !director.schoolId) return;
-      const label = director.displayName || director.email || director.uid;
-      if (!confirmUser(`Remove ${label} from their school assignment?`)) return;
-      els.directorUnassignBtn.disabled = true;
-      try {
-        await unassignDirectorSchool({ directorUid: director.uid });
-        if (els.directorManageResult) {
-          els.directorManageResult.textContent = `Removed ${label} from school assignment.`;
-        }
-      } catch (error) {
-        console.error("unassignDirectorSchool failed", error);
-        if (els.directorManageResult) {
-          els.directorManageResult.textContent = error?.message || "Unable to remove director.";
-        }
-      } finally {
-        els.directorUnassignBtn.disabled = false;
-      }
-    });
-  }
+  return getAdminHandlerBinder()();
 }
 
 export function bindJudgeOpenHandlers() {
-  if (judgeOpenHandlersBound) return;
-  judgeOpenHandlersBound = true;
-
-  if (els.judgeOpenPacketSelect) {
-    els.judgeOpenPacketSelect.addEventListener("change", async () => {
-      const packetId = els.judgeOpenPacketSelect.value || "";
-      await openJudgeOpenPacket(packetId);
-    });
-  }
-
-  if (els.judgeOpenBackBtn) {
-    els.judgeOpenBackBtn.addEventListener("click", () => {
-      hideOpenDetailView();
-    });
-  }
-
-  if (els.judgeOpenTapePlayback && !tapePlaybackBound) {
-    tapePlaybackBound = true;
-    els.judgeOpenTapePlayback.addEventListener("ended", () => {
-      const playlist = state.judgeOpen.tapePlaylist || [];
-      if (!playlist.length) return;
-      const nextIndex = (state.judgeOpen.tapePlaylistIndex || 0) + 1;
-      if (nextIndex >= playlist.length) {
-        state.judgeOpen.tapePlaylistIndex = 0;
-        return;
-      }
-      state.judgeOpen.tapePlaylistIndex = nextIndex;
-      els.judgeOpenTapePlayback.src = playlist[nextIndex].url;
-      els.judgeOpenTapePlayback.play();
-    });
-  }
-
-  if (els.judgeOpenNewPacketBtn) {
-    els.judgeOpenNewPacketBtn.addEventListener("click", async () => {
-      if (!hasLinkedOpenEnsemble()) {
-        setOpenPacketHint("Select an existing school and ensemble first.");
-        return;
-      }
-      els.judgeOpenNewPacketBtn.dataset.loadingLabel = "Creating...";
-      els.judgeOpenNewPacketBtn.dataset.spinner = "true";
-      await withLoading(els.judgeOpenNewPacketBtn, async () => {
-        setOpenPacketHint("Creating draft tape...");
-        const payload = gatherOpenPacketMeta();
-        const result = await createOpenPacket({ ...payload, onSessions: renderOpenSegments });
-        if (!result?.ok) {
-          setOpenPacketHint(result?.message || "Unable to create packet.");
-          return;
-        }
-        state.judgeOpen.tapePlaylistIndex = 0;
-        if (els.judgeOpenPacketSelect && result.packetId) {
-          els.judgeOpenPacketSelect.value = result.packetId;
-        }
-        await saveOpenPrefsToServer({
-          lastJudgeOpenPacketId: result.packetId,
-          lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
-        });
-        if (state.auth.userProfile) {
-          state.auth.userProfile.preferences = {
-            ...(state.auth.userProfile.preferences || {}),
-            lastJudgeOpenPacketId: result.packetId,
-            lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
-          };
-        }
-        setOpenPacketHint("Draft packet created.");
-        renderOpenCaptionForm();
-        updateOpenHeader();
-        showOpenDetailView();
-        updateOpenEmptyState();
-        updateOpenSubmitState();
-      });
-    });
-  }
-
-  if (els.judgeOpenClearRecentBtn) {
-    els.judgeOpenClearRecentBtn.addEventListener("click", async () => {
-      saveOpenPrefs({ lastPacketId: "", lastFormType: "" });
-      await saveOpenPrefsToServer({
-        lastJudgeOpenPacketId: "",
-        lastJudgeOpenFormType: "",
-      });
-      if (state.auth.userProfile) {
-        state.auth.userProfile.preferences = {
-          ...(state.auth.userProfile.preferences || {}),
-          lastJudgeOpenPacketId: "",
-          lastJudgeOpenFormType: "",
-        };
-      }
-      state.judgeOpen.currentPacketId = null;
-      state.judgeOpen.currentPacket = null;
-      state.judgeOpen.selectedExisting = null;
-      setJudgeOpenDirectorReferenceState(
-        "not-linked",
-        "Link an existing ensemble to load Director repertoire/instrumentation.",
-        null
-      );
-      renderJudgeOpenDirectorReference();
-      if (els.judgeOpenPacketSelect) {
-        els.judgeOpenPacketSelect.value = "";
-      }
-      if (els.judgeOpenTranscriptInput) {
-        els.judgeOpenTranscriptInput.value = "";
-      }
-      state.judgeOpen.transcriptText = "";
-      if (els.judgeOpenSchoolNameInput) {
-        els.judgeOpenSchoolNameInput.value = "";
-      }
-      if (els.judgeOpenEnsembleNameInput) {
-        els.judgeOpenEnsembleNameInput.value = "";
-      }
-      state.judgeOpen.captions = {};
-      if (els.judgeOpenDraftStatus) {
-        els.judgeOpenDraftStatus.textContent = "";
-      }
-      updateOpenHeader();
-      hideOpenDetailView();
-      setOpenPacketHint("Recent packet cleared.");
-      renderOpenCaptionForm();
-      updateOpenEmptyState();
-      updateOpenSubmitState();
-    });
-  }
-
-  if (els.judgeOpenDefaultFormBtn) {
-    els.judgeOpenDefaultFormBtn.addEventListener("click", async () => {
-      const formType = els.judgeOpenFormTypeSelect?.value || "stage";
-      saveOpenPrefs({ defaultFormType: formType });
-      await saveOpenPrefsToServer({ judgeOpenDefaultFormType: formType });
-      if (state.auth.userProfile) {
-        state.auth.userProfile.preferences = {
-          ...(state.auth.userProfile.preferences || {}),
-          judgeOpenDefaultFormType: formType,
-        };
-      }
-      setOpenPacketHint("Default form saved.");
-    });
-  }
-
-  if (els.judgeOpenUseEventDefaultsToggle) {
-    els.judgeOpenUseEventDefaultsToggle.addEventListener("change", () => {
-      state.judgeOpen.useActiveEventDefaults = Boolean(els.judgeOpenUseEventDefaultsToggle.checked);
-      syncOpenEventDefaultsUI();
-      refreshOpenEventDefaultsState();
-      if (state.judgeOpen.useActiveEventDefaults) {
-        setOpenPacketHint("Active event defaults enabled.");
-      } else {
-        setOpenPacketHint("Open mode enabled.");
-      }
-    });
-  }
-
-  if (els.judgeOpenSaveEventDefaultsBtn) {
-    els.judgeOpenSaveEventDefaultsBtn.addEventListener("click", async () => {
-      const enabled = getOpenEventDefaultsPreference();
-      saveOpenPrefs({ useActiveEventDefaults: enabled });
-      await saveOpenPrefsToServer({ judgeOpenUseActiveEventDefaults: enabled });
-      if (state.auth.userProfile) {
-        state.auth.userProfile.preferences = {
-          ...(state.auth.userProfile.preferences || {}),
-          judgeOpenUseActiveEventDefaults: enabled,
-        };
-      }
-      setOpenPacketHint("Judge mode default saved.");
-    });
-  }
-
-  if (els.judgeOpenExistingSelect) {
-    els.judgeOpenExistingSelect.addEventListener("change", () => {
-      const option = els.judgeOpenExistingSelect.selectedOptions?.[0];
-      if (!option) return;
-      const schoolId = option.dataset.schoolId || "";
-      const ensembleId = option.dataset.ensembleId || "";
-      const schoolName = option.dataset.schoolName || "";
-      const ensembleName = option.dataset.ensembleName || "";
-      if (els.judgeOpenSchoolNameInput) {
-        els.judgeOpenSchoolNameInput.value = schoolName;
-      }
-      if (els.judgeOpenEnsembleNameInput) {
-        els.judgeOpenEnsembleNameInput.value = ensembleName;
-      }
-      state.judgeOpen.selectedExisting = {
-        schoolId,
-        schoolName,
-        ensembleId,
-        ensembleName,
-      };
-      markJudgeOpenDirty();
-      updateOpenHeader();
-      if (state.judgeOpen.currentPacketId) {
-        updateOpenPacketDraft({
-          schoolId,
-          ensembleId,
-          schoolName,
-          ensembleName,
-          ensembleSnapshot: buildOpenEnsembleSnapshot(),
-        });
-      }
-      refreshJudgeOpenDirectorReference({ persistToPacket: true });
-      updateOpenSubmitState();
-    });
-  }
-
-  if (els.judgeOpenFormTypeSelect) {
-    els.judgeOpenFormTypeSelect.addEventListener("change", () => {
-      state.judgeOpen.formType = els.judgeOpenFormTypeSelect.value || "stage";
-      saveOpenPrefs({ lastFormType: state.judgeOpen.formType });
-      renderOpenCaptionForm();
-      syncOpenFormTypeSegmented();
-      markJudgeOpenDirty();
-      if (state.judgeOpen.currentPacketId) {
-        updateOpenPacketDraft({ formType: state.judgeOpen.formType });
-      }
-    });
-  }
-
-  if (els.judgeOpenPrepTimePanel) {
-    els.judgeOpenPrepTimePanel.querySelectorAll("[data-prep-mins]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const mins = Number(btn.dataset.prepMins || 5);
-        if (state.judgeOpen.prepTimerId) {
-          clearInterval(state.judgeOpen.prepTimerId);
-          state.judgeOpen.prepTimerId = null;
-        }
-        state.judgeOpen.prepTimerEnd = Date.now() + mins * 60 * 1000;
-        const tick = () => {
-          const left = Math.max(0, state.judgeOpen.prepTimerEnd - Date.now());
-          if (left <= 0) {
-            if (state.judgeOpen.prepTimerId) {
-              clearInterval(state.judgeOpen.prepTimerId);
-              state.judgeOpen.prepTimerId = null;
-            }
-            if (els.judgeOpenPrepTimeDisplay) {
-              els.judgeOpenPrepTimeDisplay.textContent = "Done";
-              els.judgeOpenPrepTimeDisplay.className = "prep-time-display prep-time-done";
-            }
-            return;
-          }
-          const m = Math.floor(left / 60000);
-          const s = Math.floor((left % 60000) / 1000);
-          if (els.judgeOpenPrepTimeDisplay) {
-            els.judgeOpenPrepTimeDisplay.textContent = `${m}:${String(s).padStart(2, "0")}`;
-            els.judgeOpenPrepTimeDisplay.className = "prep-time-display";
-          }
-        };
-        tick();
-        state.judgeOpen.prepTimerId = setInterval(tick, 1000);
-      });
-    });
-  }
-
-  if (els.judgeOpenFormTypeSegmented) {
-    els.judgeOpenFormTypeSegmented.addEventListener("click", (event) => {
-      const button = event.target?.closest?.("[data-form]");
-      if (!button) return;
-      const formType = button.dataset.form || "stage";
-      state.judgeOpen.formType = formType;
-      if (els.judgeOpenFormTypeSelect) {
-        els.judgeOpenFormTypeSelect.value = formType;
-      }
-      saveOpenPrefs({ lastFormType: state.judgeOpen.formType });
-      renderOpenCaptionForm();
-      syncOpenFormTypeSegmented();
-      if (els.judgeOpenPrepTimePanel) {
-        els.judgeOpenPrepTimePanel.classList.toggle("is-hidden", formType !== "sight");
-      }
-      markJudgeOpenDirty();
-      if (state.judgeOpen.currentPacketId) {
-        updateOpenPacketDraft({ formType: state.judgeOpen.formType });
-      }
-    });
-  }
-
-  if (els.judgeOpenTranscriptInput) {
-    els.judgeOpenTranscriptInput.addEventListener("input", () => {
-      state.judgeOpen.transcriptText = els.judgeOpenTranscriptInput.value || "";
-      markJudgeOpenDirty();
-      updateOpenSubmitState();
-    });
-  }
-
-  if (els.judgeOpenDraftBtn) {
-    els.judgeOpenDraftBtn.addEventListener("click", async () => {
-      const transcript = state.judgeOpen.transcriptText || "";
-      if (!transcript.trim()) {
-        if (els.judgeOpenDraftStatus) {
-          els.judgeOpenDraftStatus.textContent = "Add a transcript before drafting captions.";
-        }
-        return;
-      }
-      if (!els.judgeOpenCaptionForm?.children?.length) {
-        renderOpenCaptionForm();
-      }
-      const overwrite = Boolean(els.judgeOpenOverwriteCaptionsToggle?.checked);
-      els.judgeOpenDraftBtn.dataset.loadingLabel = "Drafting...";
-      els.judgeOpenDraftBtn.dataset.spinner = "true";
-      await withLoading(els.judgeOpenDraftBtn, async () => {
-        if (els.judgeOpenDraftStatus) {
-          els.judgeOpenDraftStatus.textContent = "Drafting captions. Please wait...";
-        }
-        const result = await draftCaptionsFromTranscript({
-          transcript,
-          formType: state.judgeOpen.formType || "stage",
-        });
-        if (!result?.ok) {
-          if (els.judgeOpenDraftStatus) {
-            els.judgeOpenDraftStatus.textContent =
-              result?.message || "Unable to draft captions.";
-          }
-          return;
-        }
-        applyOpenCaptionDraft({ captions: result.captions, overwrite });
-        if (els.judgeOpenDraftStatus) {
-          els.judgeOpenDraftStatus.textContent = "Drafted captions.";
-        }
-      });
-    });
-  }
-
-  if (els.judgeOpenTranscribeBtn) {
-    els.judgeOpenTranscribeBtn.addEventListener("click", async () => {
-      if (els.judgeOpenTranscribeBtn.disabled) return;
-      els.judgeOpenTranscribeBtn.dataset.loadingLabel = "Transcribing...";
-      els.judgeOpenTranscribeBtn.dataset.spinner = "true";
-      await withLoading(els.judgeOpenTranscribeBtn, async () => {
-        const result = await transcribeOpenTape();
-        if (!result?.ok) {
-          setOpenPacketHint(result?.message || "Transcription failed.");
-          return;
-        }
-        if (els.judgeOpenTranscriptInput) {
-          els.judgeOpenTranscriptInput.value = result.transcript || "";
-        }
-        state.judgeOpen.transcriptText = result.transcript || "";
-        updateOpenSubmitState();
-        setOpenPacketHint("Transcription complete.");
-      });
-    });
-  }
-
-  if (els.judgeOpenRecordBtn) {
-    els.judgeOpenRecordBtn.addEventListener("click", async () => {
-      els.judgeOpenRecordBtn.dataset.loadingLabel = "Starting...";
-      els.judgeOpenRecordBtn.dataset.spinner = "true";
-      await withLoading(els.judgeOpenRecordBtn, async () => {
-        const result = await startOpenRecording({
-          getPacketMeta: gatherOpenPacketMeta,
-          onSessions: renderOpenSegments,
-          onStatus: updateOpenRecordingStatus,
-        });
-        if (!result?.ok) {
-          setOpenPacketHint(result?.message || "Unable to start recording.");
-          return;
-        }
-      });
-      updateOpenRecordingStatus();
-    });
-  }
-
-  if (els.judgeOpenStopBtn) {
-    els.judgeOpenStopBtn.addEventListener("click", () => {
-      els.judgeOpenStopBtn.dataset.loadingLabel = "Stopping...";
-      els.judgeOpenStopBtn.dataset.spinner = "true";
-      withLoading(els.judgeOpenStopBtn, async () => {
-        stopOpenRecording();
-      }).finally(() => {
-        updateOpenRecordingStatus();
-      });
-    });
-  }
-
-  if (els.judgeOpenCaptionForm) {
-    els.judgeOpenCaptionForm.addEventListener("click", (event) => {
-      const gradeBtn = event.target?.closest?.("[data-grade]");
-      const modifierBtn = event.target?.closest?.("[data-modifier]");
-      const wrapper = event.target?.closest?.("[data-key]");
-      if (!wrapper) return;
-      const key = wrapper.dataset.key;
-      const current = state.judgeOpen.captions[key] || {};
-      if (gradeBtn) {
-        const nextGrade = gradeBtn.dataset.grade || "";
-        state.judgeOpen.captions[key] = {
-          ...current,
-          gradeLetter: nextGrade,
-        };
-        markJudgeOpenDirty();
-        applyOpenCaptionState();
-        updateOpenSubmitState();
-      }
-      if (modifierBtn) {
-        const nextModifier = modifierBtn.dataset.modifier || "";
-        state.judgeOpen.captions[key] = {
-          ...current,
-          gradeModifier: current.gradeModifier === nextModifier ? "" : nextModifier,
-        };
-        markJudgeOpenDirty();
-        applyOpenCaptionState();
-        updateOpenSubmitState();
-      }
-    });
-    els.judgeOpenCaptionForm.addEventListener("input", (event) => {
-      const wrapper = event.target?.closest?.("[data-key]");
-      if (!wrapper) return;
-      if (!event.target?.matches("[data-comment]")) return;
-      const key = wrapper.dataset.key;
-      const current = state.judgeOpen.captions[key] || {};
-      state.judgeOpen.captions[key] = {
-        ...current,
-        comment: event.target.value || "",
-      };
-      markJudgeOpenDirty();
-      applyOpenCaptionState();
-      updateOpenSubmitState();
-    });
-  }
-
-  if (els.judgeOpenSubmitBtn) {
-    els.judgeOpenSubmitBtn.addEventListener("click", async (event) => {
-      event.preventDefault();
-      if (!hasLinkedOpenEnsemble()) {
-        setOpenPacketHint("Select an existing school and ensemble before submitting.");
-        return;
-      }
-      const result = await submitOpenPacket();
-      if (!result?.ok) {
-        setOpenPacketHint(result?.message || "Unable to submit packet.");
-        return;
-      }
-      setOpenPacketHint("Submitted and locked. Admin must release to Director.");
-      const refreshed = await selectOpenPacket(state.judgeOpen.currentPacketId, {
-        onSessions: renderOpenSegments,
-      });
-      if (refreshed?.ok) {
-        renderOpenCaptionForm();
-        updateOpenHeader();
-        showOpenDetailView();
-        updateOpenSubmitState();
-      }
-    });
-  }
+  return getJudgeOpenHandlerBinder()();
 }
 
 function gatherOpenPacketMeta() {
@@ -7228,661 +3779,13 @@ function applyOpenCaptionDraft({ captions = {}, overwrite = false } = {}) {
 }
 
 function updateOpenRecordingStatus() {
-  if (!els.judgeOpenRecordingStatus) return;
-  const setMicDebug = () => {
-    if (!els.judgeOpenMicSettingsDebug) return;
-    const s = state.judgeOpen.micTrackSettings;
-    if (!s) {
-      els.judgeOpenMicSettingsDebug.textContent = "";
-      return;
-    }
-    const ec = s.echoCancellation;
-    const ns = s.noiseSuppression;
-    const agc = s.autoGainControl;
-    els.judgeOpenMicSettingsDebug.textContent =
-      `Mic settings: EC=${String(ec)} - NS=${String(ns)} - AGC=${String(agc)}`;
-  };
-  const recorder = state.judgeOpen.mediaRecorder;
-  if (recorder && recorder.state === "recording") {
-    els.judgeOpenRecordingStatus.textContent = "Recording...";
-    els.judgeOpenRecordingStatus.classList.add("recording-active");
-    if (els.judgeOpenRecordDot) {
-      els.judgeOpenRecordDot.classList.add("is-active");
-    }
-    if (els.judgeOpenRecordLabel) {
-      els.judgeOpenRecordLabel.textContent = "Recording...";
-    }
-    if (els.judgeOpenRecordBtn) {
-      els.judgeOpenRecordBtn.classList.add("is-recording");
-    }
-    if (els.judgeOpenRecordBtn) els.judgeOpenRecordBtn.disabled = true;
-    if (els.judgeOpenStopBtn) els.judgeOpenStopBtn.disabled = false;
-    startOpenLevelMeter(recorder.stream);
-    setMicDebug();
-    updateOpenSubmitState();
-    return;
-  }
-  els.judgeOpenRecordingStatus.classList.remove("recording-active");
-  if (els.judgeOpenRecordDot) {
-    els.judgeOpenRecordDot.classList.remove("is-active");
-  }
-  if (els.judgeOpenRecordLabel) {
-    els.judgeOpenRecordLabel.textContent = "Start Recording";
-  }
-  if (els.judgeOpenRecordBtn) {
-    els.judgeOpenRecordBtn.classList.remove("is-recording");
-  }
-  stopOpenLevelMeter();
-  if (state.judgeOpen.pendingUploads > 0) {
-    els.judgeOpenRecordingStatus.textContent = "Saving chunks...";
-  } else {
-    els.judgeOpenRecordingStatus.textContent = "Recording saved.";
-  }
-  setMicDebug();
-  if (els.judgeOpenRecordBtn) els.judgeOpenRecordBtn.disabled = false;
-  if (els.judgeOpenStopBtn) els.judgeOpenStopBtn.disabled = true;
-  updateOpenSubmitState();
+  return getJudgeOpenCore().updateOpenRecordingStatus();
 }
 
 export function bindDirectorHandlers() {
-  if (directorHandlersBound) return;
-  directorHandlersBound = true;
-
-  const goBtn = document.getElementById("directorEventGoBtn") || els.directorEventGoBtn;
-  const eventSelect = document.getElementById("directorEventSelect") || els.directorEventSelect;
-  if (goBtn && eventSelect) {
-    goBtn.addEventListener("click", async () => {
-      try {
-        const eventId = eventSelect.value || null;
-        if (!eventId) {
-          alertUser("Select an event first.");
-          return;
-        }
-        state.director.selectedEventId = eventId;
-        setDirectorEvent(eventId);
-        const hasReg = await checkDirectorHasRegistrationForEvent(eventId);
-        if (hasReg) {
-          state.director.view = "registered";
-          updateDirectorAttachUI();
-        } else {
-          state.director.view = "registration";
-          state.director.selectedEnsemblesForRegistration = [];
-          updateDirectorAttachUI();
-          await renderDirectorRegistrationPanel();
-        }
-      } catch (err) {
-        console.error("Director Continue failed", err);
-        alertUser(err?.message || "Something went wrong. Try again.");
-      }
-    });
-  }
-  if (els.directorRegistrationProfileBtn) {
-    els.directorRegistrationProfileBtn.addEventListener("click", () => {
-      openDirectorProfileModal();
-    });
-  }
-  const saveRegBtn = document.getElementById("directorSaveRegistrationBtn") || els.directorSaveRegistrationBtn;
-  if (saveRegBtn) {
-    saveRegBtn.addEventListener("click", async () => {
-      try {
-        const schoolId = getDirectorSchoolId();
-        const eventId = state.director.selectedEventId;
-        const selectedIds = state.director.selectedEnsemblesForRegistration || [];
-        const gfMap = state.director._registrationGradeFlexMap;
-        if (!eventId || !schoolId || !selectedIds.length) {
-          alertUser("Select at least one ensemble and complete the form.");
-          return;
-        }
-        for (const ensembleId of selectedIds) {
-          const gf = gfMap?.get(ensembleId);
-          const commentsOnly = Boolean(gf?.commentsCheck?.checked) || Boolean(gf?.waiverCheck?.checked);
-          await upsertRegistrationForEnsemble({
-            eventId,
-            schoolId,
-            ensembleId,
-            ensembleName: gf?.ensembleName || "",
-            declaredGradeLevel: gf?.gradeSelect?.value?.trim() || "",
-            declaredGradeFlex: Boolean(gf?.flexCheck?.checked),
-            commentsOnly,
-            feeWaiverRequested: Boolean(gf?.waiverCheck?.checked),
-            datePreference: gf?.datePref?.value?.trim() || "",
-            registrationNote: gf?.note?.value?.trim() || "",
-          });
-        }
-        state.director.view = "registered";
-        updateDirectorAttachUI();
-      } catch (err) {
-        console.error("Save registration failed", err);
-        alertUser(err?.message || "Could not save registration.");
-      }
-    });
-  }
-  const editRegBtn = document.getElementById("directorEditRegistrationBtn");
-  if (editRegBtn) {
-    editRegBtn.addEventListener("click", async () => {
-      state.director.view = "registration";
-      updateDirectorAttachUI();
-      await renderDirectorRegistrationPanel();
-    });
-  }
-  const ensembleInfoBtn = document.getElementById("directorEnsembleInfoBtn");
-  if (ensembleInfoBtn) {
-    ensembleInfoBtn.addEventListener("click", () => {
-      state.director.view = "dayOfForms";
-      updateDirectorAttachUI();
-      renderDayOfEnsembleSelector();
-    });
-  }
-  const backToEventsBtn = document.getElementById("directorBackToEventsBtn");
-  if (backToEventsBtn) {
-    backToEventsBtn.addEventListener("click", () => {
-      state.director.view = "landing";
-      updateDirectorAttachUI();
-    });
-  }
-  const dayOfBackBtn = document.getElementById("directorDayOfBackBtn");
-  if (dayOfBackBtn) {
-    dayOfBackBtn.addEventListener("click", () => {
-      state.director.view = "registered";
-      updateDirectorAttachUI();
-    });
-  }
-  const dayOfEnsembleSelect = document.getElementById("directorDayOfEnsembleSelect");
-  if (dayOfEnsembleSelect) {
-    dayOfEnsembleSelect.addEventListener("change", () => {
-      const ensembleId = dayOfEnsembleSelect.value;
-      if (!ensembleId) return;
-      state.director.selectedEnsembleId = ensembleId;
-      loadDirectorEntry({
-        onUpdate: applyDirectorEntryUpdate,
-        onClear: applyDirectorEntryClear,
-      });
-    });
-  }
-  const printSigBtn = document.getElementById("directorPrintSignatureBtn");
-  if (printSigBtn) {
-    printSigBtn.addEventListener("click", () => {
-      generateSignatureFormPdf();
-    });
-  }
-
-  const uploadSignedFormBtn = document.getElementById("directorUploadSignedFormBtn");
-  const signedFormInput = document.getElementById("directorSignedFormInput");
-  const signedFormStatus = document.getElementById("directorSignedFormStatus");
-  if (uploadSignedFormBtn && signedFormInput) {
-    uploadSignedFormBtn.addEventListener("click", () => signedFormInput.click());
-    signedFormInput.addEventListener("change", async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const eventId = state.director.selectedEventId;
-      const schoolId = getDirectorSchoolId();
-      if (!eventId || !schoolId) {
-        if (signedFormStatus) signedFormStatus.textContent = "Select an event and ensure you are attached to a school.";
-        return;
-      }
-      if (signedFormStatus) signedFormStatus.textContent = "Uploading…";
-      try {
-        const result = await uploadSignedSignatureForm(eventId, schoolId, file);
-        if (signedFormStatus) signedFormStatus.textContent = result.ok ? "Signed form uploaded." : (result.reason || "Upload failed.");
-        if (result.ok) signedFormInput.value = "";
-      } catch (err) {
-        console.error("Upload signed form failed", err);
-        if (signedFormStatus) signedFormStatus.textContent = "Upload failed. Check console.";
-      }
-    });
-  }
-
-  if (els.directorProfileToggleBtn) {
-    els.directorProfileToggleBtn.addEventListener("click", () => {
-      openDirectorProfileModal();
-    });
-  }
-
-  if (els.directorShowEnsembleFormBtn) {
-    els.directorShowEnsembleFormBtn.addEventListener("click", () => {
-      setDirectorEnsembleFormMode({ mode: "create" });
-      if (els.directorEnsembleNameInput) {
-        els.directorEnsembleNameInput.focus();
-      }
-    });
-  }
-
-  if (els.directorEnsembleCancelBtn) {
-    els.directorEnsembleCancelBtn.addEventListener("click", () => {
-      closeDirectorEnsembleForm();
-    });
-  }
-
-  if (els.directorEditActiveEnsembleBtn) {
-    els.directorEditActiveEnsembleBtn.addEventListener("click", () => {
-      const active = state.director.ensemblesCache.find(
-        (ensemble) => ensemble.id === state.director.selectedEnsembleId
-      );
-      if (!active) return;
-      setDirectorEnsembleFormMode({ mode: "edit", ensemble: active });
-      els.directorEnsembleNameInput?.focus();
-    });
-  }
-
-  if (els.directorAttachBtn) {
-    els.directorAttachBtn.addEventListener("click", async () => {
-      const schoolId = els.directorAttachSelect?.value || "";
-      if (!schoolId) return;
-      const result = await attachDirectorSchool(schoolId);
-      if (result?.ok) {
-        const selectedSchool = state.admin.schoolsList.find((school) => school.id === schoolId);
-        if (state.auth.userProfile?.role === "admin") {
-          setDirectorSchoolName(selectedSchool?.name || schoolId);
-        }
-        updateDirectorAttachUI();
-        refreshDirectorWatchers();
-      }
-    });
-  }
-
-  if (els.directorDetachBtn) {
-    els.directorDetachBtn.addEventListener("click", async () => {
-      if (state.auth.userProfile?.role === "director") {
-        alertUser("School selection is locked. Contact an admin to change it.");
-        return;
-      }
-      const ok = confirmUser("Change school? This will clear your current selection.");
-      if (!ok) return;
-      const result = await detachDirectorSchool();
-      if (result?.ok) {
-        updateDirectorAttachUI();
-        setDirectorSchoolName("No school attached");
-        renderDirectorEnsembles([]);
-        applyDirectorEntryClear({
-          hint: "Select an ensemble and event to begin.",
-          status: "Draft",
-          readyStatus: "disabled",
-        });
-        refreshDirectorWatchers();
-      }
-    });
-  }
-
-  if (els.directorEnsembleForm) {
-    els.directorEnsembleForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const name = els.directorEnsembleNameInput?.value.trim() || "";
-      const editingEnsembleId = state.director.editingEnsembleId;
-      if (!name) {
-        if (els.directorEnsembleError) {
-          els.directorEnsembleError.textContent = "Ensemble name is required.";
-        }
-        return;
-      }
-      if (
-        !editingEnsembleId &&
-        hasDirectorUnsavedChanges() &&
-        !confirmUser("You have unsaved changes. Leave anyway?")
-      ) {
-        return;
-      }
-      if (els.directorEnsembleError) {
-        els.directorEnsembleError.textContent = "";
-      }
-      const result = editingEnsembleId
-        ? await renameDirectorEnsemble(editingEnsembleId, name)
-        : await createDirectorEnsemble(name);
-      if (result?.ok) {
-        const resolvedName = String(result?.name || name || "").trim();
-        if (editingEnsembleId) {
-          discardDirectorDraftChanges();
-          state.director.ensemblesCache = state.director.ensemblesCache.map((ensemble) =>
-            ensemble.id === editingEnsembleId ? { ...ensemble, name: resolvedName } : ensemble
-          );
-          renderDirectorEnsembles(state.director.ensemblesCache);
-          updateDirectorActiveEnsembleLabel();
-        } else {
-          discardDirectorDraftChanges();
-        }
-        closeDirectorEnsembleForm();
-        await loadDirectorEntry({
-          onUpdate: applyDirectorEntryUpdate,
-          onClear: applyDirectorEntryClear,
-        });
-      }
-    });
-  }
-
-  if (els.directorEventSelect) {
-    els.directorEventSelect.addEventListener("change", () => {
-      const nextId = els.directorEventSelect?.value || null;
-      if (!nextId) return;
-      if (hasDirectorUnsavedChanges() && !confirmUser("You have unsaved changes. Leave anyway?")) {
-        els.directorEventSelect.value = state.director.selectedEventId || "";
-        if (els.directorSetEventBtn) {
-          els.directorSetEventBtn.disabled = !els.directorEventSelect.value;
-        }
-        return;
-      }
-      discardDirectorDraftChanges();
-      setDirectorEvent(nextId);
-      updateDirectorEventMeta();
-      loadDirectorEntry({
-        onUpdate: applyDirectorEntryUpdate,
-        onClear: applyDirectorEntryClear,
-      });
-      if (els.directorEventPicker) {
-        els.directorEventPicker.classList.add("is-hidden");
-      }
-    });
-  }
-
-  if (els.directorScheduleBtn) {
-    els.directorScheduleBtn.addEventListener("click", () => {
-      if (!state.director.selectedEventId) return;
-      if (hasDirectorUnsavedChanges() && !confirmUser("You have unsaved changes. Leave anyway?")) {
-        return;
-      }
-      discardDirectorDraftChanges();
-      window.location.hash = `#event/${state.director.selectedEventId}`;
-    });
-  }
-
-  if (els.directorChangeEventBtn) {
-    els.directorChangeEventBtn.addEventListener("click", () => {
-      if (els.directorEventPicker) {
-        const isHidden = els.directorEventPicker.classList.contains("is-hidden");
-        if (
-          !isHidden &&
-          hasDirectorUnsavedChanges() &&
-          !confirmUser("You have unsaved changes. Leave anyway?")
-        ) {
-          return;
-        }
-        els.directorEventPicker.classList.toggle("is-hidden");
-      }
-    });
-  }
-
-
-  if (els.instrumentationNonStandardAddBtn) {
-    els.instrumentationNonStandardAddBtn.addEventListener("click", () => {
-      if (!state.director.entryDraft) return;
-      state.director.entryDraft.instrumentation.nonStandard.push({
-        instrumentName: "",
-        count: 0,
-      });
-      renderInstrumentationNonStandard();
-      applyDirectorDirty("instrumentation");
-    });
-  }
-
-  if (els.directorEntryReadyBtn) {
-    els.directorEntryReadyBtn.addEventListener("click", async () => {
-      if (!state.director.entryDraft) return;
-      const isReady = state.director.entryDraft.status === "ready";
-      const result = isReady ? await markEntryDraft() : await markEntryReady();
-      if (!result) return;
-      if (!result.ok) {
-        if (result.message) {
-          alertUser(result.message);
-        }
-        return;
-      }
-      const nextStatus = isReady ? "Incomplete" : "Ready";
-      setDirectorEntryStatusLabel(nextStatus);
-      setDirectorReadyControls({ status: isReady ? "draft" : "ready" });
-      renderDirectorChecklist(
-        state.director.entryDraft,
-        computeDirectorCompletionState(state.director.entryDraft)
-      );
-    });
-  }
-
-  if (els.saveRepertoireBtn) {
-    els.saveRepertoireBtn.addEventListener("click", async () => {
-      els.saveRepertoireBtn.dataset.loadingLabel = "Saving...";
-      els.saveRepertoireBtn.dataset.spinner = "true";
-      await withLoading(els.saveRepertoireBtn, async () => {
-        const result = await saveRepertoireSection();
-        applyDirectorSaveResult("repertoire", result);
-      });
-    });
-  }
-  if (els.saveInstrumentationBtn) {
-    els.saveInstrumentationBtn.addEventListener("click", async () => {
-      els.saveInstrumentationBtn.dataset.loadingLabel = "Saving...";
-      els.saveInstrumentationBtn.dataset.spinner = "true";
-      await withLoading(els.saveInstrumentationBtn, async () => {
-        const result = await saveInstrumentationSection();
-        applyDirectorSaveResult("instrumentation", result);
-      });
-    });
-  }
-  if (els.saveNonStandardBtn) {
-    els.saveNonStandardBtn.addEventListener("click", async () => {
-      els.saveNonStandardBtn.dataset.loadingLabel = "Saving...";
-      els.saveNonStandardBtn.dataset.spinner = "true";
-      await withLoading(els.saveNonStandardBtn, async () => {
-        const result = await saveInstrumentationSection();
-        applyDirectorSaveResult("nonStandard", result);
-      });
-    });
-  }
-  if (els.saveRule3cBtn) {
-    els.saveRule3cBtn.addEventListener("click", async () => {
-      els.saveRule3cBtn.dataset.loadingLabel = "Saving...";
-      els.saveRule3cBtn.dataset.spinner = "true";
-      await withLoading(els.saveRule3cBtn, async () => {
-        const result = await saveRule3cSection();
-        applyDirectorSaveResult("rule3c", result);
-      });
-    });
-  }
-  if (els.saveSeatingBtn) {
-    els.saveSeatingBtn.addEventListener("click", async () => {
-      els.saveSeatingBtn.dataset.loadingLabel = "Saving...";
-      els.saveSeatingBtn.dataset.spinner = "true";
-      await withLoading(els.saveSeatingBtn, async () => {
-        const result = await saveSeatingSection();
-        applyDirectorSaveResult("seating", result);
-      });
-    });
-  }
-  if (els.savePercussionBtn) {
-    els.savePercussionBtn.addEventListener("click", async () => {
-      els.savePercussionBtn.dataset.loadingLabel = "Saving...";
-      els.savePercussionBtn.dataset.spinner = "true";
-      await withLoading(els.savePercussionBtn, async () => {
-        const result = await savePercussionSection();
-        applyDirectorSaveResult("percussion", result);
-      });
-    });
-  }
-  if (els.saveLunchBtn) {
-    els.saveLunchBtn.addEventListener("click", async () => {
-      els.saveLunchBtn.dataset.loadingLabel = "Saving...";
-      els.saveLunchBtn.dataset.spinner = "true";
-      await withLoading(els.saveLunchBtn, async () => {
-        const result = await saveLunchSection();
-        applyDirectorSaveResult("lunch", result);
-      });
-    });
-  }
-
-  if (els.eventDetailBackBtn) {
-    els.eventDetailBackBtn.addEventListener("click", () => {
-      window.location.hash = `#${state.app.currentTab || "admin"}`;
-    });
-  }
-
-  if (els.eventScheduleUploadBtn) {
-    els.eventScheduleUploadBtn.addEventListener("click", async () => {
-      const eventId = els.eventDetailPage?.dataset?.eventId || "";
-      const file = els.eventScheduleFileInput?.files?.[0] || null;
-      if (!eventId) {
-        alertUser("Open an event detail page first.");
-        return;
-      }
-      if (!file) {
-        alertUser("Select a PDF to upload.");
-        return;
-      }
-      els.eventScheduleUploadBtn.dataset.loadingLabel = "Uploading...";
-      els.eventScheduleUploadBtn.dataset.spinner = "true";
-      await withLoading(els.eventScheduleUploadBtn, async () => {
-        try {
-          if (els.eventScheduleStatus) {
-            els.eventScheduleStatus.textContent = "Uploading schedule PDF...";
-          }
-          await uploadEventSchedulePdf(eventId, file);
-          const event = state.event.list.find((item) => item.id === eventId) || null;
-          renderEventScheduleDetail(event);
-          if (els.eventScheduleStatus) {
-            els.eventScheduleStatus.textContent = "Schedule PDF uploaded.";
-          }
-          if (els.eventScheduleFileInput) {
-            els.eventScheduleFileInput.value = "";
-          }
-        } catch (error) {
-          console.error("Event schedule upload failed", error);
-          if (els.eventScheduleStatus) {
-            els.eventScheduleStatus.textContent =
-              error?.message || "Unable to upload schedule PDF.";
-          }
-        }
-      });
-    });
-  }
-
-  if (els.directorProfileNameInput) {
-    els.directorProfileNameInput.addEventListener("input", () => {
-      setDirectorProfileStatus("");
-    });
-  }
-
-  if (els.directorProfileNafmeNumberInput) {
-    els.directorProfileNafmeNumberInput.addEventListener("input", () => {
-      setDirectorProfileStatus("");
-    });
-  }
-
-  if (els.directorProfileNafmeExpInput) {
-    els.directorProfileNafmeExpInput.addEventListener("change", () => {
-      setDirectorProfileStatus("");
-    });
-  }
-
-  if (els.directorProfileForm) {
-    els.directorProfileForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const name = els.directorProfileNameInput?.value.trim() || "";
-      const nafmeNumber = els.directorProfileNafmeNumberInput?.value.trim() || "";
-      const expValue = els.directorProfileNafmeExpInput?.value || "";
-      const cellPhone = els.directorProfileCellPhoneInput?.value?.trim() || "";
-      try {
-        setDirectorProfileStatus("Saving...");
-        await saveDirectorProfile({ name, nafmeNumber, expValue, cellPhone });
-        setDirectorProfileStatus("Saved.");
-        closeDirectorProfileModal();
-      } catch (error) {
-        console.error("Profile save failed", error);
-        setDirectorProfileStatus(
-          error?.code ? `Unable to save (${error.code}).` : "Unable to save."
-        );
-      }
-    });
-  }
-
-  if (els.directorProfileCardInput) {
-    els.directorProfileCardInput.addEventListener("change", async () => {
-      const file = els.directorProfileCardInput.files?.[0];
-      if (!file) return;
-      try {
-        setDirectorProfileStatus("Uploading...");
-        await uploadDirectorProfileCard(file);
-        renderDirectorProfile();
-        setDirectorProfileStatus("Uploaded.");
-      } catch (error) {
-        console.error("Profile card upload failed", error);
-        setDirectorProfileStatus(
-          error?.code ? `Upload failed (${error.code}).` : "Upload failed."
-        );
-      }
-    });
-  }
-
-  if (els.directorProfileClose) {
-    els.directorProfileClose.addEventListener("click", closeDirectorProfileModal);
-  }
-  if (els.directorProfileCancelBtn) {
-    els.directorProfileCancelBtn.addEventListener("click", closeDirectorProfileModal);
-  }
-  if (els.directorProfileBackdrop) {
-    els.directorProfileBackdrop.addEventListener("click", closeDirectorProfileModal);
-  }
+  return getDirectorHandlerBinder()();
 }
 
 export function bindAppHandlers() {
-  if (appHandlersBound) return;
-  appHandlersBound = true;
-
-  if (els.sessionExpiredSignInBtn) {
-    els.sessionExpiredSignInBtn.addEventListener("click", () => {
-      hideSessionExpiredModal();
-      openAuthModal();
-    });
-  }
-  if (els.sessionExpiredBackdrop) {
-    els.sessionExpiredBackdrop.addEventListener("click", () => {
-      showSessionExpiredModal();
-    });
-  }
-
-  const openProfile = () => {
-    if (!state.auth.currentUser) return;
-    openUserProfileModal();
-  };
-  if (els.adminProfileToggleBtn) {
-    els.adminProfileToggleBtn.addEventListener("click", openProfile);
-  }
-  if (els.judgeProfileToggleBtn) {
-    els.judgeProfileToggleBtn.addEventListener("click", openProfile);
-  }
-  if (els.judgeOpenProfileToggleBtn) {
-    els.judgeOpenProfileToggleBtn.addEventListener("click", openProfile);
-  }
-  if (els.userProfileClose) {
-    els.userProfileClose.addEventListener("click", closeUserProfileModal);
-  }
-  if (els.userProfileCancelBtn) {
-    els.userProfileCancelBtn.addEventListener("click", closeUserProfileModal);
-  }
-  if (els.userProfileBackdrop) {
-    els.userProfileBackdrop.addEventListener("click", closeUserProfileModal);
-  }
-  if (els.liveEventCheckinClose) {
-    els.liveEventCheckinClose.addEventListener("click", closeLiveEventCheckinModal);
-  }
-  if (els.liveEventCheckinBackdrop) {
-    els.liveEventCheckinBackdrop.addEventListener("click", closeLiveEventCheckinModal);
-  }
-  if (els.userProfileForm) {
-    els.userProfileForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (!state.auth.currentUser) return;
-      const name = els.userProfileNameInput?.value.trim() || "";
-      if (els.userProfileStatus) {
-        els.userProfileStatus.textContent = "Saving...";
-      }
-      try {
-        await saveUserDisplayName(name);
-        updateAuthUI();
-        if (els.userProfileStatus) {
-          els.userProfileStatus.textContent = "Saved.";
-        }
-        closeUserProfileModal();
-      } catch (error) {
-        console.error("Profile save failed", error);
-        if (els.userProfileStatus) {
-          els.userProfileStatus.textContent = "Unable to save profile.";
-        }
-      }
-    });
-  }
+  return getAppHandlerBinder()();
 }

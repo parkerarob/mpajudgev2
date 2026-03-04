@@ -143,6 +143,94 @@ export function getSchoolNameById(schoolsList, schoolId) {
   return match?.name || schoolId || "Unknown";
 }
 
+function canonicalizeSchoolText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function schoolPrefixVariants(schoolName) {
+  const base = canonicalizeSchoolText(schoolName);
+  if (!base) return [];
+  const variants = new Set([base]);
+
+  const withoutSchool = base.replace(/\bschool\b/g, "").replace(/\s+/g, " ").trim();
+  if (withoutSchool) variants.add(withoutSchool);
+
+  const shortForms = [
+    [/\bhigh school\b/g, "hs"],
+    [/\bmiddle school\b/g, "ms"],
+    [/\belementary school\b/g, "es"],
+  ];
+  shortForms.forEach(([pattern, replacement]) => {
+    const next = base.replace(pattern, replacement).replace(/\s+/g, " ").trim();
+    if (next) variants.add(next);
+  });
+
+  const descriptorTokens = new Set(["school", "high", "middle", "elementary", "hs", "ms", "es"]);
+  const seedVariants = Array.from(variants);
+  seedVariants.forEach((seed) => {
+    const tokens = seed.split(" ").filter(Boolean);
+    while (tokens.length > 1 && descriptorTokens.has(tokens[tokens.length - 1])) {
+      tokens.pop();
+      const next = tokens.join(" ").trim();
+      if (next) variants.add(next);
+    }
+  });
+
+  return [...variants].filter(Boolean).sort((a, b) => b.length - a.length);
+}
+
+export function normalizeEnsembleNameForSchool({ schoolName, ensembleName }) {
+  const finalizeName = (value) => {
+    const text = String(value || "").trim();
+    const canonical = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return canonical === "band" ? "Concert Band" : text;
+  };
+  const original = String(ensembleName || "").trim();
+  if (!original) return "";
+  const variants = schoolPrefixVariants(schoolName);
+  if (!variants.length) return finalizeName(original);
+
+  const compactName = original
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const matched = variants.find((variant) => compactName === variant || compactName.startsWith(`${variant} `));
+  if (!matched) return finalizeName(original);
+
+  const tokens = matched.split(" ").filter(Boolean);
+  const sourceTokens = original.split(/\s+/);
+  let sourceIdx = 0;
+  let matchIdx = 0;
+  while (sourceIdx < sourceTokens.length && matchIdx < tokens.length) {
+    const token = sourceTokens[sourceIdx];
+    const canonical = token.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const target = tokens[matchIdx].replace(/[^a-z0-9]/g, "");
+    if (!canonical) {
+      sourceIdx += 1;
+      continue;
+    }
+    if (canonical === target) {
+      sourceIdx += 1;
+      matchIdx += 1;
+      continue;
+    }
+    return finalizeName(original);
+  }
+  if (matchIdx !== tokens.length) return finalizeName(original);
+
+  const remainder = sourceTokens
+    .slice(sourceIdx)
+    .join(" ")
+    .replace(/^[\s\-:|/]+/, "")
+    .trim();
+  return finalizeName(remainder || original);
+}
+
 export function normalizeCaptions(formType, captions = {}) {
   const source = captions || {};
   const stageMap = {

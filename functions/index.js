@@ -4,6 +4,7 @@ const {defineSecret} = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const crypto = require("crypto");
+const {PDFDocument, StandardFonts, rgb} = require("pdf-lib");
 const {
   COLLECTIONS,
   FIELDS,
@@ -21,6 +22,8 @@ const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const OPENAI_TIMEOUT_MS = 30 * 1000;
 const MAX_TRANSCRIPT_CHARS = 12000;
+const DIRECTOR_PACKET_EXPORT_TTL_MS = 1000 * 60 * 30;
+const DIRECTOR_PACKET_EXPORT_VERSION = "generated-v1";
 const GRADE_VALUES = {
   A: 1,
   B: 2,
@@ -28,6 +31,446 @@ const GRADE_VALUES = {
   D: 4,
   F: 5,
 };
+
+function buildDirectorPacketExportId(eventId, ensembleId) {
+  return `${eventId}_${ensembleId}`;
+}
+
+function createSilentWavBuffer({
+  durationSec = 1,
+  sampleRate = 8000,
+  channels = 1,
+} = {}) {
+  const frameCount = Math.max(1, Math.floor(durationSec * sampleRate));
+  const bytesPerSample = 2;
+  const dataSize = frameCount * channels * bytesPerSample;
+  const buffer = Buffer.alloc(44 + dataSize);
+  buffer.write("RIFF", 0, 4, "ascii");
+  buffer.writeUInt32LE(36 + dataSize, 4);
+  buffer.write("WAVE", 8, 4, "ascii");
+  buffer.write("fmt ", 12, 4, "ascii");
+  buffer.writeUInt32LE(16, 16); // PCM chunk size
+  buffer.writeUInt16LE(1, 20); // PCM format
+  buffer.writeUInt16LE(channels, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * channels * bytesPerSample, 28);
+  buffer.writeUInt16LE(channels * bytesPerSample, 32);
+  buffer.writeUInt16LE(bytesPerSample * 8, 34);
+  buffer.write("data", 36, 4, "ascii");
+  buffer.writeUInt32LE(dataSize, 40);
+  return buffer;
+}
+
+function formLabelByJudgePosition(position) {
+  return position === JUDGE_POSITIONS.sight ? "Sight Reading Form" : "Stage Form";
+}
+
+function judgeLabelByPosition(position) {
+  if (position === JUDGE_POSITIONS.stage1) return "Stage 1 Judge";
+  if (position === JUDGE_POSITIONS.stage2) return "Stage 2 Judge";
+  if (position === JUDGE_POSITIONS.stage3) return "Stage 3 Judge";
+  if (position === JUDGE_POSITIONS.sight) return "Sight Judge";
+  return String(position || "Judge");
+}
+
+function drawWrappedText({
+  page,
+  font,
+  text = "",
+  x,
+  y,
+  maxWidth,
+  size = 9,
+  lineHeight = 10,
+  color = rgb(0.08, 0.08, 0.08),
+  maxLines = 1,
+} = {}) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return y;
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    const candidateWidth = font.widthOfTextAtSize(candidate, size);
+    if (candidateWidth <= maxWidth || !current) {
+      current = candidate;
+      continue;
+    }
+    lines.push(current);
+    current = word;
+    if (lines.length >= maxLines) break;
+  }
+  if (current && lines.length < maxLines) lines.push(current);
+  lines.slice(0, maxLines).forEach((line, index) => {
+    page.drawText(line, {
+      x,
+      y: y - (index * lineHeight),
+      size,
+      font,
+      color,
+    });
+  });
+  return y - (Math.min(lines.length, maxLines) * lineHeight);
+}
+
+function drawSimpleValue({page, font, value, x, y, size = 9, color = rgb(0.08, 0.08, 0.08)} = {}) {
+  const text = String(value || "").trim();
+  if (!text) return;
+  page.drawText(text, {x, y, size, font, color});
+}
+
+function renderStageTemplatePage({
+  page,
+  font,
+  eventId,
+  ensembleId,
+  schoolId,
+  grade,
+  position,
+  submission,
+} = {}) {
+  const dark = rgb(0.07, 0.07, 0.07);
+  const pageWidth = page.getWidth();
+  const pageHeight = page.getHeight();
+  const margin = 40;
+  let y = pageHeight - margin;
+  const captions = submission?.captions && typeof submission.captions === "object" ?
+    submission.captions :
+    {};
+  const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge");
+  const judgeSlot = judgeLabelByPosition(position);
+  const ensembleLabel = String(ensembleId || "");
+  const schoolLabel = String(schoolId || "");
+  const heading = "NCBA Music Performance Adjudication - Stage Form";
+  drawSimpleValue({page, font, value: heading, x: margin, y, size: 16, color: dark});
+  y -= 24;
+  drawSimpleValue({
+    page,
+    font,
+    value: `Event: ${eventId}   School: ${schoolLabel}   Ensemble: ${ensembleLabel}`,
+    x: margin,
+    y,
+    size: 10,
+    color: dark,
+  });
+  y -= 16;
+  drawSimpleValue({
+    page,
+    font,
+    value: `Judge: ${judgeName} (${judgeSlot})   Grade: ${grade || "N/A"}   Rating: ${String(submission?.computedFinalRatingLabel || "N/A")}`,
+    x: margin,
+    y,
+    size: 10,
+    color: dark,
+  });
+  y -= 18;
+  drawSimpleValue({
+    page,
+    font,
+    value: `Caption Total: ${Number(submission?.captionScoreTotal || 0)}   Status: Released`,
+    x: margin,
+    y,
+    size: 10,
+    color: dark,
+  });
+  y -= 22;
+
+  const rows = CAPTION_TEMPLATES.stage || [];
+  rows.forEach((row) => {
+    const value = captions[row.key] || {};
+    const gradeText = `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim() || "N/A";
+    drawSimpleValue({
+      page,
+      font,
+      value: `${row.label}: ${gradeText}`,
+      x: margin,
+      y,
+      size: 10.5,
+      color: dark,
+    });
+    y -= 13;
+    y = drawWrappedText({
+      page,
+      font,
+      text: String(value.comment || "").trim() || "No comment provided.",
+      x: margin + 8,
+      y,
+      maxWidth: pageWidth - (margin * 2) - 8,
+      size: 9,
+      lineHeight: 11,
+      color: dark,
+      maxLines: 3,
+    });
+    y -= 8;
+    if (y < 90) return;
+  });
+  drawSimpleValue({page, font, value: "Adjudicator Signature:", x: margin, y: 48, size: 10, color: dark});
+  drawSimpleValue({page, font, value: judgeName, x: margin + 120, y: 48, size: 10, color: dark});
+}
+
+function renderSightTemplatePage({
+  page,
+  font,
+  eventId,
+  ensembleId,
+  schoolId,
+  grade,
+  position,
+  submission,
+} = {}) {
+  const dark = rgb(0.07, 0.07, 0.07);
+  const pageWidth = page.getWidth();
+  const pageHeight = page.getHeight();
+  const margin = 40;
+  let y = pageHeight - margin;
+  const captions = submission?.captions && typeof submission.captions === "object" ?
+    submission.captions :
+    {};
+  const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge");
+  drawSimpleValue({page, font, value: "NCBA Music Performance Adjudication - Sight Reading Form", x: margin, y, size: 16, color: dark});
+  y -= 24;
+  drawSimpleValue({page, font, value: `Event: ${eventId}   School: ${schoolId}   Ensemble: ${ensembleId}`, x: margin, y, size: 10, color: dark});
+  y -= 16;
+  drawSimpleValue({page, font, value: `Judge: ${judgeName}`, x: margin, y, size: 10, color: dark});
+  y -= 16;
+  drawSimpleValue({
+    page,
+    font,
+    value: `Slot: ${judgeLabelByPosition(position)}  Grade: ${grade || "N/A"}`,
+    x: margin,
+    y,
+    size: 10,
+    color: dark,
+  });
+  y -= 22;
+
+  const captionOrder = [
+    "toneQuality",
+    "intonation",
+    "balance",
+    "technique",
+    "rhythm",
+    "musicianship",
+    "prepTime",
+  ];
+  captionOrder.forEach((key) => {
+    const value = captions[key] || {};
+    const label = key;
+    const gradeText = `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim() || "N/A";
+    const header = `${label}: ${gradeText}`;
+    drawSimpleValue({page, font, value: header, x: margin, y, size: 10.5, color: dark});
+    y -= 16;
+    y = drawWrappedText({
+      page,
+      font,
+      text: String(value.comment || "").trim(),
+      x: margin + 8,
+      y,
+      maxWidth: pageWidth - (margin * 2) - 8,
+      size: 9,
+      lineHeight: 11,
+      color: dark,
+      maxLines: 3,
+    });
+    y -= 8;
+  });
+
+  drawSimpleValue({
+    page,
+    font,
+    value: `Caption Total: ${Number(submission?.captionScoreTotal || 0)}  Final Rating: ${String(submission?.computedFinalRatingLabel || "N/A")}`,
+    x: margin,
+    y: 52,
+    size: 10,
+    color: dark,
+  });
+}
+
+async function renderSubmissionTemplatePdf({
+  eventId,
+  ensembleId,
+  schoolId,
+  grade,
+  position,
+  submission,
+} = {}) {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([612, 792]); // US Letter
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  if (position === JUDGE_POSITIONS.sight) {
+    renderSightTemplatePage({
+      page,
+      font,
+      eventId,
+      ensembleId,
+      schoolId,
+      grade,
+      position,
+      submission,
+    });
+  } else {
+    renderStageTemplatePage({
+      page,
+      font,
+      eventId,
+      ensembleId,
+      schoolId,
+      grade,
+      position,
+      submission,
+    });
+  }
+  return await pdfDoc.save();
+}
+
+async function generateDirectorPacketExportInternal({
+  eventId,
+  ensembleId,
+  grade,
+  actorUid = "",
+} = {}) {
+  if (!eventId || !ensembleId || !grade) {
+    throw new Error("eventId, ensembleId, and grade are required for export.");
+  }
+  const db = admin.firestore();
+  const bucket = admin.storage().bucket();
+  const positions = requiredPositionsForGrade(grade);
+  const submissionDocs = await Promise.all(
+      positions.map((position) => db.collection(COLLECTIONS.submissions).doc(`${eventId}_${ensembleId}_${position}`).get()),
+  );
+  const submissionsByPosition = {};
+  submissionDocs.forEach((docSnap, index) => {
+    const position = positions[index];
+    submissionsByPosition[position] = docSnap.exists ? docSnap.data() : null;
+  });
+
+  const schoolId = String(submissionsByPosition[positions[0]]?.schoolId || "");
+
+  const exportId = buildDirectorPacketExportId(eventId, ensembleId);
+  const judgeAssets = {};
+  const packetPdfBytes = [];
+  for (const position of positions) {
+    const submission = submissionsByPosition[position];
+    if (!submission) continue;
+    const judgePdfBytes = await renderSubmissionTemplatePdf({
+      eventId,
+      ensembleId,
+      schoolId,
+      grade,
+      position,
+      submission,
+    });
+    const judgePdfPath = `exports/${eventId}/${ensembleId}/${position}.pdf`;
+    await bucket.file(judgePdfPath).save(Buffer.from(judgePdfBytes), {
+      resumable: false,
+      contentType: "application/pdf",
+      metadata: {
+        metadata: {
+          eventId,
+          ensembleId,
+          judgePosition: position,
+          exportType: "director-judge-form",
+          templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
+        },
+      },
+    });
+    packetPdfBytes.push(judgePdfBytes);
+    judgeAssets[position] = {
+      judgePosition: position,
+      judgeLabel: judgeLabelByPosition(position),
+      formType: position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage,
+      formLabel: formLabelByJudgePosition(position),
+      judgeName: submission.judgeName || "",
+      judgeEmail: submission.judgeEmail || "",
+      pdfPath: judgePdfPath,
+      audioUrl: String(submission.audioUrl || ""),
+      audioPath: String(
+          submission.audioPath ||
+          getStoragePathFromUrl(submission.audioUrl) ||
+          "",
+      ),
+    };
+  }
+
+  const combinedDoc = await PDFDocument.create();
+  for (const bytes of packetPdfBytes) {
+    const single = await PDFDocument.load(bytes);
+    const copied = await combinedDoc.copyPages(single, single.getPageIndices());
+    copied.forEach((page) => combinedDoc.addPage(page));
+  }
+  const combinedPdfBytes = await combinedDoc.save();
+  const combinedPdfPath = `exports/${eventId}/${ensembleId}/packet_combined.pdf`;
+  await bucket.file(combinedPdfPath).save(Buffer.from(combinedPdfBytes), {
+    resumable: false,
+    contentType: "application/pdf",
+    metadata: {
+      metadata: {
+        eventId,
+        ensembleId,
+        exportType: "director-packet-combined",
+        templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
+      },
+    },
+  });
+
+  const exportRef = db.collection(COLLECTIONS.packetExports).doc(exportId);
+  await exportRef.set({
+    eventId,
+    ensembleId,
+    schoolId,
+    grade,
+    status: "ready",
+    templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
+    judgeAssets,
+    combinedPdfPath,
+    generatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    generatedBy: actorUid || "",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {
+    exportId,
+    combinedPdfPath,
+    judgeAssets,
+    templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
+  };
+}
+
+async function markDirectorPacketExportFailure({
+  eventId,
+  ensembleId,
+  schoolId = "",
+  error = "",
+  actorUid = "",
+} = {}) {
+  if (!eventId || !ensembleId) return;
+  const exportRef = admin
+      .firestore()
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  await exportRef.set({
+    eventId,
+    ensembleId,
+    schoolId,
+    status: "failed",
+    error: String(error || "Export generation failed."),
+    generatedBy: actorUid || "",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+}
+
+function buildMockCaptionsForForm(formType) {
+  const template = CAPTION_TEMPLATES[formType] || CAPTION_TEMPLATES.stage || [];
+  const letters = ["A", "A", "B", "A", "B", "A", "B"];
+  const captions = {};
+  template.forEach((item, index) => {
+    captions[item.key] = {
+      gradeLetter: letters[index % letters.length],
+      gradeModifier: index % 3 === 0 ? "+" : "",
+      comment: `${item.label}: strong fundamentals with clear ensemble response.`,
+    };
+  });
+  return captions;
+}
 
 async function fetchWithTimeout(url, options, timeoutMs = OPENAI_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -255,6 +698,91 @@ function normalizeGrade(value) {
   const num = Number(text);
   if (!Number.isNaN(num) && num >= 1 && num <= 6) return roman[num - 1];
   return null;
+}
+
+function canonicalizeSchoolText(value) {
+  return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+}
+
+function schoolPrefixVariants(schoolName) {
+  const base = canonicalizeSchoolText(schoolName);
+  if (!base) return [];
+  const variants = new Set([base]);
+
+  const withoutSchool = base.replace(/\bschool\b/g, "").replace(/\s+/g, " ").trim();
+  if (withoutSchool) variants.add(withoutSchool);
+
+  const shortForms = [
+    [/\bhigh school\b/g, "hs"],
+    [/\bmiddle school\b/g, "ms"],
+    [/\belementary school\b/g, "es"],
+  ];
+  shortForms.forEach(([pattern, replacement]) => {
+    const next = base.replace(pattern, replacement).replace(/\s+/g, " ").trim();
+    if (next) variants.add(next);
+  });
+
+  const descriptorTokens = new Set(["school", "high", "middle", "elementary", "hs", "ms", "es"]);
+  const seedVariants = Array.from(variants);
+  seedVariants.forEach((seed) => {
+    const tokens = seed.split(" ").filter(Boolean);
+    while (tokens.length > 1 && descriptorTokens.has(tokens[tokens.length - 1])) {
+      tokens.pop();
+      const next = tokens.join(" ").trim();
+      if (next) variants.add(next);
+    }
+  });
+
+  return [...variants]
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+}
+
+function normalizeEnsembleNameForSchool({schoolName, ensembleName}) {
+  const finalizeName = (value) => {
+    const text = String(value || "").trim();
+    const canonical = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return canonical === "band" ? "Concert Band" : text;
+  };
+  const original = String(ensembleName || "").trim();
+  if (!original) return "";
+  const variants = schoolPrefixVariants(schoolName);
+  if (!variants.length) return finalizeName(original);
+
+  const compactName = original.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const matched = variants.find((variant) =>
+    compactName === variant || compactName.startsWith(`${variant} `));
+  if (!matched) return finalizeName(original);
+
+  const tokens = matched.split(" ").filter(Boolean);
+  const sourceTokens = original.split(/\s+/);
+  let sourceIdx = 0;
+  let matchIdx = 0;
+  while (sourceIdx < sourceTokens.length && matchIdx < tokens.length) {
+    const token = sourceTokens[sourceIdx];
+    const canonical = token.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const target = tokens[matchIdx].replace(/[^a-z0-9]/g, "");
+    if (!canonical) {
+      sourceIdx += 1;
+      continue;
+    }
+    if (canonical === target) {
+      sourceIdx += 1;
+      matchIdx += 1;
+      continue;
+    }
+    return finalizeName(original);
+  }
+  if (matchIdx !== tokens.length) return finalizeName(original);
+
+  const remainder = sourceTokens.slice(sourceIdx).join(" ")
+      .replace(/^[\s\-:|/]+/, "")
+      .trim();
+  return finalizeName(remainder || original);
 }
 
 function generateTempPassword() {
@@ -659,12 +1187,31 @@ exports.transcribeSubmissionAudio = onCall(
 exports.createOpenPacket = onCall(async (request) => {
   await assertRole(request, ["judge", "admin"]);
   const data = request.data || {};
+  const schoolId = String(data.schoolId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  if (!schoolId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "Select an existing school and ensemble.");
+  }
   const schoolName = String(data.schoolName || "").trim();
-  const ensembleName = String(data.ensembleName || "").trim();
+  const ensembleName = normalizeEnsembleNameForSchool({
+    schoolName,
+    ensembleName: String(data.ensembleName || "").trim(),
+  });
   const formType = data.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
   const useActiveEventDefaults = data.useActiveEventDefaults !== false;
   const assignment = useActiveEventDefaults ?
     await resolveActiveEventAssignmentForUser(request.auth.uid) :
+    null;
+  const incomingSnapshot =
+    data.ensembleSnapshot && typeof data.ensembleSnapshot === "object" ?
+      data.ensembleSnapshot :
+      null;
+  const ensembleSnapshot = incomingSnapshot ?
+    {
+      ...incomingSnapshot,
+      schoolName: schoolName || incomingSnapshot.schoolName || "",
+      ensembleName,
+    } :
     null;
   const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc();
   const payload = {
@@ -675,9 +1222,9 @@ exports.createOpenPacket = onCall(async (request) => {
     [FIELDS.packets.createdByJudgeEmail]: data.createdByJudgeEmail || "",
     [FIELDS.packets.schoolName]: schoolName,
     [FIELDS.packets.ensembleName]: ensembleName,
-    [FIELDS.packets.schoolId]: data.schoolId || "",
-    [FIELDS.packets.ensembleId]: data.ensembleId || "",
-    [FIELDS.packets.ensembleSnapshot]: data.ensembleSnapshot || null,
+    [FIELDS.packets.schoolId]: schoolId,
+    [FIELDS.packets.ensembleId]: ensembleId,
+    [FIELDS.packets.ensembleSnapshot]: ensembleSnapshot,
     [FIELDS.packets.directorEntrySnapshot]: data.directorEntrySnapshot || null,
     [FIELDS.packets.formType]: formType,
     [FIELDS.packets.assignmentEventId]: assignment?.eventId || "",
@@ -771,10 +1318,31 @@ exports.submitOpenPacket = onCall(async (request) => {
     throw new HttpsError("failed-precondition", "Packet cannot be submitted.");
   }
   const nextSchoolName = String(data.schoolName || packet.schoolName || "");
-  const nextEnsembleName = String(data.ensembleName || packet.ensembleName || "");
+  const nextEnsembleName = normalizeEnsembleNameForSchool({
+    schoolName: nextSchoolName,
+    ensembleName: String(data.ensembleName || packet.ensembleName || ""),
+  });
   const nextSchoolId = String(data.schoolId || packet.schoolId || "");
   const nextEnsembleId = String(data.ensembleId || packet.ensembleId || "");
-  const nextEnsembleSnapshot = data.ensembleSnapshot || packet.ensembleSnapshot || null;
+  if (!nextSchoolId || !nextEnsembleId) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Packet must be linked to an existing school and ensemble before submit.",
+    );
+  }
+  const incomingSnapshot =
+    data.ensembleSnapshot && typeof data.ensembleSnapshot === "object" ?
+      data.ensembleSnapshot :
+      null;
+  const baseSnapshot = incomingSnapshot || packet.ensembleSnapshot || null;
+  const nextEnsembleSnapshot =
+    baseSnapshot && typeof baseSnapshot === "object" ?
+      {
+        ...baseSnapshot,
+        schoolName: nextSchoolName || baseSnapshot.schoolName || "",
+        ensembleName: nextEnsembleName,
+      } :
+      null;
   const nextFormType =
     (data.formType === FORM_TYPES.sight || data.formType === FORM_TYPES.stage) ?
       data.formType :
@@ -1454,6 +2022,28 @@ exports.releasePacket = onCall(async (request) => {
     });
   });
   await batch.commit();
+  const schoolId = String(submissions[0]?.schoolId || "");
+  try {
+    await generateDirectorPacketExportInternal({
+      eventId,
+      ensembleId,
+      grade,
+      actorUid: request.auth.uid,
+    });
+  } catch (error) {
+    logger.error("generateDirectorPacketExportInternal failed during releasePacket", {
+      eventId,
+      ensembleId,
+      error: error?.message || String(error),
+    });
+    await markDirectorPacketExportFailure({
+      eventId,
+      ensembleId,
+      schoolId,
+      error: error?.message || String(error),
+      actorUid: request.auth.uid,
+    });
+  }
   return {released: true, grade};
 });
 
@@ -1505,8 +2095,353 @@ exports.unreleasePacket = onCall(async (request) => {
       releasedBy: admin.firestore.FieldValue.delete(),
     });
   });
+  const exportRef = db
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  batch.set(exportRef, {
+    status: "revoked",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
   await batch.commit();
   return {released: false, grade};
+});
+
+exports.regenerateDirectorPacketExport = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+  const grade = await resolvePerformanceGrade(eventId, ensembleId);
+  if (!grade) {
+    throw new HttpsError("failed-precondition", "Performance grade required.");
+  }
+  try {
+    const result = await generateDirectorPacketExportInternal({
+      eventId,
+      ensembleId,
+      grade,
+      actorUid: request.auth.uid,
+    });
+    return {ok: true, ...result};
+  } catch (error) {
+    await markDirectorPacketExportFailure({
+      eventId,
+      ensembleId,
+      error: error?.message || String(error),
+      actorUid: request.auth.uid,
+    });
+    throw new HttpsError("internal", error?.message || "Unable to regenerate packet export.");
+  }
+});
+
+exports.getDirectorPacketAssets = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const user = userSnap.exists ? (userSnap.data() || {}) : {};
+  const role = String(user.role || "");
+  const exportRef = db
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  const exportSnap = await exportRef.get();
+  if (!exportSnap.exists) {
+    throw new HttpsError("not-found", "Packet assets not found.");
+  }
+  const exportData = exportSnap.data() || {};
+  const schoolId = String(exportData.schoolId || "");
+  if (role !== "admin") {
+    if (role !== "director") {
+      throw new HttpsError("permission-denied", "Not authorized.");
+    }
+    if (!schoolId || String(user.schoolId || "") !== schoolId) {
+      throw new HttpsError("permission-denied", "Not authorized for this school.");
+    }
+  }
+  if (String(exportData.status || "") !== "ready") {
+    return {
+      status: exportData.status || "pending",
+      templateVersion: exportData.templateVersion || "",
+      generatedAt: exportData.generatedAt || null,
+      error: exportData.error || "",
+      combined: null,
+      judges: {},
+    };
+  }
+  const bucket = admin.storage().bucket();
+  const expires = Date.now() + DIRECTOR_PACKET_EXPORT_TTL_MS;
+  const signed = async (path) => {
+    const value = String(path || "").trim();
+    if (!value) return "";
+    if (value.startsWith("http://") || value.startsWith("https://")) return value;
+    try {
+      const file = bucket.file(value);
+      const [exists] = await file.exists();
+      if (!exists) return "";
+      try {
+        const [url] = await file.getSignedUrl({
+          version: "v4",
+          action: "read",
+          expires,
+        });
+        if (url) return url;
+      } catch (signedErr) {
+        logger.warn("getDirectorPacketAssets signed URL unavailable; falling back to token URL", {
+          path: value,
+          error: signedErr?.message || String(signedErr),
+        });
+      }
+
+      // Fallback to Firebase token URL if signed URLs are unavailable in this project IAM setup.
+      const [metadata] = await file.getMetadata();
+      const existingTokenRaw =
+        metadata?.metadata?.firebaseStorageDownloadTokens ||
+        metadata?.firebaseStorageDownloadTokens ||
+        "";
+      let token = String(existingTokenRaw || "")
+          .split(",")
+          .map((item) => item.trim())
+          .find(Boolean);
+      if (!token) {
+        token = crypto.randomUUID();
+        const nextMetadata = {
+          ...(metadata?.metadata || {}),
+          firebaseStorageDownloadTokens: token,
+        };
+        await file.setMetadata({metadata: nextMetadata});
+      }
+      return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(value)}?alt=media&token=${token}`;
+    } catch (error) {
+      logger.error("getDirectorPacketAssets signed URL failed", {
+        path: value,
+        error: error?.message || String(error),
+      });
+      return "";
+    }
+  };
+  const judgeAssets = exportData.judgeAssets && typeof exportData.judgeAssets === "object" ?
+    exportData.judgeAssets :
+    {};
+  const judgeKeys = Object.keys(judgeAssets);
+  const signedJudges = {};
+  for (const key of judgeKeys) {
+    const item = judgeAssets[key] || {};
+    signedJudges[key] = {
+      ...item,
+      pdfUrl: item.pdfPath ? await signed(item.pdfPath) : "",
+      audioUrl: item.audioPath ? await signed(item.audioPath) : (item.audioUrl || ""),
+    };
+  }
+  const combinedPath = String(exportData.combinedPdfPath || "");
+  const combinedUrl = combinedPath ? await signed(combinedPath) : "";
+  return {
+    status: "ready",
+    templateVersion: exportData.templateVersion || "",
+    generatedAt: exportData.generatedAt || null,
+    error: exportData.error || "",
+    combined: combinedPath ? {path: combinedPath, url: combinedUrl} : null,
+    judges: signedJudges,
+  };
+});
+
+exports.releaseMockPacketForAshleyTesting = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const db = admin.firestore();
+  const activeSnap = await db
+      .collection(COLLECTIONS.events)
+      .where(FIELDS.events.isActive, "==", true)
+      .limit(1)
+      .get();
+  if (activeSnap.empty) {
+    throw new HttpsError("failed-precondition", "No active event.");
+  }
+  const eventId = activeSnap.docs[0].id;
+  const schoolIdInput = String(data.schoolId || "").trim();
+  const ensembleIdInput = String(data.ensembleId || "").trim();
+  const grade = normalizeGrade(String(data.grade || "IV")) || "IV";
+
+  let schoolId = schoolIdInput;
+  let schoolName = "";
+  if (!schoolId) {
+    const schoolsSnap = await db.collection(COLLECTIONS.schools).get();
+    const match = schoolsSnap.docs.find((docSnap) => {
+      const name = String(docSnap.data()?.name || "").toLowerCase();
+      return name.includes("ashley") && name.includes("high");
+    });
+    if (!match) {
+      throw new HttpsError("not-found", "Ashley High School was not found.");
+    }
+    schoolId = match.id;
+    schoolName = String(match.data()?.name || "");
+  } else {
+    const schoolSnap = await db.collection(COLLECTIONS.schools).doc(schoolId).get();
+    if (!schoolSnap.exists) {
+      throw new HttpsError("not-found", "School not found.");
+    }
+    schoolName = String(schoolSnap.data()?.name || schoolId);
+  }
+
+  let ensembleId = ensembleIdInput;
+  let ensembleName = "";
+  if (!ensembleId) {
+    const scheduleSnap = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventId)
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.schoolId, "==", schoolId)
+        .get();
+    if (!scheduleSnap.empty) {
+      const preferred = scheduleSnap.docs.find((docSnap) => {
+        const name = String(docSnap.data()?.ensembleName || "").toLowerCase();
+        return name.includes("concert") && name.includes("band");
+      }) || scheduleSnap.docs[0];
+      ensembleId = String(preferred.data()?.ensembleId || preferred.id);
+      ensembleName = String(preferred.data()?.ensembleName || ensembleId);
+    }
+  }
+  if (!ensembleId) {
+    const ensembleSnap = await db
+        .collection(COLLECTIONS.schools)
+        .doc(schoolId)
+        .collection(COLLECTIONS.ensembles)
+        .limit(1)
+        .get();
+    if (ensembleSnap.empty) {
+      throw new HttpsError("not-found", "No ensemble found for school.");
+    }
+    ensembleId = ensembleSnap.docs[0].id;
+    ensembleName = String(ensembleSnap.docs[0].data()?.name || ensembleId);
+  }
+  if (!ensembleName) {
+    const scheduleDoc = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventId)
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+        .limit(1)
+        .get();
+    if (!scheduleDoc.empty) {
+      ensembleName = String(scheduleDoc.docs[0].data()?.ensembleName || ensembleId);
+    } else {
+      const ensSnap = await db
+          .collection(COLLECTIONS.schools)
+          .doc(schoolId)
+          .collection(COLLECTIONS.ensembles)
+          .doc(ensembleId)
+          .get();
+      ensembleName = ensSnap.exists ? String(ensSnap.data()?.name || ensembleId) : ensembleId;
+    }
+  }
+
+  await db
+      .collection(COLLECTIONS.events)
+      .doc(eventId)
+      .collection(COLLECTIONS.entries)
+      .doc(ensembleId)
+      .set({
+        eventId,
+        schoolId,
+        schoolName,
+        ensembleId,
+        ensembleName,
+        [FIELDS.entries.performanceGrade]: grade,
+        status: "ready",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+  const bucket = admin.storage().bucket();
+  const positions = requiredPositionsForGrade(grade);
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const writeOps = [];
+  for (const position of positions) {
+    const formType = position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
+    const captions = buildMockCaptionsForForm(formType);
+    const total = calculateCaptionTotal(captions);
+    const rating = computeFinalRatingFromTotal(total);
+    const audioPath = `audio/mock/${eventId}/${ensembleId}/${position}.wav`;
+    const wav = createSilentWavBuffer({durationSec: 4});
+    await bucket.file(audioPath).save(wav, {
+      resumable: false,
+      contentType: "audio/wav",
+      metadata: {
+        metadata: {
+          eventId,
+          ensembleId,
+          judgePosition: position,
+          source: "mock",
+        },
+      },
+    });
+    const submissionId = `${eventId}_${ensembleId}_${position}`;
+    const ref = db.collection(COLLECTIONS.submissions).doc(submissionId);
+    writeOps.push(ref.set({
+      eventId,
+      ensembleId,
+      schoolId,
+      judgePosition: position,
+      formType,
+      status: STATUSES.released,
+      locked: true,
+      audioUrl: "",
+      audioPath,
+      audioDurationSec: 4,
+      transcript: `${judgeLabelByPosition(position)} mock transcript for Ashley High School testing.`,
+      captions,
+      captionScoreTotal: total,
+      computedFinalRatingJudge: rating.value,
+      computedFinalRatingLabel: rating.label,
+      judgeName: `${judgeLabelByPosition(position)} Mock`,
+      judgeEmail: `${position}.mock@mpajudge.local`,
+      judgeTitle: "Mock Judge",
+      judgeAffiliation: "Testing",
+      submittedAt: now,
+      releasedAt: now,
+      releasedBy: request.auth.uid,
+      updatedAt: now,
+      createdAt: now,
+    }, {merge: true}));
+  }
+  await Promise.all(writeOps);
+
+  try {
+    await generateDirectorPacketExportInternal({
+      eventId,
+      ensembleId,
+      grade,
+      actorUid: request.auth.uid,
+    });
+  } catch (error) {
+    await markDirectorPacketExportFailure({
+      eventId,
+      ensembleId,
+      schoolId,
+      error: error?.message || String(error),
+      actorUid: request.auth.uid,
+    });
+    throw new HttpsError("internal", `Mock submissions created, but export failed: ${error?.message || String(error)}`);
+  }
+
+  return {
+    ok: true,
+    eventId,
+    schoolId,
+    schoolName,
+    ensembleId,
+    ensembleName,
+    grade,
+    released: true,
+  };
 });
 
 exports.unlockSubmission = onCall(async (request) => {
@@ -1675,6 +2610,64 @@ exports.provisionUser = onCall(async (request) => {
   };
 });
 
+exports.assignDirectorSchool = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const directorUid = String(data.directorUid || "").trim();
+  const schoolId = String(data.schoolId || "").trim();
+  if (!directorUid || !schoolId) {
+    throw new HttpsError("invalid-argument", "directorUid and schoolId are required.");
+  }
+  const db = admin.firestore();
+  const [directorSnap, schoolSnap] = await Promise.all([
+    db.collection(COLLECTIONS.users).doc(directorUid).get(),
+    db.collection(COLLECTIONS.schools).doc(schoolId).get(),
+  ]);
+  if (!directorSnap.exists) {
+    throw new HttpsError("not-found", "Director user not found.");
+  }
+  if (!schoolSnap.exists) {
+    throw new HttpsError("not-found", "School not found.");
+  }
+  const directorData = directorSnap.data() || {};
+  const isDirector = String(directorData.role || "") === "director" ||
+    directorData?.roles?.director === true;
+  if (!isDirector) {
+    throw new HttpsError("failed-precondition", "Target user is not a director.");
+  }
+  await directorSnap.ref.set({
+    [FIELDS.users.schoolId]: schoolId,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true, directorUid, schoolId};
+});
+
+exports.unassignDirectorSchool = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const directorUid = String(data.directorUid || "").trim();
+  if (!directorUid) {
+    throw new HttpsError("invalid-argument", "directorUid is required.");
+  }
+  const db = admin.firestore();
+  const directorRef = db.collection(COLLECTIONS.users).doc(directorUid);
+  const directorSnap = await directorRef.get();
+  if (!directorSnap.exists) {
+    throw new HttpsError("not-found", "Director user not found.");
+  }
+  const directorData = directorSnap.data() || {};
+  const isDirector = String(directorData.role || "") === "director" ||
+    directorData?.roles?.director === true;
+  if (!isDirector) {
+    throw new HttpsError("failed-precondition", "Target user is not a director.");
+  }
+  await directorRef.set({
+    [FIELDS.users.schoolId]: null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true, directorUid};
+});
+
 exports.deleteEnsemble = onCall(async (request) => {
   if (!request.auth || !request.auth.uid) {
     throw new HttpsError("unauthenticated", "Authentication required.");
@@ -1763,8 +2756,8 @@ exports.renameEnsemble = onCall(async (request) => {
   const data = request.data || {};
   const schoolId = String(data.schoolId || "").trim();
   const ensembleId = String(data.ensembleId || "").trim();
-  const name = String(data.name || "").trim();
-  if (!schoolId || !ensembleId || !name) {
+  const requestedName = String(data.name || "").trim();
+  if (!schoolId || !ensembleId || !requestedName) {
     throw new HttpsError("invalid-argument", "schoolId, ensembleId, and name required.");
   }
 
@@ -1787,6 +2780,9 @@ exports.renameEnsemble = onCall(async (request) => {
   if (!ensembleSnap.exists) {
     throw new HttpsError("not-found", "Ensemble not found.");
   }
+  const schoolSnap = await db.collection(COLLECTIONS.schools).doc(schoolId).get();
+  const schoolName = schoolSnap.exists ? String(schoolSnap.data()?.name || "") : "";
+  const name = normalizeEnsembleNameForSchool({schoolName, ensembleName: requestedName});
 
   await ensembleRef.set({
     name,
@@ -1826,7 +2822,283 @@ exports.renameEnsemble = onCall(async (request) => {
     await batch.commit();
   }
 
-  return {ok: true, ensembleId, name, updatedPacketCount};
+  const eventsSnap = await db.collection(COLLECTIONS.events).get();
+  let updatedEntryCount = 0;
+  let updatedScheduleCount = 0;
+  for (const eventDoc of eventsSnap.docs) {
+    const eventRef = db.collection(COLLECTIONS.events).doc(eventDoc.id);
+
+    const entryRef = eventRef.collection(COLLECTIONS.entries).doc(ensembleId);
+    const entrySnap = await entryRef.get();
+    if (entrySnap.exists) {
+      const entryData = entrySnap.data() || {};
+      const entrySchoolId = String(entryData.schoolId || "");
+      const entryEnsembleName = String(entryData.ensembleName || "");
+      if ((!entrySchoolId || entrySchoolId === schoolId) && entryEnsembleName !== name) {
+        await entryRef.set({
+          ensembleName: name,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        updatedEntryCount += 1;
+      }
+    }
+
+    const scheduleSnap = await eventRef
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+        .get();
+    if (!scheduleSnap.empty) {
+      const scheduleBatch = db.batch();
+      let scheduleWrites = 0;
+      scheduleSnap.docs.forEach((docSnap) => {
+        const row = docSnap.data() || {};
+        const rowSchoolId = String(row.schoolId || "");
+        const rowEnsembleName = String(row.ensembleName || "");
+        if (rowSchoolId && rowSchoolId !== schoolId) return;
+        if (rowEnsembleName === name) return;
+        scheduleBatch.set(docSnap.ref, {
+          [FIELDS.schedule.ensembleName]: name,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        scheduleWrites += 1;
+      });
+      if (scheduleWrites > 0) {
+        await scheduleBatch.commit();
+        updatedScheduleCount += scheduleWrites;
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    ensembleId,
+    name,
+    updatedPacketCount,
+    updatedEntryCount,
+    updatedScheduleCount,
+  };
+});
+
+exports.normalizeUnreleasedPacketNames = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const dryRun = data.dryRun !== false;
+  const limitRaw = Number(data.limit || 0);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ?
+    Math.min(Math.floor(limitRaw), 5000) :
+    0;
+  const statuses = ["draft", "reopened", "submitted", "locked"];
+  const db = admin.firestore();
+
+  let scanned = 0;
+  let changed = 0;
+  let updated = 0;
+  let skippedNoSchool = 0;
+  let skippedEmptyResult = 0;
+  let lastDoc = null;
+
+  let hasMore = true;
+  while (hasMore) {
+    let queryRef = db
+        .collection(COLLECTIONS.packets)
+        .where(FIELDS.packets.status, "in", statuses)
+        .orderBy(FIELDS.packets.status)
+        .limit(300);
+    if (lastDoc) {
+      queryRef = queryRef.startAfter(lastDoc);
+    }
+    const snap = await queryRef.get();
+    if (snap.empty) {
+      hasMore = false;
+      continue;
+    }
+
+    const batch = db.batch();
+    let batchWrites = 0;
+
+    for (const docSnap of snap.docs) {
+      if (limit > 0 && scanned >= limit) break;
+      scanned += 1;
+
+      const packet = docSnap.data() || {};
+      const schoolName = String(packet.schoolName || "").trim();
+      const ensembleName = String(packet.ensembleName || "").trim();
+      if (!schoolName) {
+        skippedNoSchool += 1;
+        continue;
+      }
+      if (!ensembleName) {
+        skippedEmptyResult += 1;
+        continue;
+      }
+
+      const normalizedName = normalizeEnsembleNameForSchool({schoolName, ensembleName});
+      if (!normalizedName || normalizedName === ensembleName) continue;
+
+      changed += 1;
+      if (dryRun) continue;
+
+      const snapshot = packet.ensembleSnapshot && typeof packet.ensembleSnapshot === "object" ?
+        {
+          ...packet.ensembleSnapshot,
+          ensembleName: normalizedName,
+        } :
+        null;
+      const payload = {
+        [FIELDS.packets.ensembleName]: normalizedName,
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (snapshot) {
+        payload[FIELDS.packets.ensembleSnapshot] = snapshot;
+      }
+      batch.set(docSnap.ref, payload, {merge: true});
+      batchWrites += 1;
+      updated += 1;
+    }
+
+    if (!dryRun && batchWrites > 0) {
+      await batch.commit();
+    }
+
+    lastDoc = snap.docs[snap.docs.length - 1];
+    if (limit > 0 && scanned >= limit) {
+      hasMore = false;
+    }
+  }
+
+  return {
+    ok: true,
+    dryRun,
+    scanned,
+    changed,
+    updated,
+    skippedNoSchool,
+    skippedEmptyResult,
+  };
+});
+
+exports.normalizeEventEnsembleNames = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const dryRun = data.dryRun !== false;
+  const eventIdFilter = String(data.eventId || "").trim();
+  const limitRaw = Number(data.limit || 0);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ?
+    Math.min(Math.floor(limitRaw), 10000) :
+    0;
+  const db = admin.firestore();
+
+  const summary = {
+    ok: true,
+    dryRun,
+    eventId: eventIdFilter || null,
+    scanned: 0,
+    changed: 0,
+    updated: 0,
+    scannedSchedule: 0,
+    changedSchedule: 0,
+    updatedSchedule: 0,
+    scannedEntries: 0,
+    changedEntries: 0,
+    updatedEntries: 0,
+    skippedEmptyResult: 0,
+  };
+
+  const eventIds = [];
+  if (eventIdFilter) {
+    const eventSnap = await db.collection(COLLECTIONS.events).doc(eventIdFilter).get();
+    if (!eventSnap.exists) {
+      throw new HttpsError("not-found", "Event not found.");
+    }
+    eventIds.push(eventIdFilter);
+  } else {
+    const eventsSnap = await db.collection(COLLECTIONS.events).get();
+    eventsSnap.docs.forEach((docSnap) => eventIds.push(docSnap.id));
+  }
+
+  const processSubcollection = async ({eventId, subcollection, nameField, bucketKey}) => {
+    let lastDoc = null;
+    let hasMore = true;
+    while (hasMore) {
+      let queryRef = db
+          .collection(COLLECTIONS.events)
+          .doc(eventId)
+          .collection(subcollection)
+          .orderBy(admin.firestore.FieldPath.documentId())
+          .limit(300);
+      if (lastDoc) {
+        queryRef = queryRef.startAfter(lastDoc);
+      }
+      const snap = await queryRef.get();
+      if (snap.empty) {
+        hasMore = false;
+        continue;
+      }
+
+      const batch = db.batch();
+      let batchWrites = 0;
+
+      for (const docSnap of snap.docs) {
+        if (limit > 0 && summary.scanned >= limit) {
+          hasMore = false;
+          break;
+        }
+        summary.scanned += 1;
+        summary[`scanned${bucketKey}`] += 1;
+
+        const data = docSnap.data() || {};
+        const schoolName = String(data.schoolName || "").trim();
+        const ensembleName = String(data[nameField] || "").trim();
+        if (!ensembleName) {
+          summary.skippedEmptyResult += 1;
+          continue;
+        }
+
+        const normalizedName = normalizeEnsembleNameForSchool({schoolName, ensembleName});
+        if (!normalizedName || normalizedName === ensembleName) continue;
+
+        summary.changed += 1;
+        summary[`changed${bucketKey}`] += 1;
+        if (dryRun) continue;
+
+        batch.set(docSnap.ref, {
+          [nameField]: normalizedName,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        batchWrites += 1;
+        summary.updated += 1;
+        summary[`updated${bucketKey}`] += 1;
+      }
+
+      if (!dryRun && batchWrites > 0) {
+        await batch.commit();
+      }
+
+      lastDoc = snap.docs[snap.docs.length - 1];
+      if (limit > 0 && summary.scanned >= limit) {
+        hasMore = false;
+      }
+    }
+  };
+
+  for (const eventId of eventIds) {
+    if (limit > 0 && summary.scanned >= limit) break;
+    await processSubcollection({
+      eventId,
+      subcollection: COLLECTIONS.schedule,
+      nameField: FIELDS.schedule.ensembleName,
+      bucketKey: "Schedule",
+    });
+    if (limit > 0 && summary.scanned >= limit) break;
+    await processSubcollection({
+      eventId,
+      subcollection: COLLECTIONS.entries,
+      nameField: FIELDS.entries.ensembleName,
+      bucketKey: "Entries",
+    });
+  }
+
+  return summary;
 });
 
 exports.deleteSchool = onCall(async (request) => {

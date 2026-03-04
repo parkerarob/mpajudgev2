@@ -7,16 +7,19 @@ export function hasUnsavedChanges() {
 }
 
 export function getDefaultTabForRole(role) {
+  const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
   if (role === "admin") return "admin";
-  if (role === "judge") return "judge-open";
+  if (role === "judge") return judgeEnabled ? "judge-open" : "admin";
   if (role === "director") return "director";
   return null;
 }
 
 export function isTabAllowed(tab, role) {
   if (!role) return false;
+  const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
   if (role === "admin") return true;
   if (role === "judge") {
+    if (!judgeEnabled) return tab === "admin";
     return tab === "judge-open";
   }
   return tab === role;
@@ -37,6 +40,9 @@ export function setTab(tabName, { force } = {}) {
 
 export function resolveHash(hash) {
   const value = (hash || "").trim();
+  const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
+  const liveEnabled = state.app.features?.enableAdminLiveEvent !== false;
+  const directoryEnabled = state.app.features?.enableAdminDirectory !== false;
   if (value.startsWith("#event/")) {
     const eventId = value.replace("#event/", "").trim();
     if (eventId) {
@@ -44,16 +50,29 @@ export function resolveHash(hash) {
     }
   }
   if (value === "#director") return { type: "tab", tab: "director" };
-  if (value === "#judge") return { type: "tab", tab: "judge-open" };
-  if (value === "#judge-open") return { type: "tab", tab: "judge-open" };
+  if (value === "#judge" || value === "#judge-open") {
+    if (!judgeEnabled) return { type: "tab", tab: "admin", adminView: "preEvent" };
+    return { type: "tab", tab: "judge-open" };
+  }
   if (value === "#admin" || value.startsWith("#admin/")) {
-    const segment = value.slice("#admin".length).replace(/^\//, "") || "events";
-    const adminView =
-      segment === "chair" ? "chair" :
-      segment === "eventChair" ? "eventChair" :
-      segment === "logistics" ? "logistics" :
+    const segment = value.slice("#admin".length).replace(/^\//, "") || "pre-event";
+    let adminView =
+      segment === "pre-event" ? "preEvent" :
+      segment === "preEvent" ? "preEvent" :
+      segment === "eventChair" ? "preEvent" :
+      segment === "live" ? "liveEvent" :
+      segment === "live-event" ? "liveEvent" :
+      segment === "liveEvent" ? "liveEvent" :
+      segment === "chair" ? "liveEvent" :
+      segment === "events" ? "preEvent" :
+      segment === "logistics" ? "liveEvent" :
+      segment === "checkin" ? "liveEvent" :
       segment === "directory" ? "directory" :
-      segment === "checkin" ? "checkin" : "events";
+      segment === "packets" ? "packets" :
+      segment === "packet" ? "packets" :
+      "preEvent";
+    if (adminView === "liveEvent" && !liveEnabled) adminView = "preEvent";
+    if (adminView === "directory" && !directoryEnabled) adminView = "preEvent";
     return { type: "tab", tab: "admin", adminView };
   }
   return { type: "none" };

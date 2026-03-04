@@ -221,6 +221,9 @@ export async function createOpenPacket({
   if (!state.auth.currentUser || !state.auth.userProfile) {
     return { ok: false, message: "Sign in as a judge to create packets." };
   }
+  if (!String(schoolId || "").trim() || !String(ensembleId || "").trim()) {
+    return { ok: false, message: "Select an existing school and ensemble." };
+  }
   const createFn = httpsCallable(functions, "createOpenPacket");
   const response = await createFn({
     schoolName: schoolName || "",
@@ -692,6 +695,9 @@ export async function submitOpenPacket() {
   const schoolId = selectedExisting.schoolId || state.judgeOpen.currentPacket?.schoolId || "";
   const ensembleId =
     selectedExisting.ensembleId || state.judgeOpen.currentPacket?.ensembleId || "";
+  if (!schoolId || !ensembleId) {
+    return { ok: false, message: "Select an existing school and ensemble before submit." };
+  }
   const ensembleSnapshot =
     schoolId && ensembleId
       ? {

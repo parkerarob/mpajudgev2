@@ -44,6 +44,9 @@ const isChrome = /Chrome|CriOS/.test(userAgent) && !/Edg|OPR/.test(userAgent);
 if (params.has("safe") || isChrome) {
   document.body.classList.add("safe-render");
 }
+if (state.app.stabilityMode) {
+  document.body.classList.add("stability-mode");
+}
 
 let versionCheckBaseline = null;
 let versionCheckTimerId = null;
@@ -116,7 +119,9 @@ function startVersionChecks() {
 
 bindAuthHandlers();
 bindAdminHandlers();
-bindJudgeOpenHandlers();
+if (state.app.features?.enableJudgeOpen !== false) {
+  bindJudgeOpenHandlers();
+}
 bindDirectorHandlers();
 bindAppHandlers();
 
@@ -239,11 +244,16 @@ onAuthStateChanged(auth, async (user) => {
       const role =
         state.auth.userProfile.role ||
         (roles.admin ? "admin" : roles.director ? "director" : roles.judge ? "judge" : null);
-      const preferJudgeOpen = roles.judge === true && role !== "admin";
+      const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
+      const preferJudgeOpen = judgeEnabled && roles.judge === true && role !== "admin";
       const path = window.location.pathname || "";
       const isLegacyJudgePath = path.endsWith("/judge") || path.endsWith("/judge/");
       if (isLegacyJudgePath && role !== "admin") {
-        window.history.replaceState(null, "", "/judge-open#judge-open");
+        if (judgeEnabled) {
+          window.history.replaceState(null, "", "/judge-open#judge-open");
+        } else {
+          window.history.replaceState(null, "", "/#admin");
+        }
       }
       if (preferJudgeOpen) {
         setTab("judge-open");
@@ -256,16 +266,23 @@ onAuthStateChanged(auth, async (user) => {
           window.location.hash = "#admin";
         }
       } else if (role === "judge") {
-        setTab("judge-open");
-        if (window.location.hash !== "#judge-open") {
-          window.location.hash = "#judge-open";
+        if (judgeEnabled) {
+          setTab("judge-open");
+          if (window.location.hash !== "#judge-open") {
+            window.location.hash = "#judge-open";
+          }
+        } else {
+          setTab("admin", { force: true });
+          if (window.location.hash !== "#admin") {
+            window.location.hash = "#admin";
+          }
         }
       } else if (role === "director") {
         setTab("director");
       }
       startWatchers();
       renderDirectorProfile();
-      if (preferJudgeOpen || role === "judge") {
+      if (judgeEnabled && (preferJudgeOpen || role === "judge")) {
         restoreOpenPacketFromPrefs();
       }
     } else {

@@ -22,7 +22,7 @@ import { COLLECTIONS, FIELDS, state } from "../state.js";
 import { db, functions } from "../firebase.js";
 import { computePacketSummary } from "./judge-shared.js";
 import { getDirectorNameForSchool } from "./director.js";
-import { getSchoolNameById } from "./utils.js";
+import { getSchoolNameById, normalizeEnsembleNameForSchool } from "./utils.js";
 
 
 export async function createEvent({ name, startAtDate, endAtDate, registrationDeadlineDate }) {
@@ -46,12 +46,17 @@ export async function createScheduleEntry({
   ensembleId,
   ensembleName,
 }) {
+  const schoolName = getSchoolNameById(state.admin.schoolsList, schoolId);
+  const normalizedEnsembleName = normalizeEnsembleNameForSchool({
+    schoolName,
+    ensembleName: ensembleName || ensembleId,
+  });
   return addDoc(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule), {
     performanceAt: Timestamp.fromDate(performanceAtDate),
     schoolId,
     ensembleId,
-    schoolName: getSchoolNameById(state.admin.schoolsList, schoolId),
-    ensembleName: ensembleName || ensembleId,
+    schoolName,
+    ensembleName: normalizedEnsembleName,
     createdAt: serverTimestamp(),
   });
 }
@@ -116,6 +121,18 @@ export async function bulkImportSchools(lines) {
 export async function provisionUser(payload) {
   const provisionUserFn = httpsCallable(functions, "provisionUser");
   const response = await provisionUserFn(payload);
+  return response.data || {};
+}
+
+export async function assignDirectorSchool({ directorUid, schoolId }) {
+  const fn = httpsCallable(functions, "assignDirectorSchool");
+  const response = await fn({ directorUid, schoolId });
+  return response.data || {};
+}
+
+export async function unassignDirectorSchool({ directorUid }) {
+  const fn = httpsCallable(functions, "unassignDirectorSchool");
+  const response = await fn({ directorUid });
   return response.data || {};
 }
 
@@ -226,6 +243,26 @@ export function watchJudges(callback) {
     });
     judges.sort((a, b) => a.label.localeCompare(b.label));
     callback?.(judges);
+  });
+}
+
+export function watchDirectors(callback) {
+  if (state.subscriptions.directors) state.subscriptions.directors();
+  const q = query(
+    collection(db, COLLECTIONS.users),
+    where(FIELDS.users.role, "==", "director")
+  );
+  state.subscriptions.directors = onSnapshot(q, (snapshot) => {
+    const directors = snapshot.docs.map((docSnap) => ({
+      uid: docSnap.id,
+      ...docSnap.data(),
+    }));
+    directors.sort((a, b) => {
+      const aLabel = (a.displayName || a.email || a.uid || "").toLowerCase();
+      const bLabel = (b.displayName || b.email || b.uid || "").toLowerCase();
+      return aLabel.localeCompare(bLabel);
+    });
+    callback?.(directors);
   });
 }
 
@@ -393,6 +430,12 @@ export async function unreleasePacket({ eventId, ensembleId }) {
   return unreleasePacketFn({ eventId, ensembleId });
 }
 
+export async function releaseMockPacketForAshleyTesting({ schoolId = "", ensembleId = "", grade = "IV" } = {}) {
+  const fn = httpsCallable(functions, "releaseMockPacketForAshleyTesting");
+  const response = await fn({ schoolId, ensembleId, grade });
+  return response?.data || {};
+}
+
 export async function unlockSubmission({ eventId, ensembleId, judgePosition }) {
   const unlockSubmissionFn = httpsCallable(functions, "unlockSubmission");
   return unlockSubmissionFn({ eventId, ensembleId, judgePosition });
@@ -500,5 +543,19 @@ export async function updateSchoolRegistration(eventId, schoolId, fields) {
 export async function updateEntryCheckinFields(eventId, ensembleId, fields) {
   if (!eventId || !ensembleId) return;
   const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId);
-  return updateDoc(ref, { ...fields, updatedAt: serverTimestamp() });
+  const snap = await getDoc(ref);
+  const payload = { ...fields, updatedAt: serverTimestamp() };
+  if (snap.exists()) {
+    return updateDoc(ref, payload);
+  }
+  return setDoc(
+    ref,
+    {
+      eventId,
+      ensembleId,
+      ...payload,
+      createdAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 }

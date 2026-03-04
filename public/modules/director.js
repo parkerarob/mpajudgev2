@@ -1340,10 +1340,25 @@ export async function uploadSignedSignatureForm(eventId, schoolId, file) {
   return { ok: true, url };
 }
 
+export async function fetchDirectorPacketAssets({ eventId, ensembleId } = {}) {
+  if (!eventId || !ensembleId) return { ok: false, reason: "missing-params" };
+  const fetchFn = httpsCallable(functions, "getDirectorPacketAssets");
+  try {
+    const response = await fetchFn({ eventId, ensembleId });
+    return { ok: true, ...(response?.data || {}) };
+  } catch (error) {
+    console.error("fetchDirectorPacketAssets failed", error);
+    return { ok: false, message: error?.message || "Unable to load packet assets." };
+  }
+}
+
 export function watchDirectorPackets(callback) {
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
   state.director.packetGradeCache.clear();
+  if (state.director.packetAssetsCache?.clear) {
+    state.director.packetAssetsCache.clear();
+  }
   state.director.packetWatchVersion += 1;
   const watchVersion = state.director.packetWatchVersion;
   if (!state.auth.userProfile || !isDirectorManager()) {

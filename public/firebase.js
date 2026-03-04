@@ -55,11 +55,9 @@ if (useEmulators) {
   self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
 }
 
-if (useEmulators) {
-  initializeAppCheck(app, {
-    provider: new ReCaptchaV3Provider("debug"),
-    isTokenAutoRefreshEnabled: true,
-  });
-}
+initializeAppCheck(app, {
+  provider: new ReCaptchaV3Provider(useEmulators ? "debug" : APP_CHECK_SITE_KEY),
+  isTokenAutoRefreshEnabled: true,
+});
 
 export { firebaseConfig };

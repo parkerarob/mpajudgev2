@@ -45,7 +45,7 @@ export async function createDirectorAccount({ email, password, schoolId }) {
   const userRef = doc(db, COLLECTIONS.users, credential.user.uid);
   await setDoc(userRef, {
     role: "director",
-    roles: { director: true, judge: false, admin: false },
+    roles: { director: true, judge: false, admin: false, teamLead: false },
     schoolId,
     email: verifiedEmail,
     createdAt: serverTimestamp(),

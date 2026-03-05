@@ -76,6 +76,14 @@ export function createJudgeOpenHandlerBinder({
       els.judgeOpenNewPacketBtn.addEventListener("click", async () => {
         if (!hasLinkedOpenEnsemble()) {
           setOpenPacketHint("Select an existing school and ensemble first.");
+          showOpenDetailView();
+          if (els.judgeOpenExistingSelect) {
+            try {
+              els.judgeOpenExistingSelect.focus();
+            } catch {
+              // no-op
+            }
+          }
           return;
         }
         els.judgeOpenNewPacketBtn.dataset.loadingLabel = "Creating...";

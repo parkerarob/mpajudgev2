@@ -9,6 +9,7 @@ export function hasUnsavedChanges() {
 export function getDefaultTabForRole(role) {
   const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
   if (role === "admin") return "admin";
+  if (role === "teamLead") return "admin";
   if (role === "judge") return judgeEnabled ? "judge-open" : "admin";
   if (role === "director") return "director";
   return null;
@@ -18,6 +19,7 @@ export function isTabAllowed(tab, role) {
   if (!role) return false;
   const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
   if (role === "admin") return true;
+  if (role === "teamLead") return tab === "admin";
   if (role === "judge") {
     if (!judgeEnabled) return tab === "admin";
     return tab === "judge-open";
@@ -46,9 +48,16 @@ export function resolveHash(hash) {
     state.app.features?.enableAdminSettings !== false &&
     state.app.features?.enableAdminDirectory !== false;
   if (value.startsWith("#event/")) {
-    const eventId = value.replace("#event/", "").trim();
+    const raw = value.replace("#event/", "").trim();
+    const [eventIdPart, modePart = ""] = raw.split("/");
+    const eventId = (eventIdPart || "").trim();
+    const modeRaw = (modePart || "").trim().toLowerCase();
+    const viewMode =
+      modeRaw === "director-schedule" || modeRaw === "directorschedule"
+        ? "directorSchedule"
+        : "admin";
     if (eventId) {
-      return { type: "event", eventId };
+      return { type: "event", eventId, viewMode };
     }
   }
   if (value === "#director") return { type: "tab", tab: "director" };

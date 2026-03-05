@@ -106,6 +106,19 @@
           <div class="panel" id="adminScheduleSection">
             <h3>Step 2: Scheduled Timeline</h3>
             <p class="hint">Start times for Holding, Warm-up, Performance, and Sightreading for scheduled ensembles.</p>
+            <div class="panel stack">
+              <h4>Add Break</h4>
+              <p class="hint">All breaks are 30 minutes. Enter a time and the break will snap to the next valid transition.</p>
+              <div class="row">
+                <label class="grow">
+                  Break Time
+                  <input type="datetime-local" id="preEventBreakAtInput" />
+                </label>
+                <button type="button" class="ghost" id="preEventBreakAddBtn">Add 30-min Break</button>
+              </div>
+              <div class="note" id="preEventBreakStatus"></div>
+              <div id="preEventBreakList" class="stack"></div>
+            </div>
             <div class="stack">
               <h4>Scheduled Timeline (Start Times)</h4>
               <p class="hint">Displays start times only for Holding, Warm-up, Performance, and Sightreading.</p>
@@ -234,6 +247,16 @@
                     <button type="button" id="adminSchoolManageEditBtn" class="ghost">Edit</button>
                     <button type="button" id="adminSchoolManageDeleteBtn" class="ghost">Delete</button>
                   </div>
+                  <h4>Manage School Ensembles</h4>
+                  <label>
+                    Select Ensemble
+                    <select id="adminSchoolEnsembleManageSelect"></select>
+                  </label>
+                  <div class="row">
+                    <button type="button" id="adminSchoolEnsembleDeleteBtn" class="ghost danger" disabled>
+                      Delete Ensemble (Full Cleanup)
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -260,6 +283,8 @@
                   <label>
                     Role
                     <select id="provisionRoleSelect" required>
+                      <option value="admin">admin</option>
+                      <option value="teamLead">teamLead</option>
                       <option value="judge">judge</option>
                       <option value="director">director</option>
                     </select>
@@ -522,10 +547,14 @@
             <span class="badge" id="directorEntryStatusBadge">Incomplete</span>
           </div>
         </div>
-        <div class="ios-screen">
+        <div class="ios-screen" id="directorDashboardLayout">
 
           <!-- LANDING: school, directors, event selector -->
-          <div class="panel director-summary stack" id="directorSummary">
+          <div class="panel director-summary director-context-panel stack" id="directorSummary">
+            <div class="director-dashboard-header">
+              <h3>Director Dashboard</h3>
+              <div class="note" id="directorDashboardContextMeta">School: — | Event: —</div>
+            </div>
             <div class="director-summary-school-row">
               <div class="director-summary-school-name" id="directorSummarySchool">No school attached</div>
               <div class="row" id="directorDetachControls">
@@ -541,12 +570,14 @@
               <label for="directorEventSelect">Event</label>
               <div class="row">
                 <select id="directorEventSelect" class="grow"></select>
-                <button type="button" id="directorEventGoBtn" class="btn--secondary">Continue</button>
+                <button type="button" id="directorEventGoBtn" class="btn--secondary">Event Forms</button>
+                <button type="button" id="directorScheduleBtn" class="ghost">View Schedule</button>
               </div>
+              <p class="hint">Open event forms for this school.</p>
             </div>
           </div>
 
-          <div class="panel stack is-hidden" id="directorEnsemblesSection">
+          <div class="panel stack is-hidden director-ensemble-panel" id="directorEnsemblesSection">
             <div class="row row--between row--center">
               <h3>School Ensembles</h3>
               <button type="button" class="ghost" id="directorShowEnsembleFormBtn">Add Ensemble</button>
@@ -567,7 +598,7 @@
               </div>
               <div class="error" id="directorEnsembleError"></div>
             </form>
-            <ul id="directorEnsembleList" class="list ensembles-list"></ul>
+            <div id="directorEnsembleList" class="ensembles-list director-ensemble-list-table"></div>
           </div>
 
           <!-- REGISTRATION: multi-step form -->
@@ -618,6 +649,8 @@
           <div class="stack is-hidden" id="directorDayOfFormsBlock">
             <div class="row">
               <button type="button" class="ghost" id="directorDayOfBackBtn">Back</button>
+              <button type="button" class="ghost" id="directorDayOfRegistrationBtn">Registration</button>
+              <button type="button" class="ghost" id="directorDayOfEnsemblesBtn">Ensembles</button>
               <label class="grow">
                 Ensemble
                 <select id="directorDayOfEnsembleSelect" class="grow"></select>
@@ -625,6 +658,7 @@
             </div>
             <div class="panel group" id="directorEntryPanel">
               <h3>Day-of Entry</h3>
+              <div class="note" id="directorEditorActiveEnsembleLabel">No active ensemble selected</div>
               <div class="row">
                 <div class="note">Status: <span id="directorEntryStatus">Incomplete</span></div>
                 <div class="note" id="directorSchoolLunchTotal"></div>
@@ -756,6 +790,10 @@
               <button type="button" class="ghost" id="eventScheduleUploadBtn">Upload PDF</button>
             </div>
             <div class="note" id="eventScheduleStatus"></div>
+            <div class="stack is-hidden" id="eventScheduleDirectorWrap">
+              <div class="note" id="eventScheduleDirectorHint"></div>
+              <div class="schedule-timeline-table-wrap" id="eventScheduleDirectorTableWrap"></div>
+            </div>
             <div class="row" id="eventScheduleLinkRow">
               <a id="eventScheduleLink" href="#" target="_blank" rel="noopener">Open Schedule PDF</a>
             </div>

@@ -248,15 +248,14 @@ export function watchJudges(callback) {
 
 export function watchDirectors(callback) {
   if (state.subscriptions.directors) state.subscriptions.directors();
-  const q = query(
-    collection(db, COLLECTIONS.users),
-    where(FIELDS.users.role, "==", "director")
-  );
+  const q = query(collection(db, COLLECTIONS.users));
   state.subscriptions.directors = onSnapshot(q, (snapshot) => {
-    const directors = snapshot.docs.map((docSnap) => ({
-      uid: docSnap.id,
-      ...docSnap.data(),
-    }));
+    const directors = snapshot.docs
+      .map((docSnap) => ({
+        uid: docSnap.id,
+        ...docSnap.data(),
+      }))
+      .filter((user) => user.role === "director" || user.roles?.director === true);
     directors.sort((a, b) => {
       const aLabel = (a.displayName || a.email || a.uid || "").toLowerCase();
       const bLabel = (b.displayName || b.email || b.uid || "").toLowerCase();
@@ -486,22 +485,29 @@ export async function deleteSchool({ schoolId }) {
   return deleteFn({ schoolId });
 }
 
-export async function fetchRegisteredEnsembles(eventId) {
+export async function deleteEnsemble({ schoolId, ensembleId, force = false }) {
+  const deleteFn = httpsCallable(functions, "deleteEnsemble");
+  const response = await deleteFn({ schoolId, ensembleId, force: Boolean(force) });
+  return response.data || {};
+}
+
+export async function fetchRegisteredEnsembles(eventId, schoolId = null) {
   if (!eventId) return [];
-  const snap = await getDocs(
-    collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries)
-  );
+  const entriesRef = collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries);
+  const entriesQuery = schoolId
+    ? query(entriesRef, where("schoolId", "==", schoolId))
+    : entriesRef;
+  const snap = await getDocs(entriesQuery);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
-export async function fetchScheduleEntries(eventId) {
+export async function fetchScheduleEntries(eventId, schoolId = null) {
   if (!eventId) return [];
-  const snap = await getDocs(
-    query(
-      collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule),
-      orderBy("performanceAt", "asc")
-    )
-  );
+  const scheduleRef = collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule);
+  const scheduleQuery = schoolId
+    ? query(scheduleRef, where("schoolId", "==", schoolId))
+    : query(scheduleRef, orderBy("performanceAt", "asc"));
+  const snap = await getDocs(scheduleQuery);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 

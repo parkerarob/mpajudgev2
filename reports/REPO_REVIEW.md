@@ -7,7 +7,7 @@
 
 ## 1. Executive Summary
 
-MPA Judge is a **Firebase-hosted adjudication web app** (Phase 1) for MPA events: judge audio, transcription, caption feedback, ratings, and director-facing results. The repo is well-documented (PRD, AGENTS.md, PLANS.md), uses a clear role model (admin / judge / director), and keeps critical transitions in Cloud Functions. The main gaps are a **test selector bug** (phase1 tests target a missing `#authStatus`), a **very large UI module** (~6.2k lines), and **phase1 report showing env-related failures**. Deploy and security posture are in good shape.
+MPA Judge is a **Firebase-hosted adjudication web app** for MPA events: judge audio, transcription, caption feedback, ratings, and director-facing results. The repo is well-documented (PRD, AGENTS.md, README.md), uses a clear role model (admin / judge / director), and keeps critical transitions in Cloud Functions. Deploy and security posture are in good shape.
 
 ---
 
@@ -20,7 +20,7 @@ MPA Judge is a **Firebase-hosted adjudication web app** (Phase 1) for MPA events
 | **Rules** | `firestore.rules`, `storage.rules` | Role-based; directors see only released data |
 | **Tests** | `tests/phase1.spec.ts` | Playwright E2E; requires env vars and running app |
 | **CI/CD** | `.github/workflows/` | Deploy to Firebase Hosting on push to `main`; PR workflow present |
-| **Docs** | `README.md`, `AGENTS.md`, `PRD.md`, `PLANS.md` | Strong guidance for agents and product scope |
+| **Docs** | `README.md`, `AGENTS.md`, `PRD.md` | Strong guidance for agents and product scope |
 
 ---
 
@@ -66,7 +66,7 @@ MPA Judge is a **Firebase-hosted adjudication web app** (Phase 1) for MPA events
 - **Framework:** Playwright; config in `playwright.config.ts` (baseURL from `MPA_BASE_URL`, 120s timeout, fake media devices).
 - **Phase 1 spec:** `tests/phase1.spec.ts` — serial smoke tests: admin (event + school), director (attach/ensemble/detach), admin (schedule + assignments + packet controls), judge (record/transcribe/draft). Requires env: `MPA_BASE_URL`, `MPA_ADMIN_EMAIL`, `MPA_ADMIN_PASSWORD`, `MPA_JUDGE_EMAIL`, `MPA_JUDGE_PASSWORD`, `MPA_DIRECTOR_EMAIL`, `MPA_DIRECTOR_PASSWORD`.
 - **Bug:** Tests use `page.locator("#authStatus")` to assert sign-in/sign-out (e.g. email or "Signed out"). The app has **no element with `id="authStatus"`**; the signed-in/signed-out text is in **`#accountSummary`**. `state.js` has `els.authStatus = document.getElementById("authStatus")` (always `null`). **Action:** Either add an element with `id="authStatus"` and keep it in sync with account summary, or change the tests to use `#accountSummary`. Prefer one source of truth (e.g. `#accountSummary` and update tests).
-- **Last report:** `reports/phase1_report.md` shows failures due to missing `MPA_BASE_URL`. So current failures are env/setup; fixing the selector is still required for assertions to pass.
+- **Phase1 tests:** verify required env setup (`MPA_BASE_URL` and role credentials) before execution to avoid false negatives.
 
 ---
 
@@ -83,7 +83,7 @@ MPA Judge is a **Firebase-hosted adjudication web app** (Phase 1) for MPA events
 - **README:** Local dev, provisioning, deploy, secrets, Grade I lookup test, repertoire seed. **Sufficient for onboarding.**
 - **AGENTS.md:** Philosophy, data model, product rules, refactor policy, UX direction, out-of-scope. **Strong for AI/agent work.**
 - **PRD.md:** Purpose, roles, journeys, feature requirements (event admin, auth, schools, ensemble profile, judge/director flows). **Good product reference.**
-- **PLANS.md:** Phase 1 milestones (event foundation, deterministic submissions, scoring, packet completion, atomic chair actions). **Useful for implementation checklists.**
+- **AGENTS.md + PRD.md:** Define implementation constraints and product behavior for ongoing development.
 
 ---
 

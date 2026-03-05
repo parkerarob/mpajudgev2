@@ -1,9 +1,12 @@
+import { normalizeGradeBand } from "./utils.js";
+
 /**
- * Event schedule timeline: performance times only.
- * First band performs at firstPerformanceAt; each next band performs at
- * previous performance time + previous band's slot length (by grade).
- * Break adds 30 min before the next band's performance.
- * Grade I/II = 25 min, III/IV = 30 min, V = 35 min, VI = 40 min per slot.
+ * Event timeline model:
+ * - Slot minutes by grade (I/II=25, III/IV=30, V=35, VI=40).
+ * - Warm-up for band N starts when band N-1 moves to stage (its performStart),
+ *   unless a configured break/day-break overrides the next transition.
+ * - Warm-up and performance each use the band's slot duration.
+ * - Performance cannot start until the stage is available.
  */
 
 const SLOT_MINUTES_BY_GRADE = {
@@ -22,8 +25,22 @@ const DEFAULT_SLOT_MINUTES = 30;
  * @returns {number} Slot duration in minutes
  */
 export function getSlotMinutesForGrade(grade) {
-  if (grade && Object.prototype.hasOwnProperty.call(SLOT_MINUTES_BY_GRADE, grade)) {
-    return SLOT_MINUTES_BY_GRADE[grade];
+  const normalized = normalizeGradeBand(grade);
+  if (grade && !normalized) {
+    console.warn("scheduleTimeline: invalid grade for slot mapping, using default 30", grade);
+  }
+  if (normalized && Object.prototype.hasOwnProperty.call(SLOT_MINUTES_BY_GRADE, normalized)) {
+    return SLOT_MINUTES_BY_GRADE[normalized];
+  }
+  if (normalized && normalized.includes("/")) {
+    const parts = normalized.split("/");
+    const right = parts[1] || "";
+    if (Object.prototype.hasOwnProperty.call(SLOT_MINUTES_BY_GRADE, right)) {
+      return SLOT_MINUTES_BY_GRADE[right];
+    }
+    if (Object.prototype.hasOwnProperty.call(SLOT_MINUTES_BY_GRADE, parts[0])) {
+      return SLOT_MINUTES_BY_GRADE[parts[0]];
+    }
   }
   return DEFAULT_SLOT_MINUTES;
 }
@@ -43,7 +60,9 @@ function toDate(val) {
 
 /**
  * Compute timeline for all roster entries. Schedule is performance-time only:
- * next performance = previous performance + previous slot (plus 30 min if break).
+ * - Default pipeline: next performance follows existing warm-up/stage availability rules.
+ * - Break rule: a break after entry N forces entry N+1 performance start to
+ *   entryN performance end + 30 minutes (ignoring sightreading for the break gap).
  * A day break (entry in dayBreaks map) jumps the timeline to a specific date/time,
  * superseding a regular 30-min break on the same entry.
  * Also returns holding/warmUp/sight derived from each perform time for display.
@@ -75,27 +94,39 @@ export function computeScheduleTimeline(firstPerformanceAt, rosterEntries, sched
   if (!rosterEntries.length) return [];
 
   const result = [];
-  let nextPerformTime = new Date(performStartFirst.getTime());
+  let nextWarmUpAnchor = null;
+  let nextStageAvailable = null;
+  let nextPerformStartOverride = null;
 
   for (let i = 0; i < rosterEntries.length; i++) {
     const entry = rosterEntries[i];
-    const grade = getGrade(entry);
+    const grade = normalizeGradeBand(getGrade(entry));
     const slotMins = getSlotMinutesForGrade(grade);
+    let performStart;
+    let warmUpStart;
+    let holdingStart;
 
-    if (i > 0) {
-      const prevId = rosterEntries[i - 1].id;
-      if (dayBreakMap.has(prevId)) {
-        nextPerformTime = new Date(dayBreakMap.get(prevId).getTime());
-      } else if (breakSet.has(prevId)) {
-        nextPerformTime = new Date(nextPerformTime.getTime() + 30 * 60 * 1000);
-      }
+    if (i === 0) {
+      performStart = new Date(performStartFirst.getTime());
+      warmUpStart = new Date(performStart.getTime() - slotMins * 60 * 1000);
+      holdingStart = new Date(warmUpStart.getTime() - slotMins * 60 * 1000);
+    } else if (nextPerformStartOverride) {
+      performStart = new Date(nextPerformStartOverride.getTime());
+      warmUpStart = new Date(performStart.getTime() - slotMins * 60 * 1000);
+      holdingStart = new Date(warmUpStart.getTime() - slotMins * 60 * 1000);
+      nextPerformStartOverride = null;
+    } else {
+      const warmUpAnchor = new Date(nextWarmUpAnchor.getTime());
+      const stageAvailable = new Date(nextStageAvailable.getTime());
+      warmUpStart = warmUpAnchor;
+      holdingStart = new Date(warmUpStart.getTime() - slotMins * 60 * 1000);
+      const warmUpReady = new Date(warmUpStart.getTime() + slotMins * 60 * 1000);
+      performStart =
+        warmUpReady.getTime() >= stageAvailable.getTime()
+          ? warmUpReady
+          : stageAvailable;
     }
 
-    const performStart = new Date(nextPerformTime.getTime());
-    nextPerformTime = new Date(performStart.getTime() + slotMins * 60 * 1000);
-
-    const holdingStart = new Date(performStart.getTime() - 3 * slotMins * 60 * 1000);
-    const warmUpStart = new Date(performStart.getTime() - 2 * slotMins * 60 * 1000);
     const sightStart = new Date(performStart.getTime() + slotMins * 60 * 1000);
 
     result.push({
@@ -108,6 +139,18 @@ export function computeScheduleTimeline(firstPerformanceAt, rosterEntries, sched
       performStart,
       sightStart,
     });
+
+    let anchor = new Date(performStart.getTime());
+    let stageAvailable = new Date(performStart.getTime() + slotMins * 60 * 1000);
+    if (dayBreakMap.has(entry.id)) {
+      const jump = dayBreakMap.get(entry.id);
+      // Day breaks anchor the next ensemble's PERFORMANCE start directly.
+      nextPerformStartOverride = new Date(jump.getTime());
+    } else if (breakSet.has(entry.id)) {
+      nextPerformStartOverride = new Date(stageAvailable.getTime() + 30 * 60 * 1000);
+    }
+    nextWarmUpAnchor = anchor;
+    nextStageAvailable = stageAvailable;
   }
 
   return result;

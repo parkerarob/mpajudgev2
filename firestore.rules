@@ -14,7 +14,8 @@ service cloud.firestore {
       return roles is map
         && roles.director == true
         && (roles.admin == false || !("admin" in roles))
-        && (roles.judge == false || !("judge" in roles));
+        && (roles.judge == false || !("judge" in roles))
+        && (roles.teamLead == false || !("teamLead" in roles));
     }
 
     function userData() {
@@ -37,6 +38,15 @@ service cloud.firestore {
     function isJudge() {
       return isSignedIn()
         && (userRole() == "judge" || userData().roles.judge == true);
+    }
+
+    function isTeamLead() {
+      return isSignedIn()
+        && (userRole() == "teamLead" || userData().roles.teamLead == true);
+    }
+
+    function isOpsLead() {
+      return isAdmin() || isTeamLead();
     }
 
     function isDirector() {
@@ -62,6 +72,11 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isAdmin()
+        || (isOpsLead()
+          && (
+            resource.data.role == "director"
+            || resource.data.roles.director == true
+          ))
         || request.auth.uid == userId
         || (isDirector()
           && resource.data.schoolId == userSchoolId()
@@ -151,8 +166,9 @@ service cloud.firestore {
       allow write: if isAdmin();
 
       match /schedule/{entryId} {
-        allow read: if (isAdmin() || isJudge()) && isActiveEvent(eventId);
-        allow create, update: if isAdmin()
+        allow read: if ((isOpsLead() || isJudge()) && isActiveEvent(eventId))
+          || isDirectorForSchool(resource.data.schoolId);
+        allow create, update: if isOpsLead()
           && request.resource.data.performanceAt is timestamp
           && request.resource.data.schoolId is string
           && request.resource.data.ensembleId is string
@@ -165,10 +181,10 @@ service cloud.firestore {
       }
 
       match /entries/{ensembleId} {
-        allow read: if isAdmin()
+        allow read: if isOpsLead()
           || (isDirector() && (resource == null || resource.data.schoolId == userSchoolId()))
           || (isJudge() && isActiveEvent(eventId));
-        allow create, update: if isAdmin()
+        allow create, update: if isOpsLead()
           || (isDirector()
             && request.resource.data.schoolId == userSchoolId()
             && request.resource.data.eventId == eventId
@@ -176,14 +192,14 @@ service cloud.firestore {
       }
 
       match /assignments/{assignmentId} {
-        allow read: if isAdmin() || isJudge();
+        allow read: if isOpsLead() || isJudge();
         allow write: if isAdmin();
       }
 
       match /schoolRegistrations/{schoolId} {
-        allow read: if isAdmin()
+        allow read: if isOpsLead()
           || (isDirector() && schoolId == userSchoolId());
-        allow create, update: if isAdmin()
+        allow create, update: if isOpsLead()
           || (isDirector() && schoolId == userSchoolId());
         allow delete: if isAdmin();
       }
@@ -195,7 +211,7 @@ service cloud.firestore {
     }
 
     match /submissions/{submissionId} {
-      allow read: if isAdmin()
+      allow read: if isOpsLead()
         || (isJudge()
           && (resource == null || resource.data.judgeUid == request.auth.uid))
         || (resource != null
@@ -223,7 +239,7 @@ service cloud.firestore {
     }
 
     match /packets/{packetId} {
-      allow read: if isAdmin()
+      allow read: if isOpsLead()
         || (isJudge() && (resource == null || resource.data.createdByJudgeUid == request.auth.uid))
         || (resource != null
           && isDirectorForSchool(resource.data.schoolId)
@@ -244,7 +260,7 @@ service cloud.firestore {
       allow delete: if isAdmin();
 
       match /sessions/{sessionId} {
-        allow read: if isAdmin()
+        allow read: if isOpsLead()
           || (isJudge()
             && get(/databases/$(database)/documents/packets/$(packetId)).data.createdByJudgeUid == request.auth.uid)
           || (isDirectorForSchool(get(/databases/$(database)/documents/packets/$(packetId)).data.schoolId)

@@ -5,19 +5,30 @@ export function createAdminRenderers({
   COLLECTIONS,
   collection,
   getDocs,
+  query,
+  where,
   fetchRegisteredEnsembles,
   fetchScheduleEntries,
   getSchoolNameById,
   normalizeEnsembleDisplayName,
   toLocalDatetimeValue,
+  deriveAutoScheduleDayBreaks,
+  mergeScheduleDayBreaks,
   formatPerformanceAt,
   getPacketData,
   releasePacket,
   unreleasePacket,
+  lockOpenPacket,
+  unlockOpenPacket,
+  releaseOpenPacket,
+  unreleaseOpenPacket,
+  renderSubmissionCard,
   loadAdminPacketView,
   alertUser,
   createScheduleEntry,
+  deleteScheduleEntry,
   updateScheduleEntryTime,
+  computeScheduleTimeline,
   formatAdminDayOfReadOnly,
   openDirectorDayOfFromAdmin,
   closeAdminSchoolDetail,
@@ -30,6 +41,41 @@ export function createAdminRenderers({
   let adminPacketsRenderQueued = false;
   let registeredRenderInFlight = false;
   let registeredRenderQueued = false;
+
+  function formatPacketTimestamp(value) {
+    const ms = value?.toMillis ? value.toMillis() : null;
+    if (!ms) return "";
+    try {
+      return new Date(ms).toLocaleString();
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function normalizeOpenPacketStatus(value) {
+    const raw = String(value || "").trim();
+    return raw || "draft";
+  }
+
+  function toOpenSubmission(packet) {
+    const status = normalizeOpenPacketStatus(packet.status);
+    return {
+      status,
+      locked: Boolean(packet.locked),
+      judgeName: packet.createdByJudgeName || "",
+      judgeEmail: packet.createdByJudgeEmail || "",
+      judgeTitle: "",
+      judgeAffiliation: "",
+      audioUrl: packet.latestAudioUrl || "",
+      transcript: String(packet.transcriptFull || packet.transcript || "").trim(),
+      captions: packet.captions && typeof packet.captions === "object" ? packet.captions : {},
+      formType: packet.formType || "stage",
+      captionScoreTotal: Number.isFinite(Number(packet.captionScoreTotal))
+        ? Number(packet.captionScoreTotal)
+        : null,
+      computedFinalRatingLabel: packet.computedFinalRatingLabel || "N/A",
+    };
+  }
 
   async function renderAdminSchoolDetail() {
     if (adminSchoolDetailRenderInFlight) {
@@ -73,6 +119,56 @@ export function createAdminRenderers({
         if (!snap?.exists()) return;
         entryDataByEnsemble.set(snap.id, snap.data());
       });
+      const registeredByEnsemble = new Map(
+        (registered || []).map((row) => [row.ensembleId || row.id, row])
+      );
+
+      async function recalculateFromScheduleEntry({
+        anchorScheduleEntryId,
+        anchorPerformanceAt,
+      } = {}) {
+        if (!anchorScheduleEntryId || !(anchorPerformanceAt instanceof Date)) return;
+        const allScheduleEntries = await fetchScheduleEntries(eventId);
+        const sorted = [...(allScheduleEntries || [])].sort((a, b) => {
+          const aTime = a.performanceAt?.toDate
+            ? a.performanceAt.toDate().getTime()
+            : new Date(a.performanceAt || 0).getTime();
+          const bTime = b.performanceAt?.toDate
+            ? b.performanceAt.toDate().getTime()
+            : new Date(b.performanceAt || 0).getTime();
+          return aTime - bTime;
+        });
+        const anchorIndex = sorted.findIndex((row) => row.id === anchorScheduleEntryId);
+        if (anchorIndex < 0) return;
+        const slice = sorted.slice(anchorIndex);
+        if (!slice.length) return;
+        const breakSet = new Set(
+          Array.isArray(state.event.active?.scheduleBreaks) ? state.event.active.scheduleBreaks : []
+        );
+        const autoDayBreaks = deriveAutoScheduleDayBreaks(slice);
+        const dayBreaks = mergeScheduleDayBreaks(
+          state.event.active?.scheduleDayBreaks || {},
+          autoDayBreaks
+        );
+        const getGrade = (row) => {
+          const registeredRow = registeredByEnsemble.get(row.ensembleId || row.id) || {};
+          return registeredRow.declaredGradeLevel || registeredRow.performanceGrade || null;
+        };
+        const timeline = computeScheduleTimeline(
+          anchorPerformanceAt,
+          slice,
+          breakSet,
+          getGrade,
+          dayBreaks
+        );
+        for (const row of timeline) {
+          await updateScheduleEntryTime({
+            eventId,
+            entryId: row.entryId,
+            nextDate: row.performStart,
+          });
+        }
+      }
 
       for (const entry of schoolEnsembles) {
         const ensembleId = entry.ensembleId || entry.id;
@@ -114,6 +210,16 @@ export function createAdminRenderers({
         scheduleSave.type = "button";
         scheduleSave.className = "ghost";
         scheduleSave.textContent = "Save Performance Time";
+        const scheduleRecalc = document.createElement("button");
+        scheduleRecalc.type = "button";
+        scheduleRecalc.className = "ghost";
+        scheduleRecalc.textContent = "Recalculate From Here";
+        scheduleRecalc.disabled = !scheduleEntry;
+        const scheduleDelete = document.createElement("button");
+        scheduleDelete.type = "button";
+        scheduleDelete.className = "ghost danger";
+        scheduleDelete.textContent = "Remove from Schedule";
+        scheduleDelete.disabled = !scheduleEntry;
         scheduleSave.addEventListener("click", async () => {
           const raw = scheduleInput.value;
           if (!raw) {
@@ -144,8 +250,58 @@ export function createAdminRenderers({
             scheduleSave.disabled = false;
           }
         });
+        scheduleRecalc.addEventListener("click", async () => {
+          if (!scheduleEntry) {
+            alertUser("Save a performance time first, then recalculate.");
+            return;
+          }
+          const raw = scheduleInput.value;
+          if (!raw) {
+            alertUser("Enter a performance date and time.");
+            return;
+          }
+          const nextDate = new Date(raw);
+          if (Number.isNaN(nextDate.getTime())) {
+            alertUser("Invalid date/time.");
+            return;
+          }
+          scheduleSave.disabled = true;
+          scheduleRecalc.disabled = true;
+          try {
+            await recalculateFromScheduleEntry({
+              anchorScheduleEntryId: scheduleEntry.id,
+              anchorPerformanceAt: nextDate,
+            });
+            await renderAdminSchoolDetail();
+            await renderRegisteredEnsemblesList();
+          } finally {
+            scheduleSave.disabled = false;
+            scheduleRecalc.disabled = false;
+          }
+        });
+        scheduleDelete.addEventListener("click", async () => {
+          if (!scheduleEntry) return;
+          const shouldDelete = window.confirm(
+            `Remove ${ensembleName} from this event schedule?`
+          );
+          if (!shouldDelete) return;
+          scheduleSave.disabled = true;
+          scheduleRecalc.disabled = true;
+          scheduleDelete.disabled = true;
+          try {
+            await deleteScheduleEntry({ eventId, entryId: scheduleEntry.id });
+            await renderAdminSchoolDetail();
+            await renderRegisteredEnsemblesList();
+          } finally {
+            scheduleSave.disabled = false;
+            scheduleRecalc.disabled = false;
+            scheduleDelete.disabled = false;
+          }
+        });
         scheduleRow.appendChild(scheduleInput);
         scheduleRow.appendChild(scheduleSave);
+        scheduleRow.appendChild(scheduleRecalc);
+        scheduleRow.appendChild(scheduleDelete);
         li.appendChild(scheduleRow);
 
         const readOnly = document.createElement("div");
@@ -351,6 +507,170 @@ export function createAdminRenderers({
         li.appendChild(panel);
         els.adminPacketsList.appendChild(li);
       }
+
+      const selectedSchoolId = state.admin.packetsSchoolId || "";
+      const openPacketsSnap = await getDocs(
+        query(
+          collection(db, COLLECTIONS.packets),
+          where("schoolId", "==", selectedSchoolId)
+        )
+      );
+      if (state.admin.currentView !== "packets" || (state.event.active?.id || "") !== eventId) return;
+      const openPackets = openPacketsSnap.docs
+        .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+        .filter((packet) => {
+          const assignmentEventId = String(packet.assignmentEventId || "").trim();
+          return !assignmentEventId || assignmentEventId === eventId;
+        })
+        .sort((a, b) => {
+          const aMs = a.updatedAt?.toMillis ? a.updatedAt.toMillis() : 0;
+          const bMs = b.updatedAt?.toMillis ? b.updatedAt.toMillis() : 0;
+          return bMs - aMs;
+        });
+
+      const openSection = document.createElement("li");
+      openSection.className = "panel";
+      const openTitle = document.createElement("h4");
+      openTitle.textContent = "Open Judge Sheets";
+      openSection.appendChild(openTitle);
+      const openHint = document.createElement("p");
+      openHint.className = "hint";
+      openHint.textContent = "Individual Open Judge tapes for this school.";
+      openSection.appendChild(openHint);
+
+      if (!openPackets.length) {
+        const empty = document.createElement("div");
+        empty.className = "note";
+        empty.textContent = "No Open Judge sheets found for this school.";
+        openSection.appendChild(empty);
+      } else {
+        const openList = document.createElement("div");
+        openList.className = "stack";
+        openPackets.forEach((packet) => {
+          const row = document.createElement("div");
+          row.className = "panel";
+          const top = document.createElement("div");
+          top.className = "row row--between row--center";
+          const title = document.createElement("strong");
+          title.textContent = `${packet.schoolName || "School"} - ${packet.ensembleName || "Ensemble"}`;
+          top.appendChild(title);
+          const badges = document.createElement("div");
+          badges.className = "row";
+          const statusBadge = document.createElement("span");
+          statusBadge.className = "badge";
+          statusBadge.textContent = `Open: ${packet.status || "draft"}`;
+          badges.appendChild(statusBadge);
+          const formBadge = document.createElement("span");
+          formBadge.className = "badge";
+          formBadge.textContent = (packet.formType || "stage").toUpperCase();
+          badges.appendChild(formBadge);
+          top.appendChild(badges);
+          row.appendChild(top);
+
+          const meta = document.createElement("div");
+          meta.className = "note";
+          const judgeLabel =
+            packet.createdByJudgeName ||
+            packet.createdByJudgeEmail ||
+            packet.createdByJudgeUid ||
+            "Unknown judge";
+          const ratingLabel = packet.computedFinalRatingLabel || "N/A";
+          const updatedLabel = formatPacketTimestamp(packet.updatedAt) || "Recently updated";
+          meta.textContent = `Judge: ${judgeLabel} - Rating: ${ratingLabel} - Updated: ${updatedLabel}`;
+          row.appendChild(meta);
+
+          const actions = document.createElement("div");
+          actions.className = "row";
+          const viewBtn = document.createElement("button");
+          viewBtn.type = "button";
+          viewBtn.className = "ghost";
+          viewBtn.textContent = "View Open Sheet";
+          const detail = document.createElement("div");
+          detail.className = "packet-panel is-hidden";
+          viewBtn.addEventListener("click", async () => {
+            const isHidden = detail.classList.contains("is-hidden");
+            detail.classList.toggle("is-hidden", !isHidden);
+            viewBtn.textContent = isHidden ? "Hide Open Sheet" : "View Open Sheet";
+            if (isHidden) {
+              detail.innerHTML = "";
+              const topMeta = document.createElement("div");
+              topMeta.className = "note";
+              topMeta.textContent = `Packet ID: ${packet.id} - Updated: ${formatPacketTimestamp(packet.updatedAt) || "Recently updated"}`;
+              detail.appendChild(topMeta);
+              const summaryCard = renderSubmissionCard(
+                toOpenSubmission(packet),
+                packet.judgePosition || (packet.formType === "sight" ? "sight" : "stage1"),
+                { showTranscript: true }
+              );
+              detail.appendChild(summaryCard);
+
+              const controls = document.createElement("div");
+              controls.className = "actions";
+              const isLocked = Boolean(packet.locked);
+              const lockBtn = document.createElement("button");
+              lockBtn.type = "button";
+              lockBtn.className = "ghost";
+              lockBtn.textContent = isLocked ? "Unlock Open Sheet" : "Lock Open Sheet";
+              lockBtn.addEventListener("click", async () => {
+                lockBtn.disabled = true;
+                try {
+                  if (isLocked) {
+                    await unlockOpenPacket({ packetId: packet.id });
+                  } else {
+                    await lockOpenPacket({ packetId: packet.id });
+                  }
+                  await renderAdminPacketsBySchedule();
+                } catch (error) {
+                  console.error("Open packet lock/unlock failed", error);
+                  alertUser(error?.message || "Unable to update open sheet lock state.");
+                } finally {
+                  lockBtn.disabled = false;
+                }
+              });
+              controls.appendChild(lockBtn);
+
+              const status = normalizeOpenPacketStatus(packet.status);
+              const releaseBtn = document.createElement("button");
+              releaseBtn.type = "button";
+              const shouldUnrelease = status === "released";
+              releaseBtn.textContent = shouldUnrelease ? "Unrelease Open Sheet" : "Release Open Sheet";
+              releaseBtn.addEventListener("click", async () => {
+                releaseBtn.disabled = true;
+                try {
+                  if (shouldUnrelease) {
+                    await unreleaseOpenPacket({ packetId: packet.id });
+                  } else {
+                    await releaseOpenPacket({ packetId: packet.id });
+                  }
+                  await renderAdminPacketsBySchedule();
+                } catch (error) {
+                  console.error("Open packet release/unrelease failed", error);
+                  alertUser(error?.message || "Unable to update open sheet release state.");
+                } finally {
+                  releaseBtn.disabled = false;
+                }
+              });
+              controls.appendChild(releaseBtn);
+              detail.appendChild(controls);
+
+              const packetIdRow = document.createElement("div");
+              packetIdRow.className = "note";
+              packetIdRow.textContent = `Tape Duration: ${
+                Number.isFinite(Number(packet.tapeDurationSec)) ?
+                  `${Math.round(Number(packet.tapeDurationSec))}s` :
+                  "—"
+              }`;
+              detail.appendChild(packetIdRow);
+            }
+          });
+          actions.appendChild(viewBtn);
+          row.appendChild(actions);
+          row.appendChild(detail);
+          openList.appendChild(row);
+        });
+        openSection.appendChild(openList);
+      }
+      els.adminPacketsList.appendChild(openSection);
       els.adminPacketsHint.textContent = "";
     } catch (error) {
       console.error("renderAdminPacketsBySchedule failed", error);

@@ -20,12 +20,15 @@ import {
   createEvent,
   createScheduleEntry,
   deleteEvent,
+  deleteEnsemble,
   deleteOpenPacket,
+  deleteScheduleEntry,
   deleteSchool,
   assignDirectorSchool,
   getPacketData,
   getLunchTotalsBySchool,
   renameEvent,
+  lockOpenPacket,
   lockSubmission,
   linkOpenPacketToEnsemble,
   provisionUser,
@@ -34,8 +37,11 @@ import {
   saveAssignments,
   saveSchool,
   setActiveEvent,
+  releaseOpenPacket,
   unreleasePacket,
+  unreleaseOpenPacket,
   unassignDirectorSchool,
+  unlockOpenPacket,
   unlockSubmission,
   updateEventSchedulerFields,
   updateScheduleEntryTime,
@@ -50,7 +56,7 @@ import {
   fetchScheduleEntries,
   updateEntryCheckinFields,
 } from "./admin.js";
-import { computeScheduleTimeline, getSlotMinutesForGrade } from "./scheduleTimeline.js";
+import { computeScheduleTimeline } from "./scheduleTimeline.js";
 import {
   attachDirectorSchool,
   createDirectorEnsemble,
@@ -149,6 +155,9 @@ import { createAdminLiveRenderers } from "./ui-admin-live-renderers.js";
 import { createJudgeOpenRenderers } from "./ui-judge-open-renderers.js";
 import { createJudgeOpenHandlerBinder } from "./ui-judge-open-handlers.js";
 import { createDirectorEnsembleRenderer } from "./ui-director-ensembles.js";
+import { createDirectorDashboardRenderer } from "./ui-director-dashboard.js";
+import { createDirectorContextPanelRenderer } from "./ui-director-context-panel.js";
+import { createDirectorEditorShellRenderer } from "./ui-director-editor-shell.js";
 import { createDirectorHandlerBinder } from "./ui-director-handlers.js";
 import { createDirectorPacketRenderers } from "./ui-director-packets.js";
 import { createDirectorDayOfRenderer } from "./ui-director-dayof.js";
@@ -170,6 +179,8 @@ import {
   toLocalDatetimeValue,
   formatStartTime,
   toDateOrNull,
+  deriveAutoScheduleDayBreaks,
+  mergeScheduleDayBreaks,
   computeEnsembleCheckinStatus,
 } from "./ui-admin-formatters.js";
 
@@ -183,9 +194,17 @@ export function confirmUser(message) {
 
 function getEffectiveRole(profile) {
   if (!profile) return null;
-  if (profile.role) return profile.role;
-  if (profile.roles?.judge) return "judge";
+  const rawRole = String(profile.role || "").trim();
+  if (rawRole) {
+    const lower = rawRole.toLowerCase();
+    if (lower === "admin") return "admin";
+    if (lower === "judge") return "judge";
+    if (lower === "director") return "director";
+    if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") return "teamLead";
+  }
   if (profile.roles?.admin) return "admin";
+  if (profile.roles?.teamLead) return "teamLead";
+  if (profile.roles?.judge) return "judge";
   if (profile.roles?.director) return "director";
   return null;
 }
@@ -204,7 +223,8 @@ function isAdminLiveEventEnabled() {
 function isAdminSettingsEnabled() {
   return (
     state.app.features?.enableAdminSettings !== false &&
-    state.app.features?.enableAdminDirectory !== false
+    state.app.features?.enableAdminDirectory !== false &&
+    getEffectiveRole(state.auth.userProfile) === "admin"
   );
 }
 
@@ -390,6 +410,7 @@ function applyDirectorEntryUpdate({
   if (entry) {
     renderDirectorEntryForm(entry);
   }
+  renderDirectorEditorShell();
     setDirectorEntryStatusLabel(status || "Incomplete");
   setDirectorPerformanceGradeValue(performanceGrade || entry?.performanceGrade || "");
   setPerformanceGradeError("");
@@ -405,6 +426,7 @@ function applyDirectorEntryUpdate({
 
 function applyDirectorEntryClear({ hint, status, readyStatus } = {}) {
   clearDirectorEntryPanels();
+  renderDirectorEditorShell();
   setDirectorEntryHint(hint || "");
     setDirectorEntryStatusLabel(status || "Incomplete");
   setDirectorReadyControls({ status: readyStatus || "disabled" });
@@ -505,6 +527,7 @@ export function setDirectorSchoolName(name) {
   if (els.directorSummarySchool) {
     els.directorSummarySchool.textContent = name || "";
   }
+  renderDirectorContextPanel();
 }
 
 function setDirectorSchoolLunchTotalText(text) {
@@ -825,6 +848,46 @@ function getSelectedAdminSchool() {
   return state.admin.schoolsList.find((school) => school.id === schoolId) || null;
 }
 
+export async function renderAdminSchoolEnsembleManage() {
+  if (!els.adminSchoolEnsembleManageSelect) return;
+  const schoolId = els.adminSchoolManageSelect?.value || "";
+  const previousValue = els.adminSchoolEnsembleManageSelect.value || "";
+  els.adminSchoolEnsembleManageSelect.innerHTML = "";
+  if (!schoolId) {
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select a school first";
+    els.adminSchoolEnsembleManageSelect.appendChild(placeholder);
+    els.adminSchoolEnsembleManageSelect.disabled = true;
+    if (els.adminSchoolEnsembleDeleteBtn) {
+      els.adminSchoolEnsembleDeleteBtn.disabled = true;
+    }
+    state.admin.schoolManageEnsembles = [];
+    return;
+  }
+  const snap = await getDocs(
+    query(collection(db, COLLECTIONS.schools, schoolId, COLLECTIONS.ensembles), orderBy("name"))
+  );
+  const ensembles = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+  state.admin.schoolManageEnsembles = ensembles;
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = ensembles.length ? "Select an ensemble" : "No ensembles in this school";
+  els.adminSchoolEnsembleManageSelect.appendChild(placeholder);
+  ensembles.forEach((ensemble) => {
+    const option = document.createElement("option");
+    option.value = ensemble.id;
+    option.textContent = ensemble.name || ensemble.id;
+    els.adminSchoolEnsembleManageSelect.appendChild(option);
+  });
+  const nextValue = ensembles.some((ensemble) => ensemble.id === previousValue) ? previousValue : "";
+  els.adminSchoolEnsembleManageSelect.value = nextValue;
+  els.adminSchoolEnsembleManageSelect.disabled = ensembles.length === 0;
+  if (els.adminSchoolEnsembleDeleteBtn) {
+    els.adminSchoolEnsembleDeleteBtn.disabled = !nextValue;
+  }
+}
+
 function getSelectedDirectorForAdmin() {
   const uid = els.directorAssignDirectorSelect?.value || "";
   if (!uid) return null;
@@ -861,6 +924,7 @@ export function renderAdminSchoolsDirectory() {
   if (els.adminSchoolManageDeleteBtn) {
     els.adminSchoolManageDeleteBtn.disabled = !hasSelection;
   }
+  void renderAdminSchoolEnsembleManage();
 }
 
 export function renderDirectorAssignmentsDirectory() {
@@ -1269,8 +1333,10 @@ export function bindAuthHandlers() {
 }
 
 export function updateDirectorAttachUI() {
+  renderDirectorDashboardLayout();
   const isDirector = isDirectorManager();
   const isDirectorOnly = state.auth.userProfile?.role === "director";
+  const isAdminDirector = isDirector && !isDirectorOnly;
   const hasSchool = Boolean(getDirectorSchoolId());
   const view = state.director.view; // "landing" | "registration" | "registered" | "dayOfForms"
 
@@ -1321,7 +1387,13 @@ export function updateDirectorAttachUI() {
       isDirector && hasSchool && view === "dayOfForms" ? "grid" : "none";
   }
   if (els.directorProfileToggleBtn) {
-    els.directorProfileToggleBtn.style.display = isDirectorOnly ? "inline-flex" : "none";
+    els.directorProfileToggleBtn.style.display = isDirector ? "inline-flex" : "none";
+  }
+  if (els.directorDetachBtn && isAdminDirector) {
+    const hasOverride = Boolean(state.director.adminViewSchoolId);
+    els.directorDetachBtn.textContent = hasOverride ? "Use Primary School" : "Change School";
+  } else if (els.directorDetachBtn) {
+    els.directorDetachBtn.textContent = "Change School";
   }
   if (isDirector && hasSchool && view === "registration") {
     renderDirectorRegistrationPanel();
@@ -1329,11 +1401,28 @@ export function updateDirectorAttachUI() {
   if (isDirector && hasSchool && view === "registered") {
     renderDirectorPostRegistration();
   }
+  renderDirectorContextPanel();
+  renderDirectorEditorShell();
 }
 
 export function confirmDiscardUnsaved() {
   if (!hasUnsavedChanges()) return true;
   return confirmUser("You have unsaved changes. Leave anyway?");
+}
+
+function renderDirectorDashboardLayout() {
+  const render = getDirectorDashboardRenderer();
+  render?.();
+}
+
+function renderDirectorContextPanel() {
+  const render = getDirectorContextPanelRenderer();
+  render?.();
+}
+
+function renderDirectorEditorShell() {
+  const render = getDirectorEditorShellRenderer();
+  render?.();
 }
 
 let preEventGuidedFlowInFlight = false;
@@ -1345,6 +1434,9 @@ let authHandlerBinder = null;
 let adminHandlerBinder = null;
 let adminMockPacketPreviewRenderer = null;
 let directorEntryFormRenderers = null;
+let directorDashboardRenderer = null;
+let directorContextPanelRenderer = null;
+let directorEditorShellRenderer = null;
 let judgeOpenRenderers = null;
 let judgeOpenHandlerBinder = null;
 let judgeOpenCore = null;
@@ -1441,6 +1533,7 @@ function getAdminHandlerBinder() {
     getSelectedAdminSchool,
     startAdminSchoolEdit,
     deleteSchool,
+    deleteEnsemble,
     bulkImportSchools,
     provisionUser,
     renderDirectorAssignmentsDirectory,
@@ -1448,6 +1541,7 @@ function getAdminHandlerBinder() {
     assignDirectorSchool,
     getSchoolNameById,
     unassignDirectorSchool,
+    renderAdminSchoolEnsembleManage,
   });
   return adminHandlerBinder;
 }
@@ -1461,19 +1555,30 @@ function getAdminRenderers() {
     COLLECTIONS,
     collection,
     getDocs,
+    query,
+    where,
     fetchRegisteredEnsembles,
     fetchScheduleEntries,
     getSchoolNameById,
     normalizeEnsembleDisplayName,
     toLocalDatetimeValue,
+    deriveAutoScheduleDayBreaks,
+    mergeScheduleDayBreaks,
     formatPerformanceAt,
     getPacketData,
     releasePacket,
     unreleasePacket,
+    lockOpenPacket,
+    unlockOpenPacket,
+    releaseOpenPacket,
+    unreleaseOpenPacket,
+    renderSubmissionCard,
     loadAdminPacketView,
     alertUser,
     createScheduleEntry,
+    deleteScheduleEntry,
     updateScheduleEntryTime,
+    computeScheduleTimeline,
     formatAdminDayOfReadOnly,
     openDirectorDayOfFromAdmin,
     closeAdminSchoolDetail,
@@ -1683,6 +1788,24 @@ function getDirectorEnsembleRenderer() {
     handleDirectorEnsembleSelection,
   });
   return directorEnsembleRenderer;
+}
+
+function getDirectorDashboardRenderer() {
+  if (directorDashboardRenderer) return directorDashboardRenderer;
+  directorDashboardRenderer = createDirectorDashboardRenderer({ els, state });
+  return directorDashboardRenderer;
+}
+
+function getDirectorContextPanelRenderer() {
+  if (directorContextPanelRenderer) return directorContextPanelRenderer;
+  directorContextPanelRenderer = createDirectorContextPanelRenderer({ els, state });
+  return directorContextPanelRenderer;
+}
+
+function getDirectorEditorShellRenderer() {
+  if (directorEditorShellRenderer) return directorEditorShellRenderer;
+  directorEditorShellRenderer = createDirectorEditorShellRenderer({ els, state });
+  return directorEditorShellRenderer;
 }
 
 function getDirectorHandlerBinder() {
@@ -1922,16 +2045,54 @@ export function setTab(tabName, { force } = {}) {
   return result;
 }
 
-function renderEventScheduleDetail(event) {
+const EVENT_DETAIL_VIEW_MODE = {
+  admin: "admin",
+  directorSchedule: "directorSchedule",
+};
+
+let eventDetailRenderVersion = 0;
+
+function getEventDetailViewMode(rawMode) {
+  return rawMode === EVENT_DETAIL_VIEW_MODE.directorSchedule
+    ? EVENT_DETAIL_VIEW_MODE.directorSchedule
+    : EVENT_DETAIL_VIEW_MODE.admin;
+}
+
+function resetEventScheduleDetailPanels() {
+  if (els.eventScheduleStatus) {
+    els.eventScheduleStatus.textContent = "";
+  }
+  if (els.eventScheduleDirectorWrap) {
+    els.eventScheduleDirectorWrap.classList.add("is-hidden");
+  }
+  if (els.eventScheduleDirectorHint) {
+    els.eventScheduleDirectorHint.textContent = "";
+  }
+  if (els.eventScheduleDirectorTableWrap) {
+    els.eventScheduleDirectorTableWrap.innerHTML = "";
+  }
+  if (els.eventScheduleLinkRow) {
+    els.eventScheduleLinkRow.style.display = "none";
+  }
+  if (els.eventScheduleFrame) {
+    els.eventScheduleFrame.removeAttribute("src");
+    els.eventScheduleFrame.style.display = "none";
+  }
+  if (els.eventScheduleEmpty) {
+    els.eventScheduleEmpty.style.display = "none";
+  }
+}
+
+function renderEventScheduleAdminDetail(event) {
   const isAdmin = getEffectiveRole(state.auth.userProfile) === "admin";
   const pdfUrl = event?.schedulePdfUrl || "";
   const pdfName = event?.schedulePdfName || "Schedule PDF";
 
+  if (els.eventScheduleDirectorWrap) {
+    els.eventScheduleDirectorWrap.classList.add("is-hidden");
+  }
   if (els.eventScheduleAdminControls) {
     els.eventScheduleAdminControls.style.display = isAdmin ? "flex" : "none";
-  }
-  if (els.eventScheduleStatus) {
-    els.eventScheduleStatus.textContent = "";
   }
   if (els.eventScheduleLinkRow) {
     els.eventScheduleLinkRow.style.display = pdfUrl ? "flex" : "none";
@@ -1952,6 +2113,166 @@ function renderEventScheduleDetail(event) {
   if (els.eventScheduleEmpty) {
     els.eventScheduleEmpty.style.display = pdfUrl ? "none" : "block";
   }
+}
+
+async function renderEventScheduleDirectorDetail(event, eventId, renderVersion) {
+  if (els.eventScheduleAdminControls) {
+    els.eventScheduleAdminControls.style.display = "none";
+  }
+  if (els.eventScheduleDirectorWrap) {
+    els.eventScheduleDirectorWrap.classList.remove("is-hidden");
+  }
+  if (els.eventScheduleStatus) {
+    els.eventScheduleStatus.textContent = "Loading schedule times...";
+  }
+  const schoolId = getDirectorSchoolId();
+  if (!schoolId) {
+    if (els.eventScheduleStatus) {
+      els.eventScheduleStatus.textContent = "Attach or select a school to view schedule times.";
+    }
+    return;
+  }
+
+  const [scheduleEntries, registeredEntries] = await Promise.all([
+    fetchScheduleEntries(eventId, schoolId),
+    fetchRegisteredEnsembles(eventId, schoolId),
+  ]);
+  if (renderVersion !== eventDetailRenderVersion) return;
+
+  const schoolName = getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
+  const regByEnsembleId = new Map(
+    (registeredEntries || []).map((entry) => [entry.ensembleId || entry.id, entry])
+  );
+  const sortedSchedule = [...(scheduleEntries || [])].sort((a, b) => {
+    const aTime = a.performanceAt?.toDate
+      ? a.performanceAt.toDate().getTime()
+      : new Date(a.performanceAt || 0).getTime();
+    const bTime = b.performanceAt?.toDate
+      ? b.performanceAt.toDate().getTime()
+      : new Date(b.performanceAt || 0).getTime();
+    return aTime - bTime;
+  });
+  const autoDayBreaks = deriveAutoScheduleDayBreaks(sortedSchedule);
+  const dayBreaks = mergeScheduleDayBreaks(event?.scheduleDayBreaks || {}, autoDayBreaks);
+  const firstPerf = sortedSchedule[0]?.performanceAt;
+  if (!firstPerf) {
+    if (els.eventScheduleStatus) {
+      els.eventScheduleStatus.textContent = "No scheduled ensembles for this event.";
+    }
+    if (els.eventScheduleDirectorTableWrap) {
+      els.eventScheduleDirectorTableWrap.innerHTML = "";
+    }
+    return;
+  }
+  const getGrade = (row) => {
+    const reg = regByEnsembleId.get(row.ensembleId || row.id) || {};
+    return reg.declaredGradeLevel || reg.performanceGrade || null;
+  };
+  const timeline = computeScheduleTimeline(
+    firstPerf,
+    sortedSchedule,
+    Array.isArray(event?.scheduleBreaks) ? event.scheduleBreaks : [],
+    getGrade,
+    dayBreaks
+  );
+  const timelineByEntryId = new Map(timeline.map((row) => [row.entryId, row]));
+  const rows = sortedSchedule
+    .filter((row) => row.schoolId === schoolId)
+    .map((row) => {
+      const slot = timelineByEntryId.get(row.id);
+      if (!slot) return null;
+      const ensembleId = row.ensembleId || row.id || "";
+      const reg = regByEnsembleId.get(ensembleId) || {};
+      const ensembleName =
+        normalizeEnsembleDisplayName({
+          schoolName,
+          ensembleName: row.ensembleName || reg.ensembleName || "",
+          ensembleId,
+        }) || ensembleId || "Ensemble";
+      return {
+        ensembleName,
+        grade: slot.grade || "—",
+        holdingStart: slot.holdingStart,
+        warmUpStart: slot.warmUpStart,
+        performStart: slot.performStart,
+        sightStart: slot.sightStart,
+      };
+    })
+    .filter(Boolean);
+
+  if (els.eventScheduleDirectorHint) {
+    els.eventScheduleDirectorHint.textContent = `${schoolName} start times from the active event schedule.`;
+  }
+
+  if (!rows.length) {
+    if (els.eventScheduleStatus) {
+      els.eventScheduleStatus.textContent = "No scheduled ensembles for your school in this event.";
+    }
+    if (els.eventScheduleDirectorTableWrap) {
+      els.eventScheduleDirectorTableWrap.innerHTML = "";
+    }
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "schedule-timeline-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Ensemble</th>
+        <th>Grade</th>
+        <th>Holding</th>
+        <th>Warm-up</th>
+        <th>Performance</th>
+        <th>Sightreading</th>
+      </tr>
+    </thead>
+  `;
+  const tbody = document.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(row.ensembleName)}</td>
+      <td>${escapeHtml(row.grade)}</td>
+      <td>${escapeHtml(formatStartTime(row.holdingStart))}</td>
+      <td>${escapeHtml(formatStartTime(row.warmUpStart))}</td>
+      <td>${escapeHtml(formatStartTime(row.performStart))}</td>
+      <td>${escapeHtml(formatStartTime(row.sightStart))}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  if (els.eventScheduleDirectorTableWrap) {
+    els.eventScheduleDirectorTableWrap.innerHTML = "";
+    els.eventScheduleDirectorTableWrap.appendChild(table);
+  }
+  if (els.eventScheduleStatus) {
+    els.eventScheduleStatus.textContent = `Loaded ${rows.length} scheduled ensemble${rows.length === 1 ? "" : "s"}.`;
+  }
+}
+
+async function renderEventScheduleDetail(event, eventId, viewMode = EVENT_DETAIL_VIEW_MODE.admin) {
+  resetEventScheduleDetailPanels();
+  const nextMode = getEventDetailViewMode(viewMode);
+  if (nextMode === EVENT_DETAIL_VIEW_MODE.directorSchedule) {
+    try {
+      await renderEventScheduleDirectorDetail(event, eventId, eventDetailRenderVersion);
+    } catch (error) {
+      console.error("Failed to render director schedule view", error);
+      if (els.eventScheduleStatus) {
+        const code = String(error?.code || "").toLowerCase();
+        if (code.includes("permission-denied")) {
+          els.eventScheduleStatus.textContent =
+            "Schedule access is denied. Confirm this director account is attached to the same school.";
+        } else {
+          const message = error?.message || error?.code || "Unable to load schedule times.";
+          els.eventScheduleStatus.textContent = String(message);
+        }
+      }
+    }
+    return;
+  }
+  renderEventScheduleAdminDetail(event);
 }
 
 async function uploadEventSchedulePdf(eventId, file) {
@@ -1989,17 +2310,28 @@ async function uploadEventSchedulePdf(eventId, file) {
   return { url, objectPath };
 }
 
-export function showEventDetail(eventId) {
+export function showEventDetail(eventId, viewMode = EVENT_DETAIL_VIEW_MODE.admin) {
   if (!els.eventDetailPage) return;
   const event = state.event.list.find((item) => item.id === eventId);
+  const nextMode = getEventDetailViewMode(viewMode);
+  eventDetailRenderVersion += 1;
   els.eventDetailPage.dataset.eventId = eventId || "";
+  els.eventDetailPage.dataset.viewMode = nextMode;
   if (els.eventDetailTitle) {
-    els.eventDetailTitle.textContent = event?.name || "Event Details";
+    els.eventDetailTitle.textContent =
+      nextMode === EVENT_DETAIL_VIEW_MODE.directorSchedule
+        ? `${event?.name || "Event"} Schedule`
+        : event?.name || "Event Details";
   }
   if (els.eventDetailMeta) {
-    els.eventDetailMeta.textContent = event ? getEventLabel(event) : "Event not found.";
+    els.eventDetailMeta.textContent =
+      nextMode === EVENT_DETAIL_VIEW_MODE.directorSchedule
+        ? "Holding, Warm-up, Performance, and Sightreading start times for your school."
+        : event
+          ? getEventLabel(event)
+          : "Event not found.";
   }
-  renderEventScheduleDetail(event);
+  void renderEventScheduleDetail(event, eventId, nextMode);
   els.eventDetailPage.classList.remove("is-hidden");
   if (els.adminCard) els.adminCard.style.display = "none";
   if (els.directorCard) els.directorCard.style.display = "none";
@@ -2012,14 +2344,14 @@ export function hideEventDetail() {
   if (els.judgeOpenCard) els.judgeOpenCard.style.display = "";
   if (els.directorCard) els.directorCard.style.display = "";
   if (state.app.currentTab) {
-    updateTabUI(state.app.currentTab, state.auth.userProfile?.role || null);
+    updateTabUI(state.app.currentTab, getEffectiveRole(state.auth.userProfile));
   }
 }
 
 export function handleHashChange() {
   const action = resolveHash(window.location.hash || "");
   if (action.type === "event") {
-    showEventDetail(action.eventId);
+    showEventDetail(action.eventId, action.viewMode);
     return;
   }
   if (action.type === "tab") {
@@ -2028,7 +2360,7 @@ export function handleHashChange() {
       hideEventDetail();
       return;
     }
-    const role = state.auth.userProfile?.role || null;
+    const role = getEffectiveRole(state.auth.userProfile);
     if (role && !isTabAllowed(action.tab, role)) {
       const fallback = getDefaultTabForRole(role);
       if (fallback) {
@@ -2267,8 +2599,9 @@ export function startWatchers() {
     renderDirectorEventOptions();
     if (els.eventDetailPage && !els.eventDetailPage.classList.contains("is-hidden")) {
       const detailEventId = els.eventDetailPage.dataset.eventId || "";
+      const detailViewMode = getEventDetailViewMode(els.eventDetailPage.dataset.viewMode || "");
       if (detailEventId) {
-        showEventDetail(detailEventId);
+        showEventDetail(detailEventId, detailViewMode);
       }
     }
   });
@@ -2504,7 +2837,7 @@ export function renderEventList() {
     detailBtn.className = "ghost";
     detailBtn.textContent = "View Details";
     detailBtn.addEventListener("click", () => {
-      window.location.hash = `#event/${event.id}`;
+      window.location.hash = `#event/${event.id}/admin`;
     });
 
     const editBtn = document.createElement("button");
@@ -2716,7 +3049,9 @@ export function renderDirectorEventOptions() {
 }
 
 export function updateDirectorEventMeta() {
-  return getDirectorEventRenderers().updateDirectorEventMeta();
+  const result = getDirectorEventRenderers().updateDirectorEventMeta();
+  renderDirectorContextPanel();
+  return result;
 }
 
 export async function checkDirectorHasRegistrationForEvent(eventId) {
@@ -3021,14 +3356,13 @@ export async function renderPreEventGuidedFlow() {
 }
 
 export function updateDirectorActiveEnsembleLabel() {
-  if (!els.directorActiveEnsemblePill) return;
   if (!state.director.selectedEnsembleId && state.director.ensemblesCache.length) {
     state.director.selectedEnsembleId = state.director.ensemblesCache[0].id;
   }
   const active = state.director.ensemblesCache.find(
     (ensemble) => ensemble.id === state.director.selectedEnsembleId
   );
-  if (active?.name) {
+  if (active?.name && els.directorActiveEnsemblePill) {
     if (els.directorActiveEnsemblePill) {
       els.directorActiveEnsemblePill.textContent = active.name;
       els.directorActiveEnsemblePill.classList.remove("is-hidden");
@@ -3036,7 +3370,7 @@ export function updateDirectorActiveEnsembleLabel() {
     if (els.directorEditActiveEnsembleBtn) {
       els.directorEditActiveEnsembleBtn.classList.remove("is-hidden");
     }
-  } else {
+  } else if (els.directorActiveEnsemblePill) {
     if (els.directorActiveEnsemblePill) {
       els.directorActiveEnsemblePill.textContent = "None selected";
       els.directorActiveEnsemblePill.classList.add("is-hidden");
@@ -3044,6 +3378,9 @@ export function updateDirectorActiveEnsembleLabel() {
     if (els.directorEditActiveEnsembleBtn) {
       els.directorEditActiveEnsembleBtn.classList.add("is-hidden");
     }
+  }
+  if (els.directorEditorActiveEnsembleLabel) {
+    els.directorEditorActiveEnsembleLabel.textContent = active?.name || "No active ensemble selected";
   }
 }
 
@@ -3182,11 +3519,17 @@ async function refreshPreEventScheduleTimelineStarts(entries = state.event.roste
   if (!eventId) {
     els.preEventScheduleTimelineMessage.textContent = "Set an active event to view timeline starts.";
     els.preEventScheduleTimelineContainer.innerHTML = "";
+    if (els.preEventBreakList) els.preEventBreakList.innerHTML = "";
+    if (els.preEventBreakStatus) els.preEventBreakStatus.textContent = "";
+    if (els.preEventBreakAddBtn) els.preEventBreakAddBtn.disabled = true;
     return;
   }
   if (!entries.length) {
     els.preEventScheduleTimelineMessage.textContent = "No scheduled ensembles yet.";
     els.preEventScheduleTimelineContainer.innerHTML = "";
+    if (els.preEventBreakList) els.preEventBreakList.innerHTML = "";
+    if (els.preEventBreakStatus) els.preEventBreakStatus.textContent = "";
+    if (els.preEventBreakAddBtn) els.preEventBreakAddBtn.disabled = true;
     return;
   }
 
@@ -3195,6 +3538,8 @@ async function refreshPreEventScheduleTimelineStarts(entries = state.event.roste
     const bTime = b.performanceAt?.toMillis ? b.performanceAt.toMillis() : new Date(b.performanceAt || 0).getTime();
     return aTime - bTime;
   });
+  const autoDayBreaks = deriveAutoScheduleDayBreaks(sorted);
+  const dayBreaks = mergeScheduleDayBreaks(state.event.active?.scheduleDayBreaks || {}, autoDayBreaks);
 
   const gradeMap = new Map();
   await Promise.all(
@@ -3203,6 +3548,136 @@ async function refreshPreEventScheduleTimelineStarts(entries = state.event.roste
       gradeMap.set(entry.ensembleId, grade || null);
     })
   );
+  const firstPerf = sorted[0]?.performanceAt;
+  const getGrade = (entry) => gradeMap.get(entry.ensembleId) || null;
+  const timeline = computeScheduleTimeline(
+    firstPerf,
+    sorted,
+    Array.isArray(state.event.active?.scheduleBreaks) ? state.event.active.scheduleBreaks : [],
+    getGrade,
+    dayBreaks
+  );
+  const timelineByEntryId = new Map(timeline.map((row) => [row.entryId, row]));
+  const breakSet = new Set(
+    Array.isArray(state.event.active?.scheduleBreaks) ? state.event.active.scheduleBreaks : []
+  );
+
+  const renderBreakControls = () => {
+    if (!els.preEventBreakList || !els.preEventBreakAddBtn || !els.preEventBreakAtInput) return;
+    const boundaries = [];
+    for (let i = 0; i < sorted.length - 1; i += 1) {
+      const currentEntry = sorted[i];
+      const nextEntry = sorted[i + 1];
+      const currentSlot = timelineByEntryId.get(currentEntry.id);
+      if (!currentSlot) continue;
+      const boundaryTime = currentSlot.sightStart;
+      const nextSchoolName =
+        nextEntry.schoolName ||
+        getSchoolNameById(state.admin.schoolsList, nextEntry.schoolId) ||
+        nextEntry.schoolId ||
+        "—";
+      const nextEnsemble = normalizeEnsembleNameForSchool({
+        schoolName: nextSchoolName,
+        ensembleName: nextEntry.ensembleName || nextEntry.ensembleId || "—",
+      });
+      boundaries.push({
+        afterEntryId: currentEntry.id,
+        boundaryTime,
+        nextLabel: `${nextSchoolName} ${nextEnsemble}`.trim(),
+      });
+    }
+
+    const formatBoundary = (item) =>
+      `${formatStartTime(item.boundaryTime)} - before ${item.nextLabel}`;
+
+    if (!boundaries.length) {
+      els.preEventBreakList.innerHTML = "<div class='hint'>Breaks become available once at least two ensembles are scheduled.</div>";
+      els.preEventBreakAddBtn.disabled = true;
+      return;
+    }
+    els.preEventBreakAddBtn.disabled = false;
+    if (!els.preEventBreakAtInput.value) {
+      els.preEventBreakAtInput.value = toLocalDatetimeValue(boundaries[0].boundaryTime);
+    }
+
+    const applied = boundaries.filter((item) => breakSet.has(item.afterEntryId));
+    if (!applied.length) {
+      els.preEventBreakList.innerHTML = "<div class='hint'>No breaks added yet.</div>";
+    } else {
+      const wrap = document.createElement("div");
+      wrap.className = "stack";
+      applied.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "row row--between";
+        const label = document.createElement("span");
+        label.className = "note";
+        label.textContent = formatBoundary(item);
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "ghost";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", async () => {
+          removeBtn.disabled = true;
+          const next = Array.from(breakSet).filter((id) => id !== item.afterEntryId);
+          await updateEventSchedulerFields({ eventId, scheduleBreaks: next });
+          if (state.event.active?.id === eventId) {
+            state.event.active = { ...state.event.active, scheduleBreaks: next };
+          }
+          if (els.preEventBreakStatus) {
+            els.preEventBreakStatus.textContent = `Removed break at ${formatStartTime(item.boundaryTime)}.`;
+          }
+          await refreshPreEventScheduleTimelineStarts(state.event.rosterEntries || []);
+        });
+        row.appendChild(label);
+        row.appendChild(removeBtn);
+        wrap.appendChild(row);
+      });
+      els.preEventBreakList.innerHTML = "";
+      els.preEventBreakList.appendChild(wrap);
+    }
+
+    els.preEventBreakAddBtn.onclick = async () => {
+      const raw = els.preEventBreakAtInput.value;
+      const target = raw ? new Date(raw) : null;
+      if (!target || Number.isNaN(target.getTime())) {
+        if (els.preEventBreakStatus) {
+          els.preEventBreakStatus.textContent = "Enter a valid break time.";
+        }
+        return;
+      }
+      const match = boundaries.find((item) => item.boundaryTime.getTime() >= target.getTime());
+      if (!match) {
+        if (els.preEventBreakStatus) {
+          els.preEventBreakStatus.textContent =
+            "No valid break point at or after that time.";
+        }
+        return;
+      }
+      if (breakSet.has(match.afterEntryId)) {
+        if (els.preEventBreakStatus) {
+          els.preEventBreakStatus.textContent =
+            `Break already exists at ${formatStartTime(match.boundaryTime)}.`;
+        }
+        return;
+      }
+      els.preEventBreakAddBtn.disabled = true;
+      try {
+        const next = [...Array.from(breakSet), match.afterEntryId];
+        await updateEventSchedulerFields({ eventId, scheduleBreaks: next });
+        if (state.event.active?.id === eventId) {
+          state.event.active = { ...state.event.active, scheduleBreaks: next };
+        }
+        if (els.preEventBreakStatus) {
+          els.preEventBreakStatus.textContent =
+            `Added 30-min break at ${formatStartTime(match.boundaryTime)} (snapped).`;
+        }
+        await refreshPreEventScheduleTimelineStarts(state.event.rosterEntries || []);
+      } finally {
+        els.preEventBreakAddBtn.disabled = false;
+      }
+    };
+  };
+  renderBreakControls();
 
   els.preEventScheduleTimelineMessage.textContent = "";
   els.preEventScheduleTimelineContainer.innerHTML = "";
@@ -3216,15 +3691,9 @@ async function refreshPreEventScheduleTimelineStarts(entries = state.event.roste
   const tbody = document.createElement("tbody");
 
   sorted.forEach((entry) => {
-    const performStart = entry.performanceAt?.toDate
-      ? entry.performanceAt.toDate()
-      : new Date(entry.performanceAt || "");
-    if (Number.isNaN(performStart.getTime())) return;
-    const grade = gradeMap.get(entry.ensembleId) || null;
-    const slotMins = getSlotMinutesForGrade(grade);
-    const warmUpStart = new Date(performStart.getTime() - 2 * slotMins * 60 * 1000);
-    const holdingStart = new Date(performStart.getTime() - 3 * slotMins * 60 * 1000);
-    const sightStart = new Date(performStart.getTime() + slotMins * 60 * 1000);
+    const slot = timelineByEntryId.get(entry.id);
+    if (!slot) return;
+    const grade = slot.grade || null;
     const schoolName =
       entry.schoolName ||
       getSchoolNameById(state.admin.schoolsList, entry.schoolId) ||
@@ -3241,10 +3710,10 @@ async function refreshPreEventScheduleTimelineStarts(entries = state.event.roste
       <td>${escapeHtml(schoolName)}</td>
       <td>${escapeHtml(ensembleName)}</td>
       <td>${escapeHtml(grade || "—")}</td>
-      <td>${escapeHtml(formatStartTime(holdingStart))}</td>
-      <td>${escapeHtml(formatStartTime(warmUpStart))}</td>
-      <td>${escapeHtml(formatStartTime(performStart))}</td>
-      <td>${escapeHtml(formatStartTime(sightStart))}</td>
+      <td>${escapeHtml(formatStartTime(slot.holdingStart))}</td>
+      <td>${escapeHtml(formatStartTime(slot.warmUpStart))}</td>
+      <td>${escapeHtml(formatStartTime(slot.performStart))}</td>
+      <td>${escapeHtml(formatStartTime(slot.sightStart))}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -3323,7 +3792,8 @@ export async function refreshSchedulerTimeline(override) {
   );
   const getGrade = (entry) => gradeMap.get(entry.ensembleId) ?? null;
   const breakSet = new Set(scheduleBreaks);
-  const dayBreaks = event?.scheduleDayBreaks || {};
+  const autoDayBreaks = deriveAutoScheduleDayBreaks(roster);
+  const dayBreaks = mergeScheduleDayBreaks(event?.scheduleDayBreaks || {}, autoDayBreaks);
   const timeline = computeScheduleTimeline(firstPerformanceAt, roster, breakSet, getGrade, dayBreaks);
 
   els.adminSchedulerTimelineContainer.innerHTML = "";
@@ -3527,7 +3997,7 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
   header.className = "row";
   const badge = document.createElement("span");
   badge.className = "badge";
-  badge.textContent = JUDGE_POSITION_LABELS[position];
+  badge.textContent = JUDGE_POSITION_LABELS[position] || "Open";
   const status = document.createElement("span");
   status.className = "note";
   status.textContent = `Status: ${submission.status || "unknown"}`;

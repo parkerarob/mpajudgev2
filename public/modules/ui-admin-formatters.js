@@ -44,6 +44,63 @@ export function formatStartTime(dateLike) {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+function toDateSafe(value) {
+  if (!value) return null;
+  if (value?.toDate) {
+    const d = value.toDate();
+    return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function dayKeyLocal(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Build automatic day anchors from sorted schedule rows so each day's first
+ * performance stays fixed to its saved performanceAt.
+ * @param {Array<{id:string, performanceAt:any}>} sortedScheduleRows
+ * @returns {Object<string, Date>}
+ */
+export function deriveAutoScheduleDayBreaks(sortedScheduleRows = []) {
+  const merged = {};
+  if (!Array.isArray(sortedScheduleRows) || sortedScheduleRows.length < 2) return merged;
+  let prevKey = null;
+  let prevId = null;
+  sortedScheduleRows.forEach((row) => {
+    const date = toDateSafe(row?.performanceAt);
+    if (!date || !row?.id) return;
+    const key = dayKeyLocal(date);
+    if (prevKey !== null && key !== prevKey && prevId) {
+      merged[prevId] = new Date(date.getTime());
+    }
+    prevKey = key;
+    prevId = row.id;
+  });
+  return merged;
+}
+
+/**
+ * Explicit persisted day breaks win; auto-derived fills missing boundaries.
+ * @param {Object<string, any>} explicitDayBreaks
+ * @param {Object<string, Date>} autoDayBreaks
+ * @returns {Object<string, any>}
+ */
+export function mergeScheduleDayBreaks(explicitDayBreaks = {}, autoDayBreaks = {}) {
+  return {
+    ...(autoDayBreaks && typeof autoDayBreaks === "object" ? autoDayBreaks : {}),
+    ...(explicitDayBreaks && typeof explicitDayBreaks === "object" ? explicitDayBreaks : {}),
+  };
+}
+
 export function getEntryLunchRequestCount(entry = {}) {
   const lunchOrder = entry?.lunchOrder || {};
   const cheese = Number(lunchOrder.cheeseQty) || 0;

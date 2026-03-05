@@ -724,6 +724,17 @@ button.ghost:focus-visible {
   color: var(--text);
 }
 
+button.ghost.danger {
+  border-color: rgba(248, 113, 113, 0.6);
+  color: #fca5a5;
+}
+
+button.ghost.danger:hover,
+button.ghost.danger:focus-visible {
+  border-color: rgba(248, 113, 113, 0.85);
+  color: #fecaca;
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -1066,6 +1077,12 @@ body.director-only #tabLockHint {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 10px;
+}
+
+.ensemble-row.is-active {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent) 12%);
 }
 
 .ensemble-name {
@@ -2053,7 +2070,160 @@ select:focus-visible {
   box-shadow: none;
 }
 
+#directorCard.director-dashboard-v2 .ios-screen {
+  display: grid;
+  gap: 18px;
+}
+
+#directorCard .director-context-panel {
+  border: 1px solid var(--border);
+  background: linear-gradient(160deg, rgba(24, 28, 44, 0.9), rgba(13, 17, 30, 0.92));
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.director-dashboard-header h3 {
+  margin: 0 0 6px;
+  letter-spacing: 0.01em;
+}
+
+.director-dashboard-header .note {
+  margin-bottom: 10px;
+}
+
+#directorCard .director-ensemble-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(18, 22, 36, 0.7);
+}
+
+.director-ensemble-list-table {
+  margin-top: 10px;
+}
+
+.director-ensemble-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(12, 16, 28, 0.78);
+}
+
+.director-ensemble-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 560px;
+}
+
+.director-ensemble-table thead th {
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.director-ensemble-table th,
+.director-ensemble-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.director-ensemble-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.director-ensemble-table tr.is-active {
+  background: rgba(63, 121, 231, 0.12);
+}
+
+.director-ensemble-table td.is-active {
+  font-weight: 700;
+}
+
+.director-ensemble-table .row {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.director-ensemble-table td .ghost,
+.director-ensemble-table td button {
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+#directorCard #directorRegistrationPanel,
+#directorCard #directorPostRegistration,
+#directorCard #directorDayOfFormsBlock {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(18, 22, 36, 0.66);
+}
+
+#directorCard #directorEntryPanel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(10, 14, 26, 0.72);
+}
+
+#directorCard #directorEditorActiveEnsembleLabel {
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: -2px;
+}
+
+#directorCard #directorDayOfFormsBlock > .row {
+  gap: 8px;
+  align-items: end;
+}
+
+#directorCard #directorEventSelectBlock .row {
+  gap: 8px;
+}
+
+@media (min-width: 980px) {
+  #directorCard.director-dashboard-v2 .ios-screen {
+    grid-template-columns: minmax(260px, 0.9fr) minmax(420px, 1.6fr);
+    align-items: start;
+  }
+
+  #directorCard.director-dashboard-v2 #directorSummary {
+    grid-column: 1 / 2;
+  }
+
+  #directorCard.director-dashboard-v2 #directorEnsemblesSection {
+    grid-column: 2 / 3;
+    margin-top: 0;
+  }
+
+  #directorCard.director-dashboard-v2 #directorRegistrationPanel,
+  #directorCard.director-dashboard-v2 #directorPostRegistration,
+  #directorCard.director-dashboard-v2 #directorDayOfFormsBlock {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 768px) {
+  #directorCard #directorRegistrationPanel,
+  #directorCard #directorPostRegistration,
+  #directorCard #directorDayOfFormsBlock,
+  #directorCard #directorEntryPanel,
+  #directorCard .director-context-panel,
+  #directorCard .director-ensemble-panel {
+    padding: 12px;
+    border-radius: 10px;
+  }
+
+  .director-ensemble-table {
+    min-width: 500px;
+  }
+
   body {
     padding: 0;
     justify-content: stretch;

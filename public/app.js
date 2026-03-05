@@ -245,9 +245,27 @@ onAuthStateChanged(auth, async (user) => {
     setMainInteractionDisabled(false);
     if (state.auth.userProfile) {
       const roles = state.auth.userProfile.roles || {};
+      const rawRole = String(state.auth.userProfile.role || "").trim();
+      const normalizedRole = (() => {
+        if (!rawRole) return "";
+        const lower = rawRole.toLowerCase();
+        if (lower === "admin") return "admin";
+        if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") return "teamLead";
+        if (lower === "director") return "director";
+        if (lower === "judge") return "judge";
+        return "";
+      })();
       const role =
-        state.auth.userProfile.role ||
-        (roles.admin ? "admin" : roles.director ? "director" : roles.judge ? "judge" : null);
+        normalizedRole ||
+        (roles.admin
+          ? "admin"
+          : roles.teamLead
+            ? "teamLead"
+            : roles.director
+              ? "director"
+              : roles.judge
+                ? "judge"
+                : null);
       const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
       const preferJudgeOpen = judgeEnabled && roles.judge === true && role !== "admin";
       const path = window.location.pathname || "";
@@ -265,6 +283,11 @@ onAuthStateChanged(auth, async (user) => {
           window.location.hash = "#judge-open";
         }
       } else if (role === "admin") {
+        setTab("admin");
+        if (window.location.hash !== "#admin") {
+          window.location.hash = "#admin";
+        }
+      } else if (role === "teamLead") {
         setTab("admin");
         if (window.location.hash !== "#admin") {
           window.location.hash = "#admin";

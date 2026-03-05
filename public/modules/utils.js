@@ -103,6 +103,41 @@ export function normalizeGrade(value) {
   return null;
 }
 
+function normalizeGradeToken(token) {
+  return normalizeGrade(String(token || "").trim());
+}
+
+/**
+ * Normalize a grade value that may be a single level (e.g. "III")
+ * or adjacent range (e.g. "II/III", "2/3", "II-III").
+ *
+ * Returns canonical Roman form ("III" or "II/III") or null.
+ */
+export function normalizeGradeBand(value) {
+  if (!value) return null;
+  const text = String(value)
+    .trim()
+    .toUpperCase()
+    .replace(/[–—-]+/g, "/")
+    .replace(/\s+/g, "");
+  if (!text) return null;
+  if (!text.includes("/")) {
+    return normalizeGradeToken(text);
+  }
+  const parts = text.split("/").filter(Boolean);
+  if (parts.length !== 2) return null;
+  const left = normalizeGradeToken(parts[0]);
+  const right = normalizeGradeToken(parts[1]);
+  if (!left || !right) return null;
+  const leftLevel = romanToLevel(left);
+  const rightLevel = romanToLevel(right);
+  if (!leftLevel || !rightLevel) return null;
+  const min = Math.min(leftLevel, rightLevel);
+  const max = Math.max(leftLevel, rightLevel);
+  if (max - min !== 1) return null;
+  return `${levelToRoman(min)}/${levelToRoman(max)}`;
+}
+
 export function mapOverallLabelFromTotal(total) {
   if (total >= 4 && total <= 6) return "I";
   if (total >= 7 && total <= 10) return "II";

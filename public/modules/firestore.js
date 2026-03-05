@@ -20,7 +20,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { db } from "../firebase.js";
 import { COLLECTIONS, JUDGE_POSITIONS } from "../state.js";
-import { normalizeGrade } from "./utils.js";
+import { normalizeGradeBand } from "./utils.js";
 
 export {
   doc,
@@ -55,15 +55,15 @@ export async function fetchEnsembleGrade(eventId, ensembleId) {
     const entrySnap = await getDoc(entryRef);
     if (entrySnap.exists()) {
       const data = entrySnap.data();
-      const declared = normalizeGrade(data.declaredGradeLevel);
-      const fromRepertoire = normalizeGrade(data.performanceGrade);
+      const declared = normalizeGradeBand(data.declaredGradeLevel);
+      const fromRepertoire = normalizeGradeBand(data.performanceGrade);
       return declared || fromRepertoire;
     }
   }
   const ensembleRef = doc(db, COLLECTIONS.ensembles, ensembleId);
   const ensembleSnap = await getDoc(ensembleRef);
   if (ensembleSnap.exists()) {
-    return normalizeGrade(ensembleSnap.data().performanceGrade);
+    return normalizeGradeBand(ensembleSnap.data().performanceGrade);
   }
   return null;
 }

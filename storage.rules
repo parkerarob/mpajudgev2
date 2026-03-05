@@ -28,6 +28,15 @@ service firebase.storage {
         && (userRole() == "judge" || userData().roles.judge == true);
     }
 
+    function isTeamLead() {
+      return isSignedIn()
+        && (userRole() == "teamLead" || userData().roles.teamLead == true);
+    }
+
+    function isOpsLead() {
+      return isAdmin() || isTeamLead();
+    }
+
     function isDirector() {
       return isSignedIn()
         && (userRole() == "director" || userData().roles.director == true);
@@ -69,14 +78,14 @@ service firebase.storage {
     }
 
     match /director_cards/{uid}/{fileName} {
-      allow read: if isAdmin()
+      allow read: if isOpsLead()
         || (isDirector() && request.auth.uid == uid);
       allow write: if isAdmin()
         || (isDirector() && request.auth.uid == uid);
     }
 
     match /signed_forms/{eventId}/{schoolId}/{fileName} {
-      allow read: if isAdmin()
+      allow read: if isOpsLead()
         || isDirectorForSchool(schoolId);
       allow write: if isAdmin()
         || isDirectorForSchool(schoolId);

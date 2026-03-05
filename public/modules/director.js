@@ -43,7 +43,7 @@ export function isDirectorManager() {
 
 export function getDirectorSchoolId() {
   if (state.auth.userProfile?.role === "admin") {
-    return state.director.adminViewSchoolId || null;
+    return state.director.adminViewSchoolId || state.auth.userProfile?.schoolId || null;
   }
   return state.auth.userProfile?.schoolId || null;
 }
@@ -1100,18 +1100,53 @@ export async function handleDeleteEnsemble(ensembleId, ensembleName) {
   }
 }
 
-export async function attachDirectorSchool(schoolId) {
+export async function attachDirectorSchool(schoolId, { persistPrimary } = {}) {
   if (!state.auth.currentUser || !state.auth.userProfile || !isDirectorManager()) {
     return { ok: false, reason: "not-authorized" };
   }
   if (!schoolId) return { ok: false, reason: "missing-school" };
   if (state.auth.userProfile.role === "admin") {
-    state.director.adminViewSchoolId = schoolId;
+    const shouldPersistPrimary = typeof persistPrimary === "boolean"
+      ? persistPrimary
+      : !state.auth.userProfile.schoolId;
+    const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
+    const existingRoles = state.auth.userProfile.roles && typeof state.auth.userProfile.roles === "object"
+      ? state.auth.userProfile.roles
+      : {};
+    const rolesPayload = {
+      ...existingRoles,
+      director: true,
+      admin: true,
+      judge: existingRoles.judge === true,
+      teamLead: existingRoles.teamLead === true,
+    };
+    try {
+      await setDoc(
+        userRef,
+        {
+          ...(shouldPersistPrimary ? { schoolId } : {}),
+          roles: rolesPayload,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      state.auth.userProfile.roles = rolesPayload;
+      if (shouldPersistPrimary) {
+        state.auth.userProfile.schoolId = schoolId;
+      }
+    } catch (error) {
+      console.error("Attach school (admin) failed", error);
+      return { ok: false, error };
+    }
+    const primarySchoolId = state.auth.userProfile.schoolId || null;
+    state.director.adminViewSchoolId = primarySchoolId && primarySchoolId === schoolId
+      ? null
+      : schoolId;
     state.director.selectedEnsembleId = null;
     state.director.entryDraft = null;
     state.director.entryRef = null;
     state.director.entryExists = false;
-    return { ok: true, mode: "admin-view" };
+    return { ok: true, mode: "admin-view", persisted: shouldPersistPrimary };
   }
   const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
   try {
@@ -1228,13 +1263,21 @@ export function setDirectorEvent(nextId) {
 }
 
 export async function saveDirectorProfile({ name, nafmeNumber, expValue, cellPhone }) {
-  if (!state.auth.currentUser || !state.auth.userProfile || state.auth.userProfile.role !== "director") {
+  if (!state.auth.currentUser || !state.auth.userProfile || !isDirectorManager()) {
     return { ok: false, reason: "not-authorized" };
   }
   const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
   const userSnap = await getDoc(userRef);
-  const rolesPayload = userSnap.exists() && !userSnap.data()?.roles
-    ? { roles: { director: true, judge: false, admin: false } }
+  const userData = userSnap.exists() ? (userSnap.data() || {}) : {};
+  const rolesPayload = !userData?.roles
+    ? {
+        roles: {
+          director: true,
+          judge: false,
+          admin: state.auth.userProfile.role === "admin",
+          teamLead: false,
+        },
+      }
     : {};
   const payload = {
     displayName: name,
@@ -1248,7 +1291,12 @@ export async function saveDirectorProfile({ name, nafmeNumber, expValue, cellPho
   } else {
     await setDoc(userRef, {
       role: "director",
-      roles: { director: true, judge: false, admin: false },
+      roles: {
+        director: true,
+        judge: false,
+        admin: state.auth.userProfile.role === "admin",
+        teamLead: false,
+      },
       schoolId: state.auth.userProfile?.schoolId || null,
       email: state.auth.userProfile?.email || state.auth.currentUser?.email || "",
       createdAt: serverTimestamp(),
@@ -1268,7 +1316,7 @@ export async function saveDirectorProfile({ name, nafmeNumber, expValue, cellPho
 }
 
 export async function uploadDirectorProfileCard(file) {
-  if (!state.auth.currentUser || !state.auth.userProfile || state.auth.userProfile.role !== "director") {
+  if (!state.auth.currentUser || !state.auth.userProfile || !isDirectorManager()) {
     return { ok: false, reason: "not-authorized" };
   }
   if (!file) return { ok: false, reason: "missing-file" };
@@ -1281,8 +1329,16 @@ export async function uploadDirectorProfileCard(file) {
   const url = await getDownloadURL(storageRef);
   const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
   const userSnap = await getDoc(userRef);
-  const rolesPayload = userSnap.exists() && !userSnap.data()?.roles
-    ? { roles: { director: true, judge: false, admin: false } }
+  const userData = userSnap.exists() ? (userSnap.data() || {}) : {};
+  const rolesPayload = !userData?.roles
+    ? {
+        roles: {
+          director: true,
+          judge: false,
+          admin: state.auth.userProfile.role === "admin",
+          teamLead: false,
+        },
+      }
     : {};
   const payload = {
     nafmeCardImageUrl: url,
@@ -1294,7 +1350,12 @@ export async function uploadDirectorProfileCard(file) {
   } else {
     await setDoc(userRef, {
       role: "director",
-      roles: { director: true, judge: false, admin: false },
+      roles: {
+        director: true,
+        judge: false,
+        admin: state.auth.userProfile.role === "admin",
+        teamLead: false,
+      },
       schoolId: state.auth.userProfile?.schoolId || null,
       email: state.auth.userProfile?.email || state.auth.currentUser?.email || "",
       createdAt: serverTimestamp(),
@@ -1636,20 +1697,19 @@ export function watchDirectorSchoolDirectors(callback) {
   }
   const directorQuery = query(
     collection(db, COLLECTIONS.users),
-    where(FIELDS.users.role, "==", "director"),
     where(FIELDS.users.schoolId, "==", schoolId)
   );
   state.subscriptions.directorSchoolDirectors = onSnapshot(
     directorQuery,
     (snapshot) => {
-      const directors = snapshot.docs.map((docSnap) => {
-        const data = docSnap.data() || {};
-        return {
-          id: docSnap.id,
-          displayName: data.displayName || "",
-          email: data.email || "",
-        };
-      });
+      const directors = snapshot.docs
+        .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }))
+        .filter((user) => user.role === "director" || user.roles?.director === true)
+        .map((user) => ({
+          id: user.id,
+          displayName: user.displayName || "",
+          email: user.email || "",
+        }));
       directors.sort((a, b) => {
         const aName = (a.displayName || a.email || "").toLowerCase();
         const bName = (b.displayName || b.email || "").toLowerCase();

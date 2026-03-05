@@ -28,6 +28,22 @@ describe("getSlotMinutesForGrade", () => {
     expect(getSlotMinutesForGrade(undefined)).toBe(30);
     expect(getSlotMinutesForGrade("")).toBe(30);
   });
+  it("supports adjacent grade ranges", () => {
+    expect(getSlotMinutesForGrade("I/II")).toBe(25);
+    expect(getSlotMinutesForGrade("II/III")).toBe(30);
+    expect(getSlotMinutesForGrade("III/IV")).toBe(30);
+    expect(getSlotMinutesForGrade("IV/V")).toBe(35);
+    expect(getSlotMinutesForGrade("V/VI")).toBe(40);
+  });
+  it("supports numeric and dashed grade ranges", () => {
+    expect(getSlotMinutesForGrade("2/3")).toBe(30);
+    expect(getSlotMinutesForGrade("4-5")).toBe(35);
+    expect(getSlotMinutesForGrade(" 5 / 6 ")).toBe(40);
+  });
+  it("falls back to default for invalid grade ranges", () => {
+    expect(getSlotMinutesForGrade("I/III")).toBe(30);
+    expect(getSlotMinutesForGrade("7/8")).toBe(30);
+  });
 });
 
 describe("computeScheduleTimeline", () => {
@@ -39,7 +55,7 @@ describe("computeScheduleTimeline", () => {
     ).toEqual([]);
   });
 
-  it("one band: perform at firstPerformanceAt, holding/warm-up before, sight after", () => {
+  it("one band: warm-up and performance each use one slot", () => {
     const roster = [{ id: "e1", ensembleId: "ens1" }];
     const getGrade = () => "II"; // 25 min
     const result = computeScheduleTimeline(base, roster, [], getGrade);
@@ -47,13 +63,12 @@ describe("computeScheduleTimeline", () => {
     expect(result[0].entryId).toBe("e1");
     expect(result[0].slotMins).toBe(25);
     expect(result[0].performStart.getTime()).toBe(base.getTime());
-    // Holding and warm-up are 3 and 2 slot(s) before perform
-    expect(result[0].holdingStart.getTime()).toBe(base.getTime() - 3 * 25 * 60 * 1000);
-    expect(result[0].warmUpStart.getTime()).toBe(base.getTime() - 2 * 25 * 60 * 1000);
+    expect(result[0].warmUpStart.getTime()).toBe(base.getTime() - 25 * 60 * 1000);
+    expect(result[0].holdingStart.getTime()).toBe(base.getTime() - 2 * 25 * 60 * 1000);
     expect(result[0].sightStart.getTime()).toBe(base.getTime() + 25 * 60 * 1000);
   });
 
-  it("two bands: second starts when first sight ends", () => {
+  it("same slot length: next warm-up starts when previous moves to stage", () => {
     const roster = [
       { id: "e1", ensembleId: "ens1" },
       { id: "e2", ensembleId: "ens2" },
@@ -61,37 +76,77 @@ describe("computeScheduleTimeline", () => {
     const getGrade = () => "III"; // 30 min
     const result = computeScheduleTimeline(base, roster, [], getGrade);
     expect(result).toHaveLength(2);
-    const firstSightEnd = result[0].sightStart.getTime() + 30 * 60 * 1000;
-    expect(result[1].holdingStart.getTime()).toBe(firstSightEnd);
-    expect(result[1].performStart.getTime()).toBe(
-      firstSightEnd + 30 * 60 * 1000 * 2
+    const firstPerform = result[0].performStart.getTime();
+    expect(result[1].warmUpStart.getTime()).toBe(firstPerform);
+    expect(result[1].performStart.getTime()).toBe(firstPerform + 30 * 60 * 1000);
+    expect(result[1].holdingStart.getTime()).toBe(
+      firstPerform - 30 * 60 * 1000
     );
   });
 
-  it("two bands with break: 30 min gap before second band holding", () => {
+  it("longer next band creates stage gap after first band", () => {
     const roster = [
       { id: "e1", ensembleId: "ens1" },
       { id: "e2", ensembleId: "ens2" },
     ];
-    const getGrade = () => "I"; // 25 min
-    const result = computeScheduleTimeline(base, roster, ["e1"], getGrade);
+    const getGrade = (entry) => (entry.id === "e1" ? "II" : "VI"); // 25 then 40
+    const result = computeScheduleTimeline(base, roster, [], getGrade);
     expect(result).toHaveLength(2);
-    const firstSightEnd = result[0].sightStart.getTime() + 25 * 60 * 1000;
-    const expectedSecondHolding = firstSightEnd + 30 * 60 * 1000;
-    expect(result[1].holdingStart.getTime()).toBe(expectedSecondHolding);
+    const firstPerform = result[0].performStart.getTime();
+    expect(result[1].warmUpStart.getTime()).toBe(firstPerform);
+    expect(result[1].performStart.getTime()).toBe(firstPerform + 40 * 60 * 1000);
   });
 
-  it("different grades use correct slot durations", () => {
+  it("shorter next band waits if stage is still occupied", () => {
     const roster = [
       { id: "e1", ensembleId: "ens1" },
       { id: "e2", ensembleId: "ens2" },
     ];
     const getGrade = (entry) => (entry.id === "e1" ? "VI" : "I"); // 40 then 25
     const result = computeScheduleTimeline(base, roster, [], getGrade);
-    expect(result[0].slotMins).toBe(40);
-    expect(result[1].slotMins).toBe(25);
-    const firstSightEnd = result[0].sightStart.getTime() + 40 * 60 * 1000;
-    expect(result[1].holdingStart.getTime()).toBe(firstSightEnd);
+    const firstPerform = result[0].performStart.getTime();
+    expect(result[1].warmUpStart.getTime()).toBe(firstPerform);
+    expect(result[1].performStart.getTime()).toBe(firstPerform + 40 * 60 * 1000);
+  });
+
+  it("break after previous band shifts warm-up and performance anchors", () => {
+    const roster = [
+      { id: "e1", ensembleId: "ens1" },
+      { id: "e2", ensembleId: "ens2" },
+    ];
+    const getGrade = (entry) => (entry.id === "e1" ? "I" : "VI"); // 25 then 40
+    const result = computeScheduleTimeline(base, roster, ["e1"], getGrade);
+    const firstPerform = result[0].performStart.getTime();
+    expect(result[1].performStart.getTime()).toBe(firstPerform + 55 * 60 * 1000); // 25 + 30 break
+    expect(result[1].warmUpStart.getTime()).toBe(firstPerform + 15 * 60 * 1000); // perform - next slot (40)
+  });
+
+  it("day-break overrides default/break anchors", () => {
+    const roster = [
+      { id: "e1", ensembleId: "ens1" },
+      { id: "e2", ensembleId: "ens2" },
+    ];
+    const dayJump = new Date("2025-03-01T13:00:00Z");
+    const result = computeScheduleTimeline(
+      base,
+      roster,
+      ["e1"],
+      () => "II",
+      { e1: dayJump }
+    );
+    expect(result[1].performStart.getTime()).toBe(dayJump.getTime());
+    expect(result[1].warmUpStart.getTime()).toBe(dayJump.getTime() - 25 * 60 * 1000);
+  });
+
+  it("range grade uses the correct slot duration", () => {
+    const roster = [
+      { id: "e1", ensembleId: "ens1" },
+      { id: "e2", ensembleId: "ens2" },
+    ];
+    const getGrade = (entry) => (entry.id === "e1" ? "II/III" : "I");
+    const result = computeScheduleTimeline(base, roster, [], getGrade);
+    expect(result[0].slotMins).toBe(30);
+    expect(result[1].warmUpStart.getTime()).toBe(result[0].performStart.getTime());
   });
 
   it("accepts Firestore-like Timestamp with toDate()", () => {

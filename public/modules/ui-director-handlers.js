@@ -73,8 +73,13 @@ export function createDirectorHandlerBinder({
           setDirectorEvent(eventId);
           const hasReg = await checkDirectorHasRegistrationForEvent(eventId);
           if (hasReg) {
-            state.director.view = "registered";
+            state.director.view = "dayOfForms";
             updateDirectorAttachUI();
+            renderDayOfEnsembleSelector();
+            await loadDirectorEntry({
+              onUpdate: applyDirectorEntryUpdate,
+              onClear: applyDirectorEntryClear,
+            });
           } else {
             state.director.view = "registration";
             state.director.selectedEnsemblesForRegistration = [];
@@ -82,7 +87,7 @@ export function createDirectorHandlerBinder({
             await renderDirectorRegistrationPanel();
           }
         } catch (err) {
-          console.error("Director Continue failed", err);
+          console.error("Director Event Forms failed", err);
           alertUser(err?.message || "Something went wrong. Try again.");
         }
       });
@@ -120,8 +125,13 @@ export function createDirectorHandlerBinder({
               registrationNote: gf?.note?.value?.trim() || "",
             });
           }
-          state.director.view = "registered";
+          state.director.view = "dayOfForms";
           updateDirectorAttachUI();
+          renderDayOfEnsembleSelector();
+          await loadDirectorEntry({
+            onUpdate: applyDirectorEntryUpdate,
+            onClear: applyDirectorEntryClear,
+          });
         } catch (err) {
           console.error("Save registration failed", err);
           alertUser(err?.message || "Could not save registration.");
@@ -154,7 +164,22 @@ export function createDirectorHandlerBinder({
     const dayOfBackBtn = document.getElementById("directorDayOfBackBtn");
     if (dayOfBackBtn) {
       dayOfBackBtn.addEventListener("click", () => {
-        state.director.view = "registered";
+        state.director.view = "landing";
+        updateDirectorAttachUI();
+      });
+    }
+    const dayOfRegistrationBtn = document.getElementById("directorDayOfRegistrationBtn");
+    if (dayOfRegistrationBtn) {
+      dayOfRegistrationBtn.addEventListener("click", async () => {
+        state.director.view = "registration";
+        updateDirectorAttachUI();
+        await renderDirectorRegistrationPanel();
+      });
+    }
+    const dayOfEnsemblesBtn = document.getElementById("directorDayOfEnsemblesBtn");
+    if (dayOfEnsemblesBtn) {
+      dayOfEnsemblesBtn.addEventListener("click", () => {
+        state.director.view = "landing";
         updateDirectorAttachUI();
       });
     }
@@ -262,7 +287,12 @@ export function createDirectorHandlerBinder({
         const result = await detachDirectorSchool();
         if (result?.ok) {
           updateDirectorAttachUI();
-          setDirectorSchoolName("No school attached");
+          if (state.auth.userProfile?.role === "admin" && state.auth.userProfile?.schoolId) {
+            const primary = state.admin.schoolsList.find((school) => school.id === state.auth.userProfile.schoolId);
+            setDirectorSchoolName(primary?.name || state.auth.userProfile.schoolId);
+          } else {
+            setDirectorSchoolName("No school attached");
+          }
           renderDirectorEnsembles([]);
           applyDirectorEntryClear({
             hint: "Select an ensemble and event to begin.",
@@ -350,7 +380,7 @@ export function createDirectorHandlerBinder({
           return;
         }
         discardDirectorDraftChanges();
-        window.location.hash = `#event/${state.director.selectedEventId}`;
+        window.location.hash = `#event/${state.director.selectedEventId}/director-schedule`;
       });
     }
 
@@ -502,7 +532,7 @@ export function createDirectorHandlerBinder({
             }
             await uploadEventSchedulePdf(eventId, file);
             const event = state.event.list.find((item) => item.id === eventId) || null;
-            renderEventScheduleDetail(event);
+            renderEventScheduleDetail(event, eventId, els.eventDetailPage?.dataset?.viewMode || "admin");
             if (els.eventScheduleStatus) {
               els.eventScheduleStatus.textContent = "Schedule PDF uploaded.";
             }

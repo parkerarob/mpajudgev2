@@ -19,6 +19,7 @@ export function createAdminHandlerBinder({
   getSelectedAdminSchool,
   startAdminSchoolEdit,
   deleteSchool,
+  deleteEnsemble,
   bulkImportSchools,
   provisionUser,
   renderDirectorAssignmentsDirectory,
@@ -26,8 +27,19 @@ export function createAdminHandlerBinder({
   assignDirectorSchool,
   getSchoolNameById,
   unassignDirectorSchool,
+  renderAdminSchoolEnsembleManage,
 } = {}) {
   let adminHandlersBound = false;
+  const syncProvisionSchoolField = () => {
+    const role = els.provisionRoleSelect?.value || "judge";
+    const isDirector = role === "director";
+    if (els.provisionSchoolSelect) {
+      els.provisionSchoolSelect.disabled = !isDirector;
+      if (!isDirector) {
+        els.provisionSchoolSelect.value = "";
+      }
+    }
+  };
 
   return function bindAdminHandlers() {
     if (adminHandlersBound) return;
@@ -202,13 +214,22 @@ export function createAdminHandlerBinder({
     }
 
     if (els.adminSchoolManageSelect) {
-      els.adminSchoolManageSelect.addEventListener("change", () => {
+      els.adminSchoolManageSelect.addEventListener("change", async () => {
         const hasSelection = Boolean(els.adminSchoolManageSelect?.value);
         if (els.adminSchoolManageEditBtn) {
           els.adminSchoolManageEditBtn.disabled = !hasSelection;
         }
         if (els.adminSchoolManageDeleteBtn) {
           els.adminSchoolManageDeleteBtn.disabled = !hasSelection;
+        }
+        await renderAdminSchoolEnsembleManage?.();
+      });
+    }
+
+    if (els.adminSchoolEnsembleManageSelect) {
+      els.adminSchoolEnsembleManageSelect.addEventListener("change", () => {
+        if (els.adminSchoolEnsembleDeleteBtn) {
+          els.adminSchoolEnsembleDeleteBtn.disabled = !els.adminSchoolEnsembleManageSelect?.value;
         }
       });
     }
@@ -246,6 +267,40 @@ export function createAdminHandlerBinder({
       });
     }
 
+    if (els.adminSchoolEnsembleDeleteBtn) {
+      els.adminSchoolEnsembleDeleteBtn.addEventListener("click", async () => {
+        const school = getSelectedAdminSchool();
+        const ensembleId = els.adminSchoolEnsembleManageSelect?.value || "";
+        if (!school || !ensembleId) return;
+        const ensembleName =
+          state.admin.schoolManageEnsembles?.find((item) => item.id === ensembleId)?.name || ensembleId;
+        const schoolLabel = school.name || school.id;
+        const ok = confirmUser(
+          `Delete ensemble ${ensembleName} from ${schoolLabel}? This will fully remove linked schedule, entries, submissions, and packets.`
+        );
+        if (!ok) return;
+        try {
+          els.adminSchoolEnsembleDeleteBtn.disabled = true;
+          await deleteEnsemble({ schoolId: school.id, ensembleId, force: true });
+          if (els.schoolResult) {
+            els.schoolResult.textContent = `Deleted ensemble ${ensembleName} from ${schoolLabel}.`;
+          }
+          await renderAdminSchoolEnsembleManage?.();
+          if (state.admin.currentView === "preEvent") {
+            applyAdminView("preEvent");
+          }
+        } catch (error) {
+          console.error("Delete ensemble failed", error);
+          const message = error?.message || "Unable to delete ensemble.";
+          alertUser(message);
+        } finally {
+          if (els.adminSchoolEnsembleDeleteBtn) {
+            els.adminSchoolEnsembleDeleteBtn.disabled = !els.adminSchoolEnsembleManageSelect?.value;
+          }
+        }
+      });
+    }
+
     if (els.schoolBulkBtn) {
       els.schoolBulkBtn.addEventListener("click", async () => {
         const raw = els.schoolBulkInput?.value || "";
@@ -265,12 +320,16 @@ export function createAdminHandlerBinder({
     }
 
     if (els.provisionForm) {
+      syncProvisionSchoolField();
+      if (els.provisionRoleSelect) {
+        els.provisionRoleSelect.addEventListener("change", syncProvisionSchoolField);
+      }
       els.provisionForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const email = els.provisionEmailInput?.value.trim() || "";
         const name = els.provisionNameInput?.value.trim() || "";
         const role = els.provisionRoleSelect?.value || "judge";
-        const schoolId = els.provisionSchoolSelect?.value || null;
+        const schoolId = role === "director" ? (els.provisionSchoolSelect?.value || null) : null;
         const tempPassword = els.provisionTempPasswordInput?.value.trim() || "";
         if (!email || !name) {
           alertUser("Email and name are required.");

@@ -36,9 +36,14 @@ const GRADE_VALUES = {
   F: 5,
 };
 
-const APPCHECK_SENSITIVE_OPTIONS = {enforceAppCheck: true};
+// Temporary reliability mode for event operations:
+// reCAPTCHA v3 App Check token exchange can fail/throttle in some browsers.
+// Keep strict App Check on OpenAI-cost endpoints, but relax it for core packet workflow.
+const APPCHECK_SENSITIVE_OPTIONS = {enforceAppCheck: false};
 const APPCHECK_SENSITIVE_SECRET_OPTIONS = {
-  enforceAppCheck: true,
+  // Temporary reliability mode for event operations (same rationale as above).
+  // Keep secret handling, but do not hard-require App Check while token exchange is failing.
+  enforceAppCheck: false,
   secrets: [OPENAI_API_KEY],
 };
 
@@ -616,6 +621,22 @@ async function assertAdmin(request) {
   return profile;
 }
 
+async function assertOpsLead(request) {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const userSnap = await admin
+      .firestore()
+      .collection(COLLECTIONS.users)
+      .doc(request.auth.uid)
+      .get();
+  const profile = userSnap.exists ? (userSnap.data() || {}) : null;
+  if (!profile || !isOpsLeadProfile(profile)) {
+    throw new HttpsError("permission-denied", "Operations lead access required.");
+  }
+  return profile;
+}
+
 async function assertRole(request, allowedRoles) {
   if (!request.auth || !request.auth.uid) {
     throw new HttpsError("unauthenticated", "Authentication required.");
@@ -626,15 +647,46 @@ async function assertRole(request, allowedRoles) {
       .doc(request.auth.uid)
       .get();
   const profile = userSnap.exists ? (userSnap.data() || {}) : {};
-  const role = profile.role || null;
+  const role = getEffectiveRole(profile);
   if (!allowedRoles.includes(role)) {
     throw new HttpsError("permission-denied", "Not authorized.");
   }
   return profile;
 }
 
+function normalizeRoleValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  if (lower === "admin") return "admin";
+  if (lower === "judge") return "judge";
+  if (lower === "director") return "director";
+  if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") {
+    return "teamLead";
+  }
+  return "";
+}
+
 function isAdminProfile(profile = {}) {
-  return profile.role === "admin" || profile.roles?.admin === true;
+  return normalizeRoleValue(profile.role) === "admin" || profile.roles?.admin === true;
+}
+
+function isTeamLeadProfile(profile = {}) {
+  return normalizeRoleValue(profile.role) === "teamLead" || profile.roles?.teamLead === true;
+}
+
+function isOpsLeadProfile(profile = {}) {
+  return isAdminProfile(profile) || isTeamLeadProfile(profile);
+}
+
+function getEffectiveRole(profile = {}) {
+  const normalizedRole = normalizeRoleValue(profile.role);
+  if (normalizedRole) return normalizedRole;
+  if (profile.roles?.admin === true) return "admin";
+  if (profile.roles?.teamLead === true) return "teamLead";
+  if (profile.roles?.director === true) return "director";
+  if (profile.roles?.judge === true) return "judge";
+  return null;
 }
 
 function detectJudgePositionFromAssignments(assignments, uid) {
@@ -1415,7 +1467,7 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
 });
 
 exports.lockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertAdmin(request);
+  await assertOpsLead(request);
   const data = request.data || {};
   const packetId = data.packetId;
   if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
@@ -1444,7 +1496,7 @@ exports.lockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
 });
 
 exports.unlockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertAdmin(request);
+  await assertOpsLead(request);
   const data = request.data || {};
   const packetId = data.packetId;
   if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
@@ -1476,7 +1528,7 @@ exports.unlockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
 });
 
 exports.releaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertAdmin(request);
+  await assertOpsLead(request);
   const data = request.data || {};
   const packetId = data.packetId;
   if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
@@ -1510,7 +1562,7 @@ exports.releaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =
 });
 
 exports.unreleaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertAdmin(request);
+  await assertOpsLead(request);
   const data = request.data || {};
   const packetId = data.packetId;
   if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
@@ -2000,7 +2052,7 @@ exports.transcribeTestAudio = onCall(
 );
 
 exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertAdmin(request);
+  await assertOpsLead(request);
   const data = request.data || {};
   const eventId = data.eventId;
   const ensembleId = data.ensembleId;
@@ -2090,7 +2142,7 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
 });
 
 exports.unreleasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertAdmin(request);
+  await assertOpsLead(request);
   const data = request.data || {};
   const eventId = data.eventId;
   const ensembleId = data.ensembleId;
@@ -2486,7 +2538,7 @@ exports.releaseMockPacketForAshleyTesting = onCall(async (request) => {
 });
 
 exports.unlockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertAdmin(request);
+  await assertOpsLead(request);
   const data = request.data || {};
   const eventId = data.eventId;
   const ensembleId = data.ensembleId;
@@ -2532,7 +2584,7 @@ exports.unlockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
 });
 
 exports.lockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertAdmin(request);
+  await assertOpsLead(request);
   const data = request.data || {};
   const eventId = data.eventId;
   const ensembleId = data.ensembleId;
@@ -2589,8 +2641,11 @@ exports.provisionUser = onCall(async (request) => {
   if (!email) {
     throw new HttpsError("invalid-argument", "Email is required.");
   }
-  if (!["judge", "director"].includes(role)) {
-    throw new HttpsError("invalid-argument", "Role must be judge or director.");
+  if (!["admin", "teamLead", "judge", "director"].includes(role)) {
+    throw new HttpsError(
+        "invalid-argument",
+        "Role must be admin, teamLead, judge, or director.",
+    );
   }
 
   let userRecord;
@@ -2643,6 +2698,7 @@ exports.provisionUser = onCall(async (request) => {
           director: role === "director",
           judge: role === "judge",
           admin: role === "admin",
+          teamLead: role === "teamLead",
         },
         [FIELDS.users.schoolId]: role === "director" ? schoolId : null,
         [FIELDS.users.email]: email,
@@ -2691,13 +2747,24 @@ exports.assignDirectorSchool = onCall(async (request) => {
     throw new HttpsError("not-found", "School not found.");
   }
   const directorData = directorSnap.data() || {};
-  const isDirector = String(directorData.role || "") === "director" ||
+  const isDirectorCapable = String(directorData.role || "") === "director" ||
+    String(directorData.role || "") === "admin" ||
     directorData?.roles?.director === true;
-  if (!isDirector) {
-    throw new HttpsError("failed-precondition", "Target user is not a director.");
+  if (!isDirectorCapable) {
+    throw new HttpsError("failed-precondition", "Target user is not director-capable.");
   }
+  const existingRoles = directorData.roles && typeof directorData.roles === "object" ?
+    directorData.roles :
+    {};
   await directorSnap.ref.set({
     [FIELDS.users.schoolId]: schoolId,
+    [FIELDS.users.roles]: {
+      ...existingRoles,
+      director: true,
+      admin: directorData.role === "admin" || existingRoles.admin === true,
+      judge: existingRoles.judge === true,
+      teamLead: existingRoles.teamLead === true,
+    },
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, {merge: true});
   return {ok: true, directorUid, schoolId};
@@ -2736,6 +2803,7 @@ exports.deleteEnsemble = onCall(async (request) => {
   const data = request.data || {};
   const schoolId = String(data.schoolId || "").trim();
   const ensembleId = String(data.ensembleId || "").trim();
+  const forceDelete = data.force === true;
   if (!schoolId || !ensembleId) {
     throw new HttpsError("invalid-argument", "schoolId and ensembleId required.");
   }
@@ -2752,6 +2820,9 @@ exports.deleteEnsemble = onCall(async (request) => {
   if (!isAdmin && !(isDirector && userSchoolId === schoolId)) {
     throw new HttpsError("permission-denied", "Not authorized to delete.");
   }
+  if (forceDelete && !isAdmin) {
+    throw new HttpsError("permission-denied", "Admin required for force delete.");
+  }
 
   const db = admin.firestore();
   const ensembleRef = db
@@ -2764,50 +2835,169 @@ exports.deleteEnsemble = onCall(async (request) => {
     throw new HttpsError("not-found", "Ensemble not found.");
   }
 
+  const deleteDocsInBatches = async (docs) => {
+    if (!docs || !docs.length) return 0;
+    let totalDeleted = 0;
+    for (let idx = 0; idx < docs.length; idx += 400) {
+      const chunk = docs.slice(idx, idx + 400);
+      const batch = db.batch();
+      chunk.forEach((docSnap) => batch.delete(docSnap.ref));
+      await batch.commit();
+      totalDeleted += chunk.length;
+    }
+    return totalDeleted;
+  };
+
   const eventsSnap = await db.collection(COLLECTIONS.events).get();
-  for (const eventDoc of eventsSnap.docs) {
-    const entryRef = db
-        .collection(COLLECTIONS.events)
-        .doc(eventDoc.id)
-        .collection(COLLECTIONS.entries)
-        .doc(ensembleId);
-    const entrySnap = await entryRef.get();
-    if (entrySnap.exists) {
+  if (!forceDelete) {
+    for (const eventDoc of eventsSnap.docs) {
+      const entryRef = db
+          .collection(COLLECTIONS.events)
+          .doc(eventDoc.id)
+          .collection(COLLECTIONS.entries)
+          .doc(ensembleId);
+      const entrySnap = await entryRef.get();
+      if (entrySnap.exists) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Event entry exists for this ensemble.",
+        );
+      }
+
+      const scheduleSnap = await db
+          .collection(COLLECTIONS.events)
+          .doc(eventDoc.id)
+          .collection(COLLECTIONS.schedule)
+          .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+          .limit(1)
+          .get();
+      if (!scheduleSnap.empty) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Schedule entries exist for this ensemble.",
+        );
+      }
+    }
+
+    const submissionsSnap = await db
+        .collection(COLLECTIONS.submissions)
+        .where(FIELDS.submissions.ensembleId, "==", ensembleId)
+        .limit(1)
+        .get();
+    if (!submissionsSnap.empty) {
       throw new HttpsError(
           "failed-precondition",
-          "Event entry exists for this ensemble.",
+          "Submissions exist for this ensemble.",
       );
     }
 
-    const scheduleSnap = await db
-        .collection(COLLECTIONS.events)
-        .doc(eventDoc.id)
+    await ensembleRef.delete();
+    return {deleted: true, forced: false};
+  }
+
+  let deletedEntries = 0;
+  let deletedSchedule = 0;
+  let deletedSubmissions = 0;
+  let deletedPacketExports = 0;
+  let deletedPackets = 0;
+
+  for (const eventDoc of eventsSnap.docs) {
+    const eventRef = db.collection(COLLECTIONS.events).doc(eventDoc.id);
+    const entryRef = eventRef.collection(COLLECTIONS.entries).doc(ensembleId);
+    const entrySnap = await entryRef.get();
+    if (entrySnap.exists) {
+      const entryData = entrySnap.data() || {};
+      const entrySchoolId = String(entryData.schoolId || "");
+      if (!entrySchoolId || entrySchoolId === schoolId) {
+        await entryRef.delete();
+        deletedEntries += 1;
+      }
+    }
+
+    const scheduleSnap = await eventRef
         .collection(COLLECTIONS.schedule)
         .where(FIELDS.schedule.ensembleId, "==", ensembleId)
-        .limit(1)
         .get();
     if (!scheduleSnap.empty) {
-      throw new HttpsError(
-          "failed-precondition",
-          "Schedule entries exist for this ensemble.",
-      );
+      const targetDocs = scheduleSnap.docs.filter((docSnap) => {
+        const row = docSnap.data() || {};
+        const rowSchoolId = String(row.schoolId || "");
+        return !rowSchoolId || rowSchoolId === schoolId;
+      });
+      deletedSchedule += await deleteDocsInBatches(targetDocs);
     }
   }
 
   const submissionsSnap = await db
       .collection(COLLECTIONS.submissions)
       .where(FIELDS.submissions.ensembleId, "==", ensembleId)
-      .limit(1)
       .get();
   if (!submissionsSnap.empty) {
-    throw new HttpsError(
-        "failed-precondition",
-        "Submissions exist for this ensemble.",
-    );
+    const targetDocs = submissionsSnap.docs.filter((docSnap) => {
+      const row = docSnap.data() || {};
+      const rowSchoolId = String(row.schoolId || "");
+      return !rowSchoolId || rowSchoolId === schoolId;
+    });
+    deletedSubmissions += await deleteDocsInBatches(targetDocs);
+  }
+
+  const packetExportsSnap = await db
+      .collection(COLLECTIONS.packetExports)
+      .where(FIELDS.packetExports.ensembleId, "==", ensembleId)
+      .get();
+  if (!packetExportsSnap.empty) {
+    const targetDocs = packetExportsSnap.docs.filter((docSnap) => {
+      const row = docSnap.data() || {};
+      const rowSchoolId = String(row.schoolId || "");
+      return !rowSchoolId || rowSchoolId === schoolId;
+    });
+    deletedPacketExports += await deleteDocsInBatches(targetDocs);
+  }
+
+  const packetsSnap = await db
+      .collection(COLLECTIONS.packets)
+      .where(FIELDS.packets.ensembleId, "==", ensembleId)
+      .get();
+  if (!packetsSnap.empty) {
+    for (const packetDoc of packetsSnap.docs) {
+      const packetData = packetDoc.data() || {};
+      const packetSchoolId = String(packetData.schoolId || "");
+      if (packetSchoolId && packetSchoolId !== schoolId) continue;
+      if (typeof db.recursiveDelete === "function") {
+        await db.recursiveDelete(packetDoc.ref);
+      } else {
+        const sessionsSnap = await packetDoc.ref.collection("sessions").get();
+        await deleteDocsInBatches(sessionsSnap.docs);
+        const auditSnap = await packetDoc.ref.collection("audit").get();
+        await deleteDocsInBatches(auditSnap.docs);
+        await packetDoc.ref.delete();
+      }
+      deletedPackets += 1;
+    }
   }
 
   await ensembleRef.delete();
-  return {deleted: true};
+
+  logger.info("deleteEnsemble force delete complete", {
+    schoolId,
+    ensembleId,
+    deletedEntries,
+    deletedSchedule,
+    deletedSubmissions,
+    deletedPackets,
+    deletedPacketExports,
+    actorUid: request.auth.uid,
+  });
+
+  return {
+    deleted: true,
+    forced: true,
+    deletedEntries,
+    deletedSchedule,
+    deletedSubmissions,
+    deletedPackets,
+    deletedPacketExports,
+  };
 });
 
 exports.renameEnsemble = onCall(async (request) => {

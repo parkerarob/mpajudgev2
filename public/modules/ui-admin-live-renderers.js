@@ -7,7 +7,6 @@ export function createAdminLiveRenderers({
   collection,
   getDocs,
   query,
-  where,
   fetchScheduleEntries,
   fetchRegisteredEnsembles,
   getSchoolNameById,
@@ -288,10 +287,7 @@ export function createAdminLiveRenderers({
         return [];
       });
       const directorsSnap = await getDocs(
-        query(
-          collection(db, COLLECTIONS.users),
-          where(FIELDS.users.role, "==", "director")
-        )
+        query(collection(db, COLLECTIONS.users))
       ).catch((error) => {
         console.warn("Live Event check-in: unable to read director profiles; continuing without NAfME detail", error);
         warningText = warningText
@@ -303,6 +299,10 @@ export function createAdminLiveRenderers({
       const directorsBySchool = new Map();
       directorsSnap?.forEach((snap) => {
         const data = snap.data() || {};
+        const isDirectorCapable =
+          data.role === "director" ||
+          data.roles?.director === true;
+        if (!isDirectorCapable) return;
         const schoolId = data.schoolId || "";
         if (!schoolId || directorsBySchool.has(schoolId)) return;
         directorsBySchool.set(schoolId, {

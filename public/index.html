@@ -1,0 +1,1482 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MPA Judge</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="ios-app auth-locked">
+    <header class="app-header">
+      <div class="header-brand">
+        <img src="/ncba-logo.png" alt="North Carolina Bandmasters Association logo" class="site-logo" />
+        <div>
+          <p class="eyebrow">North Carolina Bandmasters Association</p>
+          <h1>Eastern District MPA</h1>
+          <p class="lede">South Site - Ashley High School</p>
+        </div>
+      </div>
+      <div class="auth-controls">
+        <div class="note" id="authSuccess" hidden></div>
+        <div class="row">
+          <button type="button" id="signInBtn" class="btn--lg">Sign In / Create Account</button>
+          <div id="headerAuthActions" class="auth-actions">
+            <div class="auth-identity is-hidden" id="authIdentityBanner">
+              <div class="auth-identity-name" id="authIdentityName">Signed in</div>
+              <div class="auth-identity-email" id="authIdentityEmail"></div>
+            </div>
+            <div class="auth-action-row" id="headerAuthButtons">
+              <div class="role-switcher is-hidden" id="roleSwitcherWrap">
+                <label for="roleSwitcherSelect">View</label>
+                <select id="roleSwitcherSelect" aria-label="Switch role view">
+                  <option value="admin">Admin</option>
+                  <option value="judge-open">Judge</option>
+                  <option value="director">Director</option>
+                </select>
+              </div>
+              <button type="button" class="ghost" id="directorProfileToggleBtn">Update Profile</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="notice offline-banner is-hidden" id="offlineBanner" role="status" aria-live="polite">
+        Offline: submissions are disabled until you reconnect.
+      </div>
+      <div class="notice notice--info" id="provisioningNotice" hidden role="status" aria-live="polite"></div>
+      <div class="notice notice--info is-hidden" id="eventModeBanner" role="status" aria-live="polite">
+        <strong id="eventModeBannerLabel">No Active Event</strong>
+        <span id="eventModeBannerDetail"></span>
+      </div>
+      <nav class="tabs" role="tablist" aria-label="Role views">
+        <button class="tab" type="button" id="adminTab" role="tab" aria-controls="adminCard" data-tab="admin" aria-selected="false">
+          Admin
+        </button>
+        <button class="tab" type="button" id="judgeOpenTab" role="tab" aria-controls="judgeOpenCard" data-tab="judge-open" aria-selected="false">
+          Judge
+        </button>
+        <button class="tab" type="button" id="directorTab" role="tab" aria-controls="directorCard" data-tab="director" aria-selected="false">
+          Director
+        </button>
+      </nav>
+      <div class="hint" id="tabLockHint"></div>
+
+      <section class="card" id="adminCard" role="tabpanel" aria-labelledby="adminTab">
+        <div class="tab-header">
+          <div>
+            <h2>Admin Tools</h2>
+            <div class="tab-subtitle">Manage event setup, live operations, packet release, and settings.</div>
+          </div>
+          <div class="tab-header-actions">
+            <span class="badge" id="adminStatusBadge">No active event</span>
+            <button type="button" class="ghost" id="adminProfileToggleBtn">Update Profile</button>
+          </div>
+        </div>
+        <nav class="admin-subnav" id="adminSubnav" role="tablist" aria-label="Admin views">
+          <button type="button" class="admin-subnav-btn" id="adminSubnavEventChairBtn" role="tab" data-admin-view="preEvent" aria-selected="true">Pre-Event</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavChairBtn" role="tab" data-admin-view="liveEvent" aria-selected="false">Live Event</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavPacketsBtn" role="tab" data-admin-view="packets" aria-selected="false">Packets</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavReadinessBtn" role="tab" data-admin-view="readiness" aria-selected="false">Readiness</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavSettingsBtn" role="tab" data-admin-view="settings" aria-selected="false">Settings</button>
+        </nav>
+        <div class="panel admin-safe-mode is-hidden" id="adminSafeModePanel">
+          <div class="note" id="adminSafeModeMessage">Admin safe mode is on. Heavy data is paused.</div>
+          <div class="row">
+            <button type="button" class="ghost" id="adminSafeModeLoadBtn">Load This View</button>
+          </div>
+        </div>
+        <div class="ios-screen">
+        <div class="stack">
+          <div id="adminViewEvents" class="admin-view stack" data-admin-view="preEvent">
+          <div class="panel" id="preEventFlowPanel">
+            <h3>Pre-Event Guided Flow</h3>
+            <p class="hint" id="preEventFlowSummary">Set an active event to begin.</p>
+            <div class="pre-event-workflow-card stack" id="preEventWorkflowCard">
+              <div class="row row--between row--center">
+                <div class="pre-event-workflow-title">Next Step</div>
+                <span class="badge" id="preEventCurrentStepPill">Start</span>
+              </div>
+              <div class="pre-event-workflow-next" id="preEventNextStepTitle">Set an active event to begin.</div>
+              <div class="hint" id="preEventNextStepHint">Then complete registration coverage, schedule, and director input checks.</div>
+              <div class="pre-event-step-chips">
+                <span class="pre-event-step-chip" id="preEventStepChipRegistration">Registration</span>
+                <span class="pre-event-step-chip" id="preEventStepChipSchedule">Schedule</span>
+                <span class="pre-event-step-chip" id="preEventStepChipDirectorInput">Director Input</span>
+              </div>
+            </div>
+            <div class="pre-event-flow-grid">
+              <div class="pre-event-flow-item">
+                <div class="pre-event-flow-title">Step 1: Registration</div>
+                <div class="badge" id="preEventStatusRegistration">Waiting</div>
+                <div class="hint" id="preEventStatusRegistrationHint">No active event.</div>
+              </div>
+              <div class="pre-event-flow-item">
+                <div class="pre-event-flow-title">Step 2: Schedule</div>
+                <div class="badge" id="preEventStatusSchedule">Waiting</div>
+                <div class="hint" id="preEventStatusScheduleHint">No active event.</div>
+              </div>
+              <div class="pre-event-flow-item">
+                <div class="pre-event-flow-title">Step 3: Director Data</div>
+                <div class="badge" id="preEventStatusDirectorInput">Waiting</div>
+                <div class="hint" id="preEventStatusDirectorInputHint">No active event.</div>
+              </div>
+            </div>
+          </div>
+          <div class="panel" id="adminRegisteredEnsemblesSection">
+            <h3>Step 1: Registration Coverage</h3>
+            <p class="hint">Registered schools and ensembles for the active event. Click a school to manage scheduling and review day-of details.</p>
+            <ul id="adminRegisteredEnsemblesList" class="list"></ul>
+          </div>
+          <div class="panel" id="adminScheduleSection">
+            <h3>Step 2: Scheduled Timeline</h3>
+            <p class="hint">Start times for Holding, Warm-up, Performance, and Sightreading for scheduled ensembles.</p>
+            <div class="panel stack">
+              <h4>Add Break</h4>
+              <p class="hint">All breaks are 30 minutes. Enter a time and the break will snap to the next valid transition.</p>
+              <div class="row">
+                <label class="grow">
+                  Break Time
+                  <input type="datetime-local" id="preEventBreakAtInput" />
+                </label>
+                <button type="button" class="ghost" id="preEventBreakAddBtn">Add 30-min Break</button>
+              </div>
+              <div class="note" id="preEventBreakStatus"></div>
+              <div id="preEventBreakList" class="stack"></div>
+            </div>
+            <div class="stack">
+              <h4>Scheduled Timeline (Start Times)</h4>
+              <p class="hint">Displays start times only for Holding, Warm-up, Performance, and Sightreading.</p>
+              <div class="note" id="preEventScheduleTimelineMessage"></div>
+              <div id="preEventScheduleTimelineContainer"></div>
+            </div>
+          </div>
+
+          <div class="panel is-hidden" id="adminSchoolDetailSection">
+            <div class="row row--between row--center">
+              <h3 id="adminSchoolDetailTitle">School Detail</h3>
+              <button type="button" class="ghost" id="adminSchoolDetailBackBtn">Back to Registration Coverage</button>
+            </div>
+            <div class="note" id="adminSchoolDetailMeta"></div>
+            <div class="hint" id="adminSchoolDetailHint"></div>
+            <ul id="adminSchoolDetailList" class="list"></ul>
+          </div>
+          </div>
+
+          <div id="adminViewPackets" class="admin-view stack is-hidden" data-admin-view="packets">
+          <div class="panel">
+            <h3>Packet Review and Release</h3>
+            <p class="hint">Select a school, then review current-event packets for that school.</p>
+            <div class="admin-workflow-card stack" id="adminPacketsWorkflowCard">
+              <div class="row row--between row--center">
+                <div class="admin-workflow-title">Next Step</div>
+                <span class="badge" id="adminPacketsCurrentStepPill">Start</span>
+              </div>
+              <div class="admin-workflow-next" id="adminPacketsNextStepTitle">Set an active event to begin.</div>
+              <div class="hint" id="adminPacketsNextStepHint">Then select a school and review packet completion before release.</div>
+              <div class="admin-step-chips">
+                <span class="admin-step-chip" id="adminPacketsStepChipEvent">Event</span>
+                <span class="admin-step-chip" id="adminPacketsStepChipSchool">School</span>
+                <span class="admin-step-chip" id="adminPacketsStepChipReview">Review</span>
+                <span class="admin-step-chip" id="adminPacketsStepChipRelease">Release</span>
+              </div>
+            </div>
+            <div class="row">
+              <button type="button" class="ghost" id="adminPacketsMockPreviewBtn">Preview Full Packet (Mock)</button>
+              <button type="button" class="ghost" id="adminPacketsReleaseAshleyMockBtn">Release Mock to Ashley HS</button>
+            </div>
+            <div class="panel is-hidden" id="adminPacketsMockPanel"></div>
+            <label>
+              School
+              <select id="adminPacketsSchoolSelect"></select>
+            </label>
+            <div class="note" id="adminPacketsHint">Set an active event to begin.</div>
+            <ul id="adminPacketsList" class="list"></ul>
+          </div>
+          </div>
+
+          <div id="adminViewChair" class="admin-view stack is-hidden" data-admin-view="liveEvent">
+          <div class="panel">
+            <h3>Live Event</h3>
+            <p class="hint">Manage check-in and stage transitions for scheduled ensembles.</p>
+            <div class="admin-workflow-card stack" id="adminLiveWorkflowCard">
+              <div class="row row--between row--center">
+                <div class="admin-workflow-title">Next Step</div>
+                <span class="badge" id="adminLiveCurrentStepPill">Start</span>
+              </div>
+              <div class="admin-workflow-next" id="adminLiveNextStepTitle">Set an active event to begin.</div>
+              <div class="hint" id="adminLiveNextStepHint">Then run check-in and stage setup for scheduled ensembles.</div>
+              <div class="admin-step-chips">
+                <span class="admin-step-chip" id="adminLiveStepChipEvent">Event</span>
+                <span class="admin-step-chip" id="adminLiveStepChipQueue">Check-in Queue</span>
+                <span class="admin-step-chip" id="adminLiveStepChipSetup">Stage Setup</span>
+              </div>
+            </div>
+            <div id="liveEventContent"></div>
+          </div>
+          </div>
+
+          <div id="adminViewSettings" class="admin-view stack is-hidden" data-admin-view="settings">
+          <div class="panel admin-settings-shell" id="adminEventsSection">
+            <h3>Settings: Event Setup</h3>
+            <p class="hint">Create events and assign judges for official scoring lanes.</p>
+            <div class="stack admin-settings-sections">
+              <div class="admin-settings-block">
+                <h4>Create Event</h4>
+                <label>
+                  Event Name
+                  <input type="text" id="eventNameInput" placeholder="Eastern District MPA" />
+                </label>
+                <label>
+                  Event Mode
+                  <select id="eventModeInput">
+                    <option value="live">Live Event</option>
+                    <option value="rehearsal">Rehearsal Event</option>
+                  </select>
+                </label>
+                <div class="row">
+                  <button type="button" id="createEventBtn">Create Event</button>
+                </div>
+                <div class="note" id="activeEventDisplay">No active event.</div>
+              </div>
+              <div class="admin-settings-block">
+                <h4>Events</h4>
+                <ul id="eventList" class="list"></ul>
+              </div>
+              <div class="admin-settings-block">
+                <h4>Judge Assignments</h4>
+                <form id="assignmentsForm" class="stack admin-settings-form">
+                  <label>
+                    Stage 1
+                    <select id="stage1JudgeSelect"></select>
+                  </label>
+                  <label>
+                    Stage 2
+                    <select id="stage2JudgeSelect"></select>
+                  </label>
+                  <label>
+                    Stage 3
+                    <select id="stage3JudgeSelect"></select>
+                  </label>
+                  <label>
+                    Sight Reading
+                    <select id="sightJudgeSelect"></select>
+                  </label>
+                  <button type="submit">Save Assignments</button>
+                </form>
+                <div class="note" id="assignmentsError"></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel admin-settings-shell" id="adminSchoolsSection">
+            <h3>Settings: Directory</h3>
+            <div class="stack admin-settings-sections">
+              <div class="admin-settings-block">
+                <h4>Schools Directory</h4>
+                <p class="hint">Seed schools for director selection.</p>
+                <form id="schoolForm" class="stack admin-settings-form">
+                  <label>
+                    School ID (slug)
+                    <input type="text" id="schoolIdCreateInput" placeholder="school_001" required />
+                  </label>
+                  <label>
+                    School Name
+                    <input type="text" id="schoolNameCreateInput" required />
+                  </label>
+                  <div class="row">
+                    <button type="submit" id="schoolSubmitBtn">Add School</button>
+                    <button type="button" id="schoolEditCancelBtn" class="ghost is-hidden">
+                      Cancel Edit
+                    </button>
+                  </div>
+                </form>
+                <label>
+                  Bulk import (one per line: schoolId,School Name)
+                  <textarea id="schoolBulkInput" rows="4"></textarea>
+                </label>
+                <button type="button" id="schoolBulkBtn" class="ghost">Import Bulk</button>
+                <div class="note" id="schoolResult"></div>
+                <div class="stack admin-settings-subsections">
+                  <h4>Manage Existing School</h4>
+                  <label>
+                    Select School
+                    <select id="adminSchoolManageSelect"></select>
+                  </label>
+                  <div class="row">
+                    <button type="button" id="adminSchoolManageEditBtn" class="ghost">Edit</button>
+                    <button type="button" id="adminSchoolManageDeleteBtn" class="ghost">Delete</button>
+                  </div>
+                  <h4>Manage School Ensembles</h4>
+                  <label>
+                    Select Ensemble
+                    <select id="adminSchoolEnsembleManageSelect"></select>
+                  </label>
+                  <div class="row">
+                    <button type="button" id="adminSchoolEnsembleDeleteBtn" class="ghost danger" disabled>
+                      Delete Ensemble (Full Cleanup)
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel admin-settings-shell" id="adminSettingsSection">
+            <h3>Settings: Users</h3>
+            <div class="stack admin-settings-sections">
+              <div class="admin-settings-block">
+                <h4>Provision User</h4>
+                <p class="hint">
+                  Admin-only. Creates an Auth user (email/password) and writes
+                  a user profile document. Share the temporary password securely.
+                </p>
+                <form id="provisionForm" class="stack admin-settings-form">
+                  <label>
+                    Email
+                    <input type="email" id="provisionEmailInput" required />
+                  </label>
+                  <label>
+                    Name
+                    <input type="text" id="provisionNameInput" placeholder="Optional for directors" />
+                  </label>
+                  <label>
+                    Role
+                    <select id="provisionRoleSelect" required>
+                      <option value="admin">admin</option>
+                      <option value="teamLead">teamLead</option>
+                      <option value="judge">judge</option>
+                      <option value="director">director</option>
+                    </select>
+                  </label>
+                  <label>
+                    School (optional, director only)
+                    <select id="provisionSchoolSelect"></select>
+                  </label>
+                  <label>
+                    Temporary Password (optional)
+                    <input type="text" id="provisionTempPasswordInput" placeholder="Leave blank to auto-generate" />
+                  </label>
+                  <button type="submit">Provision User</button>
+                </form>
+                <div class="note" id="provisionResult"></div>
+              </div>
+              <div class="admin-settings-block">
+                <h4>Users Directory</h4>
+                <p class="hint">Delete removes Auth + user profile only when no linked assignments or records exist.</p>
+                <div class="note" id="adminUsersResult"></div>
+                <div class="schedule-timeline-table-wrap">
+                  <table class="schedule-timeline-table" id="adminUsersTable">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>School</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="adminUsersList"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="admin-settings-block">
+                <h4>Director School Assignments</h4>
+                <p class="hint">Assign or remove directors from schools. Removing unassigns the school but keeps the account.</p>
+                <div class="stack admin-settings-form">
+                  <label>
+                    Director
+                    <select id="directorAssignDirectorSelect"></select>
+                  </label>
+                  <label>
+                    School
+                    <select id="directorAssignSchoolSelect"></select>
+                  </label>
+                  <div class="row">
+                    <button type="button" id="directorAssignBtn">Assign to School</button>
+                    <button type="button" class="ghost" id="directorUnassignBtn">Remove from School</button>
+                  </div>
+                  <div class="note" id="directorManageResult"></div>
+                  <div class="schedule-timeline-table-wrap">
+                    <table class="schedule-timeline-table" id="directorManageTable">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Email</th>
+                          <th>School</th>
+                        </tr>
+                      </thead>
+                      <tbody id="directorManageList"></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          </div>
+
+          <div id="adminViewReadiness" class="admin-view stack is-hidden" data-admin-view="readiness">
+          <div class="panel">
+            <h3>Event Readiness</h3>
+            <p class="hint">Run a go/no-go preflight and keep live operations checklist steps in one place.</p>
+            <div class="row">
+              <button type="button" id="adminRunPreflightBtn">Run Preflight</button>
+              <button type="button" class="ghost" id="adminCleanupRehearsalBtn">Cleanup Unreleased Rehearsal Data</button>
+            </div>
+            <div class="note" id="adminReadinessPreflightSummary">Run preflight to evaluate event readiness.</div>
+            <ul id="adminReadinessChecklist" class="list"></ul>
+          </div>
+          <div class="panel">
+            <h3>Full Rehearsal Walkthrough</h3>
+            <p class="hint">Run through the exact live-day workflow, then mark each checkpoint complete.</p>
+            <div class="row">
+              <button type="button" id="adminWalkthroughStartBtn">Start Walkthrough</button>
+              <button type="button" class="ghost" id="adminWalkthroughResetBtn">Reset Walkthrough</button>
+            </div>
+            <div class="note" id="adminReadinessWalkthroughSummary">Walkthrough steps completed: 0/4.</div>
+            <div class="readiness-walkthrough-list" id="adminReadinessWalkthroughList">
+              <div class="readiness-walkthrough-item" data-readiness-step-row="rehearsalComplete">
+                <div>
+                  <strong>1. Rehearsal Dry Run</strong>
+                  <div class="note">Confirm event mode, active event, and complete one full mock cycle.</div>
+                </div>
+                <div class="row">
+                  <span class="badge" data-readiness-step-state>Pending</span>
+                  <button type="button" class="ghost" data-readiness-open-view="settings">Open Settings</button>
+                  <button type="button" class="ghost" data-readiness-step="rehearsalComplete">Mark Complete</button>
+                </div>
+              </div>
+              <div class="readiness-walkthrough-item" data-readiness-step-row="judgeAudioCheck">
+                <div>
+                  <strong>2. Judge Audio & Capture Check</strong>
+                  <div class="note">Verify judge sign-in, recording, transcript parse, and submission lock behavior.</div>
+                </div>
+                <div class="row">
+                  <span class="badge" data-readiness-step-state>Pending</span>
+                  <button type="button" class="ghost" data-readiness-open-view="liveEvent">Open Live Event</button>
+                  <button type="button" class="ghost" data-readiness-step="judgeAudioCheck">Mark Complete</button>
+                </div>
+              </div>
+              <div class="readiness-walkthrough-item" data-readiness-step-row="directorVisibilityCheck">
+                <div>
+                  <strong>3. Director Visibility Check</strong>
+                  <div class="note">Confirm directors can only view released packets and blocked packets remain hidden.</div>
+                </div>
+                <div class="row">
+                  <span class="badge" data-readiness-step-state>Pending</span>
+                  <button type="button" class="ghost" data-readiness-open-view="packets">Open Packets</button>
+                  <button type="button" class="ghost" data-readiness-step="directorVisibilityCheck">Mark Complete</button>
+                </div>
+              </div>
+              <div class="readiness-walkthrough-item" data-readiness-step-row="releaseGateCheck">
+                <div>
+                  <strong>4. Release Gate Validation</strong>
+                  <div class="note">Attempt blocked release, resolve blockers, then verify release and unrelease behavior.</div>
+                </div>
+                <div class="row">
+                  <span class="badge" data-readiness-step-state>Pending</span>
+                  <button type="button" class="ghost" data-readiness-open-view="packets">Open Packets</button>
+                  <button type="button" class="ghost" data-readiness-step="releaseGateCheck">Mark Complete</button>
+                </div>
+              </div>
+            </div>
+            <div class="note" id="adminReadinessStepSummary"></div>
+          </div>
+          <div class="panel">
+            <h3>Readiness History</h3>
+            <p class="hint">Latest preflight and checklist audit entries for the active event.</p>
+            <div class="note" id="adminReadinessHistorySummary">No readiness history yet.</div>
+            <ul id="adminReadinessHistoryList" class="list"></ul>
+          </div>
+          </div>
+
+        </div>
+        </div>
+      </section>
+
+      <section class="card judge-open-card" id="judgeOpenCard" role="tabpanel" aria-labelledby="judgeOpenTab">
+        <div class="tab-header">
+          <div>
+            <h2>Judge Adjudication</h2>
+            <div class="tab-subtitle">Record, transcribe, and score practice or official adjudications.</div>
+          </div>
+          <div class="tab-header-actions">
+            <span class="badge" id="judgeOpenStatusBadge">Draft</span>
+            <button type="button" class="ghost" id="judgeOpenProfileToggleBtn">Update Profile</button>
+          </div>
+        </div>
+        <div class="ios-screen">
+          <div class="panel stack" id="judgeOpenModeSelectView">
+            <h3>Judge Workspace</h3>
+            <p class="hint">Choose a mode to begin. Practice does not affect official event results.</p>
+            <div class="row">
+              <button type="button" class="btn--secondary" id="judgeOpenChoosePracticeBtn">Start Practice Adjudication</button>
+              <button type="button" class="btn-primary" id="judgeOpenChooseOfficialBtn">Start Official Adjudication</button>
+            </div>
+            <div class="note" id="judgeOpenModeHint"></div>
+          </div>
+
+          <div class="judge-open-layout is-hidden" id="judgeOpenWorkspace">
+            <div class="row judge-open-workspace-toolbar">
+              <button type="button" class="ghost" id="judgeOpenBackToLandingBtn">Back to Judge Landing</button>
+              <span class="note" id="judgeOpenWorkspaceModeLabel"></span>
+            </div>
+            <div class="judge-open-list" id="judgeOpenListView">
+              <div class="panel stack judge-open-list-panel">
+                <div class="row judge-open-list-toolbar">
+                  <strong>My Adjudications</strong>
+                  <div class="row">
+                    <button type="button" id="judgeOpenNewPacketBtn" class="btn--secondary">New Adjudication</button>
+                  </div>
+                </div>
+                <div class="note" id="judgeOpenPacketHint"></div>
+                <select id="judgeOpenPacketSelect" class="is-hidden"></select>
+                <div class="packet-card-list" id="judgeOpenPacketList"></div>
+              </div>
+              <div class="empty" id="judgeOpenEmpty">Create or select an adjudication to begin.</div>
+            </div>
+
+            <div class="judge-open-detail" id="judgeOpenDetailView">
+              <div class="detail-header">
+                <button type="button" class="ghost" id="judgeOpenBackBtn">Back</button>
+                <div class="detail-title">
+                  <div class="detail-title-main" id="judgeOpenHeaderTitle">School - Ensemble</div>
+                  <div class="detail-title-sub" id="judgeOpenHeaderSub">Draft</div>
+                </div>
+              </div>
+
+              <div class="panel stack judge-open-summary-panel" id="judgeOpenSummaryPanel">
+                <div class="row">
+                  <div class="event-meta">
+                    <div class="event-meta-name" id="judgeOpenSummaryTitle">School - Ensemble</div>
+                    <div class="event-meta-detail" id="judgeOpenSummaryMeta">Draft adjudication</div>
+                  </div>
+                  <span class="badge" id="judgeOpenSummaryStatus">Draft</span>
+                </div>
+                <div class="note" id="judgeOpenSummaryHint">Record comments, transcribe, and complete scoring.</div>
+                <div class="judge-open-workflow-chips" id="judgeOpenWorkflowChips">
+                  <span class="judge-open-step-chip" id="judgeOpenStepChipEnsemble">Ensemble</span>
+                  <span class="judge-open-step-chip" id="judgeOpenStepChipAudio">Audio</span>
+                  <span class="judge-open-step-chip" id="judgeOpenStepChipTranscript">Transcript</span>
+                  <span class="judge-open-step-chip" id="judgeOpenStepChipCaptions">Captions</span>
+                </div>
+                <div class="note" id="judgeOpenReadinessHint">Choose an ensemble to start this adjudication.</div>
+              </div>
+
+              <div class="panel stack judge-open-step-card">
+                <div class="step-heading">
+                  <span class="badge">Step 1</span>
+                  <strong>Ensemble Setup</strong>
+                </div>
+                <label>
+                  Select existing ensemble
+                  <select id="judgeOpenExistingSelect"></select>
+                </label>
+                <div class="note" id="judgeOpenEventDefaultsStatus"></div>
+                <div class="panel">
+                  <div class="note" id="judgeOpenDirectorRefStatus"></div>
+                  <div class="stack" id="judgeOpenDirectorRefContent"></div>
+                </div>
+                <select id="judgeOpenFormTypeSelect" class="is-hidden">
+                  <option value="stage">Stage</option>
+                  <option value="sight">Sight Reading</option>
+                </select>
+                <div class="segmented-control" id="judgeOpenFormTypeSegmented">
+                  <button type="button" class="segment btn--secondary" data-form="stage">Stage</button>
+                  <button type="button" class="segment btn--secondary" data-form="sight">Sight Reading</button>
+                  <button type="button" id="judgeOpenDefaultFormBtn" class="ghost">Set as default</button>
+                </div>
+              </div>
+
+              <div class="panel stack judge-open-step-card">
+                <div class="step-heading">
+                  <span class="badge">Step 2</span>
+                  <strong>Audio Capture</strong>
+                </div>
+                <div class="recording-control">
+                  <button type="button" id="judgeOpenRecordBtn" class="btn--secondary record-btn">
+                    <span class="record-dot" id="judgeOpenRecordDot" aria-hidden="true"></span>
+                    <span data-button-label id="judgeOpenRecordLabel">Start Recording</span>
+                  </button>
+                  <button type="button" id="judgeOpenStopBtn" class="btn--secondary" disabled>Stop</button>
+                  <div class="recording-meta">
+                    <span id="judgeOpenRecordingStatus" class="hint"></span>
+                    <div class="hint" id="judgeOpenMicSettingsDebug"></div>
+                    <div class="level-meter" id="judgeOpenLevelMeter" aria-hidden="true">
+                      <div class="level-meter-fill" id="judgeOpenLevelMeterFill"></div>
+                    </div>
+                    <div class="note" id="judgeOpenTapeDurationRow">
+                      Audio Duration: <span id="judgeOpenTapeDuration">0:00</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="empty" id="judgeOpenTapeEmpty">No adjudication audio yet.</div>
+                <audio id="judgeOpenTapePlayback" controls class="audio"></audio>
+                <details class="accordion-card readiness-details" id="judgeOpenSegmentsDetails">
+                  <summary>
+                    <span id="judgeOpenSegmentsSummary">Segments (0)</span>
+                    <span class="muted readiness-hint"></span>
+                  </summary>
+                  <ul id="judgeOpenSegmentsList" class="list list--compact"></ul>
+                </details>
+              </div>
+
+              <details class="panel transcript-panel judge-open-step-card" id="judgeOpenTranscriptPanel" open>
+                <summary class="step-heading">
+                  <span class="badge">Step 3</span>
+                  <strong>Transcript</strong>
+                </summary>
+                <textarea id="judgeOpenTranscriptInput" rows="6" aria-label="Transcript"></textarea>
+                <div class="row">
+                    <button type="button" id="judgeOpenTranscribeBtn" class="ghost btn--secondary">
+                    Transcribe Audio
+                    </button>
+                </div>
+              </details>
+
+              <div class="panel stack judge-open-step-card is-hidden" id="judgeOpenPrepTimePanel">
+                <div class="step-heading">
+                  <span class="badge">Sight Reading</span>
+                  <strong>Prep Time</strong>
+                </div>
+                <p class="hint">Grade II–IV: 5 min; Grade V: 6 min; Grade VI: 7 min.</p>
+                <div class="row">
+                  <button type="button" class="btn--secondary" data-prep-mins="5">Start 5 min</button>
+                  <button type="button" class="btn--secondary" data-prep-mins="6">Start 6 min</button>
+                  <button type="button" class="btn--secondary" data-prep-mins="7">Start 7 min</button>
+                </div>
+                <div class="prep-time-display" id="judgeOpenPrepTimeDisplay" aria-live="polite"></div>
+              </div>
+
+              <div class="panel stack judge-open-step-card">
+                <div class="step-heading">
+                  <span class="badge">Step 4</span>
+                  <strong>Caption Scoring</strong>
+                </div>
+                <div class="stack">
+                  <div class="row">
+                    <button type="button" id="judgeOpenDraftBtn" class="btn--secondary">
+                      Draft Comments from Transcript
+                    </button>
+                    <label class="row">
+                      <input type="checkbox" id="judgeOpenOverwriteCaptionsToggle" />
+                      Overwrite existing captions
+                    </label>
+                  </div>
+                  <div class="hint" id="judgeOpenDraftStatus"></div>
+                </div>
+                <div id="judgeOpenCaptionForm" class="stack"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sticky-bottom" id="judgeOpenStickyBar">
+          <div class="sticky-meta">
+            <div>Total: <span id="judgeOpenCaptionTotal">0</span></div>
+            <div>Rating: <span id="judgeOpenFinalRating">N/A</span></div>
+            <div class="note" id="judgeOpenSubmitHint"></div>
+          </div>
+          <button type="button" id="judgeOpenSubmitBtn" class="btn--lg btn-primary">Submit</button>
+        </div>
+      </section>
+
+      <section class="card" id="directorCard" role="tabpanel" aria-labelledby="directorTab">
+        <nav class="director-workspace-nav is-hidden" id="directorWorkspaceNav" aria-label="Director workspace navigation">
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceLandingBtn">Home</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceRegisterBtn">Register for Event</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceEnsemblesBtn">Ensembles and Forms</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceInfoBtn">Event / Site Information</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceResultsBtn">Results</button>
+        </nav>
+        <div class="ios-screen" id="directorDashboardLayout">
+
+          <!-- LANDING: school, directors, event selector -->
+          <div class="panel director-summary director-context-panel stack" id="directorSummary">
+            <div class="director-dashboard-header">
+              <p class="director-hero-kicker">Director Portal</p>
+              <div class="note" id="directorDashboardContextMeta">School: —</div>
+              <div class="note" id="directorDashboardEventMeta">Event: —</div>
+            </div>
+            <div class="director-summary-school-row">
+              <div class="director-hero-copy">
+                <div class="director-summary-school-name" id="directorSummarySchool">No school attached</div>
+              </div>
+            </div>
+            <div class="director-summary-directors" id="directorSchoolDirectors"></div>
+            <div class="row" id="directorAttachControls">
+              <select id="directorAttachSelect"></select>
+              <button type="button" id="directorAttachBtn">Confirm School</button>
+            </div>
+            <div class="director-landing-actions" id="directorLandingActions">
+              <button type="button" class="btn--secondary director-landing-btn" id="directorNavRegisterBtn">
+                <span class="director-landing-btn-title">Register for Event</span>
+                <span class="director-landing-btn-copy">Choose the current event and complete registration details.</span>
+              </button>
+              <button type="button" class="btn--secondary director-landing-btn" id="directorNavEnsemblesBtn">
+                <span class="director-landing-btn-title">Ensembles and Forms</span>
+                <span class="director-landing-btn-copy">Manage ensembles and finish the required director forms.</span>
+              </button>
+              <button type="button" class="btn--secondary director-landing-btn" id="directorNavInfoBtn">
+                <span class="director-landing-btn-title">Event / Site Information</span>
+                <span class="director-landing-btn-copy">View schedule, logistics, site details, and event documents.</span>
+              </button>
+              <button type="button" class="btn--secondary director-landing-btn" id="directorNavResultsBtn">
+                <span class="director-landing-btn-title">Results</span>
+                <span class="director-landing-btn-copy">Open released packets, adjudication materials, and results.</span>
+              </button>
+            </div>
+            <div class="director-summary-event-select stack" id="directorEventSelectBlock">
+              <label for="directorEventSelect">Event</label>
+              <div class="row">
+                <select id="directorEventSelect" class="grow"></select>
+                <button type="button" id="directorEventGoBtn" class="btn--secondary">Event Forms</button>
+                <button type="button" id="directorScheduleBtn" class="ghost">View Schedule</button>
+              </div>
+              <p class="hint">Open event forms for this school.</p>
+            </div>
+          </div>
+
+          <div class="panel stack is-hidden director-ensemble-panel" id="directorEnsemblesSection">
+            <div class="row row--between row--center">
+              <h3>School Ensembles</h3>
+              <button type="button" class="ghost" id="directorShowEnsembleFormBtn">Add Ensemble</button>
+            </div>
+            <form id="directorEnsembleForm" class="stack is-hidden">
+              <label>
+                Ensemble Name
+                <input type="text" id="directorEnsembleNameInput" placeholder="e.g. Concert Band" />
+              </label>
+              <div class="row">
+                <button type="submit" id="directorEnsembleSubmitBtn">Create Ensemble</button>
+                <button type="button" class="ghost" id="directorEnsembleCancelBtn">Cancel</button>
+              </div>
+              <div class="error" id="directorEnsembleError"></div>
+            </form>
+            <div id="directorEnsembleList" class="ensembles-list director-ensemble-list-table"></div>
+          </div>
+
+          <!-- REGISTRATION: multi-step form -->
+          <div class="panel stack is-hidden" id="directorRegistrationPanel">
+            <h3>Event Registration</h3>
+            <div class="note director-registration-meta" id="directorRegistrationMeta"></div>
+            <div class="panel director-registration-step">
+              <h4>Step 1 -- Update your profile</h4>
+              <p class="hint">Confirm your NAfME membership and cell phone are current.</p>
+              <button type="button" class="ghost" id="directorRegistrationProfileBtn">Update Profile</button>
+            </div>
+            <div class="panel director-registration-step">
+              <h4>Step 2 -- Choose ensembles</h4>
+              <p class="hint">Select participating ensembles or create a new one below.</p>
+              <div id="directorRegistrationEnsembleList" class="stack"></div>
+            </div>
+            <div class="panel director-registration-step">
+              <h4>Step 3 -- Registration preferences</h4>
+              <p class="hint">Set grade, participation options, and scheduling preferences for each selected ensemble.</p>
+              <div id="directorRegistrationGradeFlexList" class="stack"></div>
+            </div>
+            <div class="panel director-registration-step director-registration-fees">
+              <h4>Step 4 -- Fees</h4>
+              <p class="hint" id="directorRegistrationFeesHint">Each registered ensemble is $225. A Signature Form must be signed by your school's principal.</p>
+            </div>
+            <button type="button" class="btn--lg btn-primary" id="directorSaveRegistrationBtn">Save Registration</button>
+          </div>
+
+          <!-- POST-REGISTRATION: summary + action buttons -->
+          <div class="panel stack is-hidden" id="directorPostRegistration">
+            <h3 id="directorRegisteredEventName"></h3>
+            <div class="note" id="directorRegisteredEventDates"></div>
+            <div id="directorRegisteredEnsemblesSummary" class="stack"></div>
+            <div class="row">
+              <button type="button" class="btn--secondary" id="directorEditRegistrationBtn">Edit Registration</button>
+              <button type="button" class="btn--secondary" id="directorPrintSignatureBtn">Print Signature Form / Invoice</button>
+              <button type="button" class="btn--secondary" id="directorUploadSignedFormBtn">Upload signed form</button>
+              <button type="button" class="btn--secondary" id="directorEnsembleInfoBtn">Ensemble Info (Day-of Forms)</button>
+            </div>
+            <input type="file" id="directorSignedFormInput" accept=".pdf,.jpg,.jpeg,.png" class="is-hidden" />
+            <p class="hint" id="directorSignedFormStatus"></p>
+          </div>
+
+          <!-- DAY-OF FORMS: ensemble selector + entry form -->
+          <div class="stack is-hidden" id="directorDayOfFormsBlock">
+            <div class="row director-dayof-selector">
+              <label class="grow">
+                Ensemble
+                <select id="directorDayOfEnsembleSelect" class="grow"></select>
+              </label>
+              <button type="button" class="ghost is-hidden" id="directorBackToAdminPreEventBtn">
+                Back to Admin Pre-Event
+              </button>
+            </div>
+            <div class="panel group" id="directorEntryPanel">
+              <h3>Day-of Entry</h3>
+              <div class="note" id="directorEditorActiveEnsembleLabel">No active ensemble selected</div>
+              <div class="row director-entry-meta">
+                <div class="note">Status: <span id="directorEntryStatus">Incomplete</span></div>
+                <div class="note" id="directorSchoolLunchTotal"></div>
+                <div class="note" id="directorSaveStatus"></div>
+                <span class="autosave-indicator" id="directorAutosaveIndicator">Autosaved</span>
+              </div>
+              <div class="note" id="directorEntryHint">Select an ensemble above to begin.</div>
+              <form id="directorEntryForm" class="stack">
+                <label>
+                  Performance Grade (auto-derived from repertoire grades)
+                  <input type="text" id="directorPerformanceGradeInput" placeholder="Auto-derived" readonly />
+                </label>
+                <input type="checkbox" id="directorPerformanceGradeFlex" hidden />
+                <div class="error" id="performanceGradeError"></div>
+                <details class="panel accordion-card" open>
+                  <summary><div><strong>Repertoire</strong></div></summary>
+                  <div class="form-section">
+                    <div id="repertoireFields" class="stack"></div>
+                    <div class="actions">
+                      <button type="button" id="saveRepertoireBtn">Save Repertoire</button>
+                      <div class="hint" id="saveRepertoireStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Instrument Counts</strong></div></summary>
+                  <div class="form-section">
+                    <div id="instrumentationStandard" class="grid-inputs"></div>
+                    <label>Total Percussion <input type="number" id="instrumentationTotalPercussion" min="0" value="0" /></label>
+                    <div class="actions">
+                      <button type="button" id="saveInstrumentationBtn">Save Instrument Counts</button>
+                      <div class="hint" id="saveInstrumentationStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Non-Standard Instrumentation / Notes</strong></div></summary>
+                  <div class="form-section">
+                    <div class="stack">
+                      <div class="row">
+                        <strong>Non-standard instrumentation</strong>
+                        <button type="button" class="ghost" id="instrumentationNonStandardAddBtn">Add Instrument</button>
+                      </div>
+                      <div id="instrumentationNonStandard" class="stack"></div>
+                    </div>
+                    <label>Notes <textarea id="otherInstrumentationNotesInput" rows="3"></textarea></label>
+                    <div class="actions">
+                      <button type="button" id="saveNonStandardBtn">Save Instrument Notes</button>
+                      <div class="hint" id="saveNonStandardStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Rule 3C Doubling</strong></div></summary>
+                  <div class="form-section">
+                    <div id="rule3cRows" class="stack"></div>
+                    <label>Rule 3C notes <textarea id="rule3cNotesInput" rows="3"></textarea></label>
+                    <div class="actions">
+                      <button type="button" id="saveRule3cBtn">Save Rule 3C</button>
+                      <div class="hint" id="saveRule3cStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Seating Chart</strong></div></summary>
+                  <div class="form-section">
+                    <div id="seatingRows" class="stack"></div>
+                    <label>Seating / setup notes <textarea id="seatingNotesInput" rows="3"></textarea></label>
+                    <div class="actions">
+                      <button type="button" id="saveSeatingBtn">Save Seating</button>
+                      <div class="hint" id="saveSeatingStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Percussion</strong></div></summary>
+                  <div class="form-section">
+                    <div id="percussionOptions" class="grid-options"></div>
+                    <div class="hint">
+                      A limited number of additional items may be available if needed. Create a percussion master list for your group and confirm student equipment movement roles so school equipment does not leave with your ensemble.
+                    </div>
+                    <div class="hint">
+                      <a href="director-percussion-assignment-chart.pdf" download>Download Percussion Assignment Chart (PDF)</a>
+                    </div>
+                    <label>Other percussion requests <textarea id="percussionNotesInput" rows="3"></textarea></label>
+                    <div class="actions">
+                      <button type="button" id="savePercussionBtn">Save Percussion</button>
+                      <div class="hint" id="savePercussionStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <details class="panel accordion-card">
+                  <summary><div><strong>Pizza Order</strong></div></summary>
+                  <div class="form-section">
+                    <div class="hint">Each lunch includes two slices of pizza, chips/snack, and soda or bottled water. Cost per meal is $8.00.</div>
+                    <label>Pepperoni pizza lunch quantity <input type="number" id="lunchPepperoniInput" min="0" value="0" /></label>
+                    <label>Cheese pizza lunch quantity <input type="number" id="lunchCheeseInput" min="0" value="0" /></label>
+                    <label>
+                      Pizza pickup timing
+                      <select id="pizzaPickupTimingInput">
+                        <option value="">Select timing</option>
+                        <option value="before">Before performance time</option>
+                        <option value="after">After performance time</option>
+                      </select>
+                    </label>
+                    <div class="actions">
+                      <button type="button" id="saveLunchBtn">Save Pizza Order</button>
+                      <div class="hint" id="lunchTotalCost">$0.00</div>
+                      <div class="hint">Make checks payable to Ashley High School Band Boosters.</div>
+                      <div class="hint">Payment accepted by check or cash (one lump-sum payment for total meals).</div>
+                      <div class="hint" id="saveLunchStatus"></div>
+                    </div>
+                  </div>
+                </details>
+                <div class="actions entry-ready-actions">
+                  <button type="button" id="directorEntryReadyBtn" class="full-width-cta">Mark as Ready</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="panel stack is-hidden director-results-shell" id="directorResultsSection">
+            <details class="panel accordion-card group director-results-card" id="directorResultsPanel" open>
+              <summary><div><strong>Results Packet</strong></div></summary>
+              <div class="form-section">
+                <div class="empty" id="directorEmpty">No results released yet.</div>
+                <div id="directorPackets" class="stack"></div>
+              </div>
+            </details>
+          </div>
+
+        </div>
+      </section>
+
+      <section class="card is-hidden" id="eventDetailPage">
+        <nav class="director-workspace-nav is-hidden" id="eventDetailDirectorNav" aria-label="Director event navigation">
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorLandingBtn">Home</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorRegisterBtn">Register for Event</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorEnsemblesBtn">Ensembles and Forms</button>
+          <button type="button" class="ghost director-workspace-nav-btn is-active" id="eventDetailDirectorInfoBtn">Event / Site Information</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorResultsBtn">Results</button>
+        </nav>
+        <div class="row event-detail-topbar">
+          <p class="director-hero-kicker">Event Resources</p>
+          <button type="button" class="ghost" id="eventDetailBackBtn">Back to Dashboard</button>
+        </div>
+        <div class="panel director-info-shell">
+          <div class="director-state-resources stack">
+            <p class="director-state-resources-kicker">Official NCBA State Resource</p>
+            <a
+              class="director-state-resources-link"
+              href="https://www.ncbandmasters.org/concert-band-mpa"
+              target="_blank"
+              rel="noopener"
+              aria-label="Open NCBA Concert Band MPA state resources in a new tab"
+            >
+              Open NCBA Concert Band MPA Resources
+              <span aria-hidden="true">↗</span>
+            </a>
+            <p class="note director-state-resources-helper">
+              Use this page for state-level event rules, required forms, adjudication procedures, and policy updates.
+            </p>
+          </div>
+          <div class="director-event-schedule stack">
+            <h3>Event Schedule</h3>
+            <div class="stack">
+              <div class="row" id="eventScheduleAdminControls">
+                <input type="file" id="eventScheduleFileInput" accept="application/pdf" />
+                <button type="button" class="ghost" id="eventScheduleUploadBtn">Upload PDF</button>
+              </div>
+              <div class="note" id="eventScheduleStatus"></div>
+              <div class="stack is-hidden" id="eventScheduleDirectorWrap">
+                <div class="note" id="eventScheduleDirectorHint"></div>
+                <div class="schedule-timeline-table-wrap" id="eventScheduleDirectorTableWrap"></div>
+              </div>
+              <div class="row" id="eventScheduleLinkRow">
+                <a id="eventScheduleLink" href="#" target="_blank" rel="noopener">Open Schedule PDF</a>
+              </div>
+              <iframe id="eventScheduleFrame" class="event-schedule-frame" title="Event Schedule PDF"></iframe>
+              <div class="empty" id="eventScheduleEmpty">No schedule PDF uploaded yet.</div>
+            </div>
+          </div>
+          <div class="director-sightreading-reminders stack" id="directorSightReadingReminders">
+            <h3>Sight-Reading Reminders</h3>
+            <div class="director-sr-overview stack">
+              <p class="director-sr-kicker">At A Glance</p>
+              <ul class="director-sr-overview-list">
+                <li>Assign percussion parts before arrival.</li>
+                <li>Pre-plan all wind part splits and section coverage.</li>
+                <li>Practice sight-reading at your current registered MPA level.</li>
+              </ul>
+            </div>
+
+            <details class="director-sr-card stack" open>
+              <summary>
+                <span class="director-sr-summary-title">Preparation Expectations</span>
+              </summary>
+              <div class="director-sr-card-body stack">
+                <section class="director-sightreading-section stack">
+                  <h4>Instrumentation and Percussion Assignments</h4>
+                  <p>
+                    In the sight-reading document, there is a list of instruments included in each piece. Please be
+                    sure that before arriving at MPA, you have assigned percussion parts so your percussionists know
+                    exactly what they will be playing when they enter the sight-reading room.
+                  </p>
+                </section>
+
+                <section class="director-sightreading-section stack">
+                  <h4>Wind Part Splits</h4>
+                  <p>
+                    Please review and plan for any part splits ahead of time. For example, if there are only two
+                    clarinet parts and a student is assigned to Clarinet 3 in your band, you should already know
+                    whether that student will cover Clarinet 1 or 2, and how any additional clarinet players will be
+                    assigned. This applies to all sections as needed.
+                  </p>
+                </section>
+
+                <section class="director-sightreading-section stack">
+                  <h4>Sight-Reading Level Reminder</h4>
+                  <p>
+                    As a reminder, ensembles now sight-read at the same level at which they are registered to perform.
+                    Prior to 2024, ensembles sight-read one level below, but that is no longer the case. For best
+                    preparation, please practice sight-reading at your ensemble&apos;s current MPA level with your
+                    students.
+                  </p>
+                </section>
+              </div>
+            </details>
+
+            <details class="director-sr-card stack">
+              <summary>
+                <span class="director-sr-summary-title">Access and Script</span>
+              </summary>
+              <div class="director-sr-card-body stack">
+                <section class="director-sightreading-section stack">
+                  <h4>Sight-Reading Music Access</h4>
+                  <p>
+                    The Eastern District sight-reading music that has been purchased and scanned for preparation
+                    purposes is avaliable through this link.
+                  </p>
+                  <div class="director-sr-script-actions row">
+                    <a
+                      href="https://drive.google.com/drive/folders/0B8MCjRGEWkOnaW5iN0d4enY0ZkE?resourcekey=0-e460Kn3V2Vdjf59NHpCavg"
+                      target="_blank"
+                      rel="noopener"
+                    >Past UIL Sightreading Music</a>
+                  </div>
+                </section>
+
+                <section class="director-sightreading-section stack">
+                  <h4>Sight-Reading Script</h4>
+                  <p>
+                    Please take time to review the official sight-reading script and consider reading it to your
+                    students so they understand what to expect and are familiar with the procedures and rules before
+                    entering the room.
+                  </p>
+                  <div class="director-sr-script-actions row">
+                    <a
+                      href="/director-sightreading-script.pdf"
+                      target="_blank"
+                      rel="noopener"
+                    >View Script PDF</a>
+                    <a href="/director-sightreading-script.pdf" download="director-sightreading-script.pdf">Download Script PDF</a>
+                  </div>
+                </section>
+              </div>
+            </details>
+
+            <details class="director-sr-card stack">
+              <summary>
+                <span class="director-sr-summary-title">Additional Notes from Richard Holmes</span>
+              </summary>
+              <div class="director-sr-card-body stack">
+                <ul class="director-sr-list">
+                  <li>
+                    There is not an E-flat Contra Bass Clarinet printed part for NCBA Grade 2 and Grade 3. A Baritone
+                    Saxophone part and a Tuba part are included in the folder, and directors may choose which one to
+                    use.
+                  </li>
+                  <li>There is an E-flat Contra Bass Clarinet part for NCBA Grade Levels 4, 5, and 6.</li>
+                  <li>
+                    For 2026, there is a string bass part for each level.
+                    <span class="director-sr-tag">2026 Update</span>
+                  </li>
+                </ul>
+              </div>
+            </details>
+
+            <details class="director-sr-card stack">
+              <summary>
+                <span class="director-sr-summary-title">Auxiliary Percussion by Grade</span>
+              </summary>
+              <div class="director-sr-card-body stack">
+                <div class="director-sr-table-wrap">
+                  <table class="director-sr-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Grade / UIL Level</th>
+                        <th scope="col">Possible Number of Players</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <th scope="row">Grade 2 / UIL Level 2</th>
+                        <td>1 player could play both Triangle and Crash Cymbals.</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Grade 3 / UIL Level 3</th>
+                        <td>2 players minimum to play Crash Cymbals, Suspended Cymbal, and Triangle.</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Grade 4 / UIL Level 4</th>
+                        <td>2 players minimum to play Crash Cymbals, Triangle, and Suspended Cymbal.</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Grade 5 / UIL Level 5</th>
+                        <td>1 player could play both Crash Cymbals and Suspended Cymbals.</td>
+                      </tr>
+                      <tr>
+                        <th scope="row">Grade 6 / UIL Level 6</th>
+                        <td>2 players could play Wood Block, Suspended Cymbal, and Crash Cymbals.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </details>
+
+            <details class="director-sr-card stack">
+              <summary>
+                <span class="director-sr-summary-title">Instrumentation by Level</span>
+              </summary>
+              <div class="director-sr-card-body stack">
+                <div class="director-sr-instrument-grid">
+                  <section class="director-sr-grade-card stack">
+                    <h4>Grade 2 Bands (UIL Level 2)</h4>
+                    <ul class="director-sr-bullet-list">
+                      <li>2 Clarinet parts</li>
+                      <li>2 Trumpet parts</li>
+                      <li>Snare Drum</li>
+                      <li>Bass Drum</li>
+                      <li>Crash Cymbals</li>
+                      <li>Triangle</li>
+                      <li>Bells</li>
+                      <li>Timpani (2)</li>
+                    </ul>
+                  </section>
+
+                  <section class="director-sr-grade-card stack">
+                    <h4>Grade 3 Bands (UIL Level 3)</h4>
+                    <ul class="director-sr-bullet-list">
+                      <li>2 Clarinet parts</li>
+                      <li>2 Trumpet parts</li>
+                      <li>Snare Drum</li>
+                      <li>Bass Drum</li>
+                      <li>Crash Cymbals</li>
+                      <li>Triangle</li>
+                      <li>Suspended Cymbal</li>
+                      <li>Bells</li>
+                      <li>Timpani (2)</li>
+                    </ul>
+                  </section>
+
+                  <section class="director-sr-grade-card stack">
+                    <h4>Grade 4 Bands (UIL Level 4)</h4>
+                    <ul class="director-sr-bullet-list">
+                      <li>2 Flutes</li>
+                      <li>2 Clarinets</li>
+                      <li>2 Alto Saxophones</li>
+                      <li>2 Trumpets</li>
+                      <li>2 Trombones</li>
+                      <li>Snare Drum</li>
+                      <li>Bass Drum</li>
+                      <li>Crash Cymbals</li>
+                      <li>Suspended Cymbal</li>
+                      <li>Triangle</li>
+                      <li>Bells</li>
+                      <li>Timpani (3)</li>
+                    </ul>
+                  </section>
+
+                  <section class="director-sr-grade-card stack">
+                    <h4>Grade 5 Bands (UIL Level 5)</h4>
+                    <ul class="director-sr-bullet-list">
+                      <li>2 Flute parts</li>
+                      <li>3 Clarinet parts</li>
+                      <li>2 Alto Sax parts</li>
+                      <li>3 Trumpet parts</li>
+                      <li>2 French Horn parts</li>
+                      <li>2 Trombone parts</li>
+                      <li>Snare Drum</li>
+                      <li>Bass Drum</li>
+                      <li>Suspended Cymbal</li>
+                      <li>Crash Cymbals</li>
+                      <li>Bells</li>
+                      <li>Timpani (4) (5 pitches)</li>
+                    </ul>
+                  </section>
+
+                  <section class="director-sr-grade-card stack">
+                    <h4>Grade 6 Bands (UIL Level 6)</h4>
+                    <ul class="director-sr-bullet-list">
+                      <li>3 Clarinet parts</li>
+                      <li>3 Trumpet parts</li>
+                      <li>2 French Horn parts</li>
+                      <li>2 Trombone parts</li>
+                      <li>Snare Drum</li>
+                      <li>Bass Drum</li>
+                      <li>Suspended Cymbal</li>
+                      <li>Crash Cymbals</li>
+                      <li>Wood Block</li>
+                      <li>Bells</li>
+                      <li>Timpani (3)</li>
+                    </ul>
+                  </section>
+                </div>
+              </div>
+            </details>
+          </div>
+          <div class="director-site-maps stack" id="directorSiteMaps">
+            <h3>Traffic Flow Maps</h3>
+            <figure class="director-site-map-card stack">
+              <img
+                src="/director-campus-flow.png"
+                alt="Ashley High School campus traffic flow and parking map"
+                class="director-site-map-image"
+              />
+              <figcaption>Campus Flow and Parking</figcaption>
+            </figure>
+            <figure class="director-site-map-card stack">
+              <img
+                src="/director-student-dropoff.png"
+                alt="Ashley High School student drop-off traffic map"
+                class="director-site-map-image"
+              />
+              <figcaption>Student Drop-Off</figcaption>
+            </figure>
+            <figure class="director-site-map-card stack">
+              <img
+                src="/director-meac-flow.jpg"
+                alt="Murray and Ashley campus interior flow map for warm-up, stage performance, sight-reading, and holding"
+                class="director-site-map-image"
+              />
+              <figcaption>MEAC Interior Flow</figcaption>
+            </figure>
+          </div>
+
+          <div class="director-site-directions stack" id="directorSiteDirections">
+            <h3>Driving Directions to Ashley High School</h3>
+
+            <section class="director-site-route stack">
+              <h4>From I-40 (Option 1 - Most Direct Route)</h4>
+              <ol>
+                <li>Start at the Eastern Terminus of I-40 (N College Rd, Wilmington, NC 28405).</li>
+                <li>Head south on NC-132 S / N College Rd for 9.4 miles.</li>
+                <li>Continue straight onto Carolina Beach Rd (US-421 S) for 2.6 miles.</li>
+                <li>Turn right onto Halyburton Memorial Parkway (Veterans Park entrance).</li>
+                <li>Turn right at the first fork (next to the soccer fields).</li>
+                <li>Follow this road to the back of the school.</li>
+                <li>Enter the loading dock area using the second entrance.</li>
+              </ol>
+            </section>
+
+            <section class="director-site-route stack">
+              <h4>From I-40 (Option 2 - via Randall Pkwy &amp; Independence Blvd)</h4>
+              <p class="note">This route provides a smoother flow of traffic compared to staying on College Road the entire way.</p>
+              <ol>
+                <li>Start at the Eastern Terminus of I-40 (N College Rd, Wilmington, NC 28405).</li>
+                <li>Turn right onto Randall Parkway and continue for 1.7 miles.</li>
+                <li>Use the left 2 lanes to turn left onto Independence Blvd and continue for 4.1 miles.</li>
+                <li>Use the left 2 lanes to turn left onto US-421 S / Carolina Beach Rd.</li>
+                <li>Continue on Carolina Beach Rd for 3.0 miles.</li>
+                <li>At Monkey Junction, merge right to stay on Carolina Beach Rd (US-421 S).</li>
+                <li>Continue for 2.7 more miles.</li>
+                <li>Turn right onto Halyburton Memorial Parkway (Ashley High School entrance).</li>
+                <li>Turn right at the first fork (next to the soccer fields).</li>
+                <li>Follow this road to the back of the school.</li>
+                <li>Enter the loading dock area using the second entrance.</li>
+              </ol>
+            </section>
+
+            <section class="director-site-route stack">
+              <h4>From US-17/US-76/US-421 Cape Fear Memorial Bridge</h4>
+              <ol>
+                <li>Continue south over the Cape Fear Memorial Bridge on US-17/US-76/US-421.</li>
+                <li>Turn right onto US-421 S / S 3rd St (signs for Carolina Beach/Kure Beach).</li>
+                <li>Continue on US-421 S for 0.9 miles.</li>
+                <li>Use the left 2 lanes to turn left onto US-421 S / Carolina Beach Rd.</li>
+                <li>Pass by McDonald&apos;s (on the left in 1.5 miles).</li>
+                <li>Continue on Carolina Beach Rd for 5.7 miles.</li>
+                <li>At Monkey Junction, merge right to stay on Carolina Beach Rd (US-421 S).</li>
+                <li>Continue for 2.7 more miles.</li>
+                <li>Turn right onto Halyburton Memorial Parkway (Ashley High School entrance).</li>
+                <li>Turn right at the first fork (next to the soccer fields).</li>
+                <li>Follow this road to the back of the school.</li>
+                <li>Enter the loading dock area using the second entrance.</li>
+              </ol>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+      <div class="modal" id="authModal" aria-hidden="true">
+        <div class="modal-backdrop" id="authModalBackdrop"></div>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Sign in">
+          <div class="modal-header">
+            <h2>Sign In</h2>
+            <button type="button" class="ghost" id="authModalClose">Close</button>
+          </div>
+          <div id="authSignInView" class="stack">
+            <form id="emailForm" class="stack">
+              <label>
+                Email
+                <input type="email" id="emailInput" required />
+              </label>
+              <label>
+                Password
+                <input type="password" id="passwordInput" required />
+              </label>
+              <div class="row">
+                <button type="submit" id="emailSignInBtn">Sign In</button>
+                <button type="button" id="anonymousBtn" class="ghost">
+                  Anonymous Sign In
+                </button>
+              </div>
+              <button type="button" id="forgotPasswordBtn" class="ghost">
+                Forgot password
+              </button>
+            </form>
+            <button type="button" id="showDirectorSignupBtn" class="ghost">
+              Create Director Account
+            </button>
+          </div>
+
+          <div id="authDirectorView" class="stack is-hidden">
+            <h3>Create Director Account</h3>
+            <label>
+              Email
+              <input type="email" id="directorEmailInput" />
+            </label>
+            <label>
+              Password
+              <input type="password" id="directorPasswordInput" />
+            </label>
+            <label>
+              School (required)
+              <select id="directorSchoolSelect"></select>
+            </label>
+            <button type="button" id="directorSignupBtn">Create Director Account</button>
+            <button type="button" id="backToSignInBtn" class="ghost">
+              Back to Sign In
+            </button>
+            <div class="hint">
+              Directors only. Judges are provisioned by admin. Directors can switch schools later.
+            </div>
+          </div>
+
+          <div id="authAccountView" class="stack is-hidden">
+            <div class="note" id="accountSummary"></div>
+            <div class="row" id="modalAuthActions">
+              <button type="button" id="signOutBtn" class="ghost" disabled>
+                Sign Out
+              </button>
+            </div>
+          </div>
+          <div class="note" id="roleHint"></div>
+        </div>
+      </div>
+
+      <div class="modal" id="sessionExpiredModal" aria-hidden="true">
+        <div class="modal-backdrop" id="sessionExpiredBackdrop"></div>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Session expired">
+          <div class="modal-header">
+            <h2>Session Expired</h2>
+          </div>
+          <div class="stack">
+            <div class="note">Session expired. Please sign in again.</div>
+            <button type="button" id="sessionExpiredSignInBtn">Sign In</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal" id="directorProfileModal" aria-hidden="true">
+        <div class="modal-backdrop" id="directorProfileBackdrop"></div>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Director Profile">
+          <div class="modal-header">
+            <h2>Director Profile</h2>
+            <button type="button" class="ghost" id="directorProfileClose">Close</button>
+          </div>
+          <form id="directorProfileForm" class="stack">
+            <label>
+              Name
+              <input type="text" id="directorProfileNameInput" />
+            </label>
+            <label>
+              NAfME Membership Number
+              <input type="text" id="directorProfileNafmeNumberInput" />
+            </label>
+            <label>
+              NAfME Membership Expiration Date
+              <input type="date" id="directorProfileNafmeExpInput" />
+            </label>
+            <label>
+              Cell Phone
+              <input type="tel" id="directorProfileCellPhoneInput" placeholder="e.g. 555-123-4567" />
+            </label>
+            <label>
+              Membership Card Image
+              <input type="file" id="directorProfileCardInput" accept="image/*" />
+            </label>
+            <div class="note" id="directorProfileCardStatus"></div>
+            <img id="directorProfileCardPreview" class="profile-preview is-hidden" alt="Membership card preview" />
+            <div class="row">
+              <button type="button" class="ghost" id="directorProfileResetPasswordBtn">Send Password Reset Email</button>
+            </div>
+            <div class="hint">Check Spam/Junk if the reset email does not arrive in a few minutes.</div>
+            <div class="note" id="directorProfileResetPasswordStatus"></div>
+            <div class="row">
+              <button type="submit" id="directorProfileSaveBtn">Save Profile</button>
+              <button type="button" class="ghost" id="directorProfileCancelBtn">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="modal" id="userProfileModal" aria-hidden="true">
+        <div class="modal-backdrop" id="userProfileBackdrop"></div>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Profile">
+          <div class="modal-header">
+            <h2>Profile</h2>
+            <button type="button" class="ghost" id="userProfileClose">Close</button>
+          </div>
+          <form id="userProfileForm" class="stack">
+            <label>
+              Display Name
+              <input type="text" id="userProfileNameInput" />
+            </label>
+            <div class="row">
+              <button type="button" class="ghost" id="userProfileResetPasswordBtn">Send Password Reset Email</button>
+            </div>
+            <div class="hint">Check Spam/Junk if the reset email does not arrive in a few minutes.</div>
+            <div class="note" id="userProfileResetPasswordStatus"></div>
+            <div class="note" id="userProfileStatus"></div>
+            <div class="row">
+              <button type="submit" id="userProfileSaveBtn">Save</button>
+              <button type="button" class="ghost" id="userProfileCancelBtn">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="modal" id="liveEventCheckinModal" aria-hidden="true">
+        <div class="modal-backdrop" id="liveEventCheckinBackdrop"></div>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Live Event Check-in">
+          <div class="modal-header">
+            <h2 id="liveEventCheckinTitle">Ensemble Check-in</h2>
+            <button type="button" class="ghost" id="liveEventCheckinClose">Close</button>
+          </div>
+          <div id="liveEventCheckinBody" class="stack"></div>
+        </div>
+      </div>
+
+    <script src="/shared/grade1-lookup.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
+      

@@ -1,0 +1,288 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasEmailAuth() {
+      return isSignedIn() && request.auth.token.email is string;
+    }
+
+    function isDirectorOnlyRoles(roles) {
+      return roles is map
+        && roles.director == true
+        && (roles.admin == false || !("admin" in roles))
+        && (roles.judge == false || !("judge" in roles))
+        && (roles.teamLead == false || !("teamLead" in roles));
+    }
+
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userRole() {
+      return userData().role;
+    }
+
+    function userSchoolId() {
+      return userData().schoolId;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && (userRole() == "admin" || userData().roles.admin == true);
+    }
+
+    function isJudge() {
+      return isSignedIn()
+        && (userRole() == "judge" || userData().roles.judge == true);
+    }
+
+    function isTeamLead() {
+      return isSignedIn()
+        && (userRole() == "teamLead" || userData().roles.teamLead == true);
+    }
+
+    function isOpsLead() {
+      return isAdmin() || isTeamLead();
+    }
+
+    function isDirector() {
+      return isSignedIn()
+        && (userRole() == "director" || userData().roles.director == true);
+    }
+
+    function isDirectorForSchool(schoolId) {
+      return isDirector() && userSchoolId() == schoolId;
+    }
+
+    function isActiveEvent(eventId) {
+      return get(/databases/$(database)/documents/events/$(eventId)).data.isActive == true;
+    }
+
+    function schoolExists(schoolId) {
+      return exists(/databases/$(database)/documents/schools/$(schoolId));
+    }
+
+    function schoolEnsembleExists(schoolId, ensembleId) {
+      return exists(/databases/$(database)/documents/schools/$(schoolId)/ensembles/$(ensembleId));
+    }
+
+    match /users/{userId} {
+      allow read: if isAdmin()
+        || (isOpsLead()
+          && (
+            resource.data.role == "director"
+            || resource.data.roles.director == true
+          ))
+        || request.auth.uid == userId
+        || (isDirector()
+          && resource.data.schoolId == userSchoolId()
+          && (
+            resource.data.role == "director"
+            || resource.data.roles.director == true
+          ));
+      allow create: if isAdmin()
+        || (request.auth.uid == userId
+          && hasEmailAuth()
+          && request.resource.data.role == "director"
+          && request.resource.data.keys().hasOnly([
+            "role",
+            "roles",
+            "schoolId",
+            "email",
+            "displayName",
+            "nafmeMembershipNumber",
+            "nafmeMembershipExp",
+            "nafmeCardImageUrl",
+            "nafmeCardImagePath",
+            "cellPhone",
+            "createdAt",
+            "updatedAt"
+          ])
+          && request.resource.data.email == request.auth.token.email
+          && isDirectorOnlyRoles(request.resource.data.roles)
+          && request.resource.data.schoolId is string
+          && exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)));
+      allow update: if isAdmin()
+        || (request.auth.uid == userId
+          && isDirector()
+          && hasEmailAuth()
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "schoolId",
+            "updatedAt",
+            "displayName",
+            "nafmeMembershipNumber",
+            "nafmeMembershipExp",
+            "nafmeCardImageUrl",
+            "nafmeCardImagePath",
+            "cellPhone",
+            "roles"
+          ])
+          && (
+            request.resource.data.roles == resource.data.roles
+            || (resource.data.roles == null
+              && isDirectorOnlyRoles(request.resource.data.roles))
+          )
+          && (
+            request.resource.data.schoolId == resource.data.schoolId
+            || (resource.data.schoolId == null
+              && request.resource.data.schoolId is string
+              && exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)))
+          ));
+      allow delete: if isAdmin();
+    }
+
+    match /schools/{schoolId} {
+      allow read: if true;
+      allow write: if isAdmin();
+
+      match /ensembles/{ensembleId} {
+        allow read: if isAdmin()
+          || isJudge()
+          || (isDirector() && userSchoolId() == schoolId);
+        allow create, update, delete: if isAdmin()
+          || (isDirector() && userSchoolId() == schoolId);
+      }
+    }
+
+    match /ensembles/{ensembleId} {
+      allow read: if isAdmin()
+        || isDirectorForSchool(resource.data.schoolId);
+      allow create: if isAdmin()
+        || isDirectorForSchool(request.resource.data.schoolId);
+      allow update: if isAdmin()
+        || (isDirectorForSchool(resource.data.schoolId)
+          && request.resource.data.schoolId == resource.data.schoolId);
+      allow delete: if isAdmin();
+    }
+
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+
+      match /schedule/{entryId} {
+        allow read: if ((isOpsLead() || isJudge()) && isActiveEvent(eventId))
+          || isDirectorForSchool(resource.data.schoolId);
+        allow create, update: if isOpsLead()
+          && request.resource.data.performanceAt is timestamp
+          && request.resource.data.schoolId is string
+          && request.resource.data.ensembleId is string
+          && schoolExists(request.resource.data.schoolId)
+          && schoolEnsembleExists(
+            request.resource.data.schoolId,
+            request.resource.data.ensembleId
+          );
+        allow delete: if isAdmin();
+      }
+
+      match /entries/{ensembleId} {
+        allow read: if isOpsLead()
+          || (isDirector() && (resource == null || resource.data.schoolId == userSchoolId()))
+          || (isJudge() && isActiveEvent(eventId));
+        allow create, update: if isOpsLead()
+          || (isDirector()
+            && request.resource.data.schoolId == userSchoolId()
+            && request.resource.data.eventId == eventId
+            && request.resource.data.ensembleId == ensembleId);
+      }
+
+      match /assignments/{assignmentId} {
+        allow read: if isOpsLead() || isJudge();
+        allow write: if isAdmin();
+      }
+
+      match /schoolRegistrations/{schoolId} {
+        allow read: if isOpsLead()
+          || (isDirector() && schoolId == userSchoolId());
+        allow create, update: if isOpsLead()
+          || (isDirector() && schoolId == userSchoolId());
+        allow delete: if isAdmin();
+      }
+    }
+
+    match /mpaRepertoire/{pieceId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isOpsLead()
+        || (isJudge()
+          && (resource == null || resource.data.judgeUid == request.auth.uid))
+        || (resource != null
+          && isDirectorForSchool(resource.data.schoolId)
+          && resource.data.status == "released");
+
+      allow create: if isJudge()
+        && request.resource.data.judgeUid == request.auth.uid
+        && request.resource.data.status == "submitted"
+        && request.resource.data.locked == true;
+
+      allow update: if isAdmin()
+        || (isJudge()
+          && resource.data.judgeUid == request.auth.uid
+          && resource.data.locked == false
+          && resource.data.status == "submitted"
+          && request.resource.data.locked == resource.data.locked
+          && request.resource.data.judgeUid == resource.data.judgeUid
+          && request.resource.data.eventId == resource.data.eventId
+          && request.resource.data.ensembleId == resource.data.ensembleId
+          && request.resource.data.judgePosition == resource.data.judgePosition
+          && request.resource.data.status == resource.data.status);
+
+      allow delete: if isAdmin();
+    }
+
+    match /packets/{packetId} {
+      allow read: if isOpsLead()
+        || (isJudge() && (resource == null || resource.data.createdByJudgeUid == request.auth.uid))
+        || (resource != null
+          && isDirectorForSchool(resource.data.schoolId)
+          && resource.data.status == "released");
+
+      allow create: if isJudge()
+        && request.resource.data.createdByJudgeUid == request.auth.uid
+        && request.resource.data.status == "draft"
+        && request.resource.data.locked == false;
+
+      allow update: if isAdmin()
+        || (isJudge()
+          && resource.data.createdByJudgeUid == request.auth.uid
+          && resource.data.locked == false
+          && request.resource.data.locked == resource.data.locked
+          && request.resource.data.status == resource.data.status);
+
+      allow delete: if isAdmin();
+
+      match /sessions/{sessionId} {
+        allow read: if isOpsLead()
+          || (isJudge()
+            && get(/databases/$(database)/documents/packets/$(packetId)).data.createdByJudgeUid == request.auth.uid)
+          || (isDirectorForSchool(get(/databases/$(database)/documents/packets/$(packetId)).data.schoolId)
+            && get(/databases/$(database)/documents/packets/$(packetId)).data.status == "released");
+        allow create, update: if isJudge()
+          && get(/databases/$(database)/documents/packets/$(packetId)).data.createdByJudgeUid == request.auth.uid
+          && get(/databases/$(database)/documents/packets/$(packetId)).data.locked == false;
+        allow delete: if isAdmin();
+      }
+
+      match /audit/{auditId} {
+        allow read: if isAdmin();
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /rateLimits/{docId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

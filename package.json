@@ -1,0 +1,19 @@
+{
+  "name": "mpa-judge-v2",
+  "private": true,
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "test:unit": "vitest run tests/unit/*.test.js",
+    "test:e2e": "playwright test -c playwright.config.ts",
+    "test:e2e:smoke": "MPA_PLAYWRIGHT_REPORT=reports/e2e_smoke_results.json playwright test -c playwright.config.ts tests/e2e/smoke.spec.ts",
+    "test:e2e:release": "MPA_PLAYWRIGHT_REPORT=reports/e2e_release_results.json playwright test -c playwright.config.ts tests/e2e/release.spec.ts",
+    "report:e2e:smoke": "MPA_E2E_REPORT_PATH=reports/e2e_smoke_results.json MPA_E2E_REPORT_MD_PATH=reports/e2e_smoke_report.md MPA_E2E_REPORT_TITLE='Smoke E2E Report' node scripts/e2e_report.js",
+    "report:e2e:release": "MPA_E2E_REPORT_PATH=reports/e2e_release_results.json MPA_E2E_REPORT_MD_PATH=reports/e2e_release_report.md MPA_E2E_REPORT_TITLE='Release E2E Report' node scripts/e2e_report.js",
+    "verify:baseline": "node scripts/verify_baseline.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "vitest": "^4.0.18"
+  }
+}

@@ -1,0 +1,330 @@
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { doc, getDoc } from "./modules/firestore.js";
+import { auth, db, firebaseConfig } from "./firebase.js";
+import { COLLECTIONS, state } from "./state.js";
+import { watchSchools } from "./modules/admin.js";
+import { startAutosaveLoop } from "./modules/autosave.js";
+import { resetJudgeOpenState, stopOpenRecording } from "./modules/judge-open.js";
+import {
+  bindAuthHandlers,
+  bindAdminHandlers,
+  bindAppHandlers,
+  bindDirectorHandlers,
+  bindJudgeOpenHandlers,
+  closeAuthModal,
+  handleHashChange,
+  hideSessionExpiredModal,
+  refreshSchoolDropdowns,
+  renderDirectorProfile,
+  setAuthView,
+  setDirectorEntryHint,
+  setDirectorEntryStatusLabel,
+  setDirectorSaveStatus,
+  setMainInteractionDisabled,
+  setRoleHint,
+  showSessionExpiredModal,
+  startWatchers,
+  stopOpenLevelMeter,
+  stopWatchers,
+  restoreOpenPacketFromPrefs,
+  updateRoleUI,
+  updateAuthUI,
+  updateConnectivityUI,
+  initTabs,
+  setTab,
+} from "./modules/ui.js";
+import { hasUnsavedChanges } from "./modules/navigation.js";
+
+const VERSION_CHECK_INTERVAL_MS = 5 * 60_000;
+const VERSION_CHECK_PATHS = ["/index.html"];
+const AUTH_INIT_DELAY_MS = 200;
+
+let versionCheckBaseline = null;
+let versionCheckTimerId = null;
+let versionReloadTriggered = false;
+let authInitTimeoutId = null;
+let schoolDropdownsUnsub = null;
+
+function ensureSchoolDropdownsWatcher() {
+  if (schoolDropdownsUnsub) return;
+  schoolDropdownsUnsub = watchSchools(() => {
+    refreshSchoolDropdowns();
+  });
+}
+
+async function getAssetSignature(path) {
+  const url = `${path}${path.includes("?") ? "&" : "?"}vcheck=${Date.now()}`;
+  const response = await fetch(url, {
+    method: "HEAD",
+    cache: "no-store",
+    headers: { "cache-control": "no-cache" },
+  });
+  if (!response.ok) {
+    throw new Error(`Version check failed for ${path}: ${response.status}`);
+  }
+  const etag = response.headers.get("etag") || "";
+  if (!etag) {
+    throw new Error(`Version check skipped: missing ETag for ${path}`);
+  }
+  return etag;
+}
+
+async function getVersionSignatureSnapshot() {
+  const signatures = await Promise.all(
+    VERSION_CHECK_PATHS.map(async (path) => [path, await getAssetSignature(path)])
+  );
+  return Object.fromEntries(signatures);
+}
+
+function triggerVersionReload() {
+  if (versionReloadTriggered) return;
+  versionReloadTriggered = true;
+  const url = new URL(window.location.href);
+  url.searchParams.set("refresh", String(Date.now()));
+  window.location.replace(url.toString());
+}
+
+async function runVersionCheck({ initial = false } = {}) {
+  try {
+    const next = await getVersionSignatureSnapshot();
+    if (!versionCheckBaseline) {
+      versionCheckBaseline = next;
+      return;
+    }
+    const changed = VERSION_CHECK_PATHS.some((path) => versionCheckBaseline[path] !== next[path]);
+    if (!changed) return;
+    if (initial) {
+      versionCheckBaseline = next;
+      return;
+    }
+    if (hasUnsavedChanges()) {
+      console.info("Update detected, waiting for unsaved changes to clear before reload.");
+      return;
+    }
+    triggerVersionReload();
+  } catch (error) {
+    console.warn("Version check skipped", error);
+  }
+}
+
+function startVersionChecks() {
+  if (versionCheckTimerId) return;
+  runVersionCheck({ initial: true });
+  versionCheckTimerId = window.setInterval(() => {
+    if (document.visibilityState === "hidden") return;
+    runVersionCheck();
+  }, VERSION_CHECK_INTERVAL_MS);
+}
+
+bindAuthHandlers();
+bindAdminHandlers();
+if (state.app.features?.enableJudgeOpen !== false) {
+  bindJudgeOpenHandlers();
+}
+bindDirectorHandlers();
+bindAppHandlers();
+
+initTabs();
+
+document.addEventListener("DOMContentLoaded", () => {
+  initTabs();
+});
+window.addEventListener("online", updateConnectivityUI);
+window.addEventListener("offline", updateConnectivityUI);
+updateConnectivityUI();
+startAutosaveLoop();
+
+window.addEventListener("hashchange", handleHashChange);
+window.addEventListener("beforeunload", (event) => {
+  if (!hasUnsavedChanges()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
+refreshSchoolDropdowns();
+ensureSchoolDropdownsWatcher();
+// Defer handleHashChange until after auth has run (avoids race and blank state on Chrome/Mac)
+// handleHashChange is invoked from the auth callback (handleSignedOut or signed-in branch).
+
+function handleSignedOut() {
+  stopOpenRecording();
+  stopOpenLevelMeter();
+  setMainInteractionDisabled(true);
+  const working = hasUnsavedChanges();
+  if (working) {
+    state.auth.sessionExpiredLocked = true;
+    stopWatchers();
+    showSessionExpiredModal();
+    setMainInteractionDisabled(true);
+    handleHashChange();
+    return;
+  }
+  state.auth.userProfile = null;
+  state.auth.profileLoading = false;
+  updateRoleUI();
+  resetJudgeOpenState();
+  stopWatchers();
+  ensureSchoolDropdownsWatcher();
+  state.director.selectedEventId = null;
+  state.director.adminViewSchoolId = null;
+  state.director.adminLaunchContext = null;
+  state.director.selectedEnsembleId = null;
+  state.director.activePath = null;
+  state.director.entryDraft = null;
+  state.director.entryRef = null;
+  state.director.entryExists = false;
+  state.director.ensemblesCache = [];
+  setDirectorEntryHint("");
+  setDirectorSaveStatus("");
+  setDirectorEntryStatusLabel("Incomplete");
+  setAuthView("signIn");
+  closeAuthModal();
+  window.location.hash = "";
+  if (window.location.pathname.includes("/judge-open")) {
+    window.history.replaceState(null, "", "/");
+  }
+  handleHashChange();
+}
+
+onAuthStateChanged(auth, async (user) => {
+  try {
+    state.auth.currentUser = user;
+    state.auth.profileLoading = Boolean(user);
+    updateAuthUI();
+
+    if (!user) {
+      if (!state.auth.authInitialized) {
+        if (!authInitTimeoutId) {
+          authInitTimeoutId = window.setTimeout(() => {
+            if (!state.auth.currentUser && !state.auth.authInitialized) {
+              state.auth.authInitialized = true;
+              handleSignedOut();
+              startVersionChecks();
+            }
+          }, AUTH_INIT_DELAY_MS);
+        }
+        return;
+      }
+      handleSignedOut();
+      return;
+    }
+
+    if (!state.auth.authInitialized) {
+      state.auth.authInitialized = true;
+      if (authInitTimeoutId) {
+        window.clearTimeout(authInitTimeoutId);
+        authInitTimeoutId = null;
+      }
+      startVersionChecks();
+    }
+
+    closeAuthModal();
+
+    if (state.subscriptions.schools) {
+      state.subscriptions.schools();
+      state.subscriptions.schools = null;
+    }
+
+    const userRef = doc(db, COLLECTIONS.users, user.uid);
+    const snap = await getDoc(userRef);
+    state.auth.userProfile = snap.exists() ? snap.data() : null;
+    state.auth.profileLoading = false;
+    updateAuthUI();
+    if (state.auth.sessionExpiredLocked) {
+      state.auth.sessionExpiredLocked = false;
+      hideSessionExpiredModal();
+      setMainInteractionDisabled(false);
+    }
+    updateRoleUI();
+    setMainInteractionDisabled(false);
+    if (state.auth.userProfile) {
+      const roles = state.auth.userProfile.roles || {};
+      const rawRole = String(state.auth.userProfile.role || "").trim();
+      const normalizedRole = (() => {
+        if (!rawRole) return "";
+        const lower = rawRole.toLowerCase();
+        if (lower === "admin") return "admin";
+        if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") return "teamLead";
+        if (lower === "director") return "director";
+        if (lower === "judge") return "judge";
+        return "";
+      })();
+      const role =
+        normalizedRole ||
+        (roles.admin
+          ? "admin"
+          : roles.teamLead
+            ? "teamLead"
+            : roles.director
+              ? "director"
+              : roles.judge
+                ? "judge"
+                : null);
+      const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
+      const preferJudgeOpen = judgeEnabled && roles.judge === true && role !== "admin";
+      const path = window.location.pathname || "";
+      const isLegacyJudgePath = path.endsWith("/judge") || path.endsWith("/judge/");
+      if (isLegacyJudgePath && role !== "admin") {
+        if (judgeEnabled) {
+          window.history.replaceState(null, "", "/judge-open#judge-open");
+        } else {
+          window.history.replaceState(null, "", "/#admin");
+        }
+      }
+      if (preferJudgeOpen) {
+        setTab("judge-open");
+        if (window.location.hash !== "#judge-open") {
+          window.location.hash = "#judge-open";
+        }
+      } else if (role === "admin") {
+        setTab("admin");
+        if (window.location.hash !== "#admin") {
+          window.location.hash = "#admin";
+        }
+      } else if (role === "teamLead") {
+        setTab("admin");
+        if (window.location.hash !== "#admin") {
+          window.location.hash = "#admin";
+        }
+      } else if (role === "judge") {
+        if (judgeEnabled) {
+          setTab("judge-open");
+          if (window.location.hash !== "#judge-open") {
+            window.location.hash = "#judge-open";
+          }
+        } else {
+          setTab("admin", { force: true });
+          if (window.location.hash !== "#admin") {
+            window.location.hash = "#admin";
+          }
+        }
+      } else if (role === "director") {
+        setTab("director");
+      }
+      startWatchers();
+      renderDirectorProfile();
+      if (judgeEnabled && (preferJudgeOpen || role === "judge")) {
+        restoreOpenPacketFromPrefs();
+      }
+    } else {
+      stopWatchers();
+    }
+    closeAuthModal();
+    handleHashChange();
+  } catch (err) {
+    console.error("Auth state handler error", err);
+    state.auth.authInitialized = true;
+    state.auth.profileLoading = false;
+    if (authInitTimeoutId) {
+      window.clearTimeout(authInitTimeoutId);
+      authInitTimeoutId = null;
+    }
+    updateAuthUI();
+    updateRoleUI();
+    handleHashChange();
+  }
+});
+
+if (firebaseConfig.apiKey === "YOUR_API_KEY") {
+  setRoleHint("Update firebaseConfig in app.js to match your project.");
+}

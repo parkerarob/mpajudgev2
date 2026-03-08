@@ -1,0 +1,5310 @@
+const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {setGlobalOptions} = require("firebase-functions/v2");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
+const {defineSecret} = require("firebase-functions/params");
+const logger = require("firebase-functions/logger");
+const admin = require("firebase-admin");
+const crypto = require("crypto");
+const {
+  COLLECTIONS,
+  FIELDS,
+  STATUSES,
+  FORM_TYPES,
+  JUDGE_POSITIONS,
+  CAPTION_TEMPLATES,
+} = require("./shared/constants");
+
+admin.initializeApp();
+
+setGlobalOptions({maxInstances: 10});
+
+const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const OPENAI_TIMEOUT_MS = 30 * 1000;
+const OPENAI_CHAT_TIMEOUT_MS = 45 * 1000;
+const STAGE_OPENAI_CHAT_TIMEOUT_MS = 30 * 1000;
+const OPENAI_DRAFT_MODEL = "gpt-5-mini";
+const STAGE_OPENAI_DRAFT_MODEL = "gpt-4o-mini";
+const MAX_TRANSCRIPT_CHARS = 12000;
+const MAX_PARSE_TRANSCRIPT_INPUT_CHARS = 60000;
+const MAX_STAGE_SYNTHESIS_TRANSCRIPT_CHARS = 10000;
+const MAX_FINAL_CAPTION_WORDS = 140;
+const PARSE_TRANSCRIPT_TIMEOUT_SECONDS = 300;
+const DIRECTOR_PACKET_EXPORT_TTL_MS = 1000 * 60 * 30;
+const DIRECTOR_PACKET_EXPORT_VERSION = "generated-v1";
+const DIRECTOR_PACKET_EXPORT_RETENTION_MS = 1000 * 60 * 60 * 24 * 14;
+const DIRECTOR_PACKET_EXPORT_STALE_FAILURE_MS = 1000 * 60 * 60 * 24 * 2;
+const ORPHAN_PACKET_SESSION_RETENTION_MS = 1000 * 60 * 60 * 24 * 2;
+const ADJUDICATION_MODES = {
+  practice: "practice",
+  official: "official",
+};
+const EVENT_MODES = {
+  live: "live",
+  rehearsal: "rehearsal",
+};
+const READINESS_STEP_ORDER = [
+  "rehearsalComplete",
+  "judgeAudioCheck",
+  "directorVisibilityCheck",
+  "releaseGateCheck",
+];
+const READINESS_STEP_KEYS = new Set(READINESS_STEP_ORDER);
+const MAX_READINESS_NOTE_LENGTH = 280;
+const GRADE_VALUES = {
+  A: 1,
+  B: 2,
+  C: 3,
+  D: 4,
+  F: 5,
+};
+// Temporary reliability mode for event operations:
+// reCAPTCHA v3 App Check token exchange can fail/throttle in some browsers.
+// Keep strict App Check on OpenAI-cost endpoints, but relax it for core packet workflow.
+const APPCHECK_SENSITIVE_OPTIONS = {enforceAppCheck: false};
+const APPCHECK_SENSITIVE_SECRET_OPTIONS = {
+  // Temporary reliability mode for event operations (same rationale as above).
+  // Keep secret handling, but do not hard-require App Check while token exchange is failing.
+  enforceAppCheck: false,
+  secrets: [OPENAI_API_KEY],
+};
+
+let pdfLib = null;
+
+function getPdfLib() {
+  if (!pdfLib) {
+    pdfLib = require("pdf-lib");
+  }
+  return pdfLib;
+}
+
+function pdfRgb(red = 0.08, green = 0.08, blue = 0.08) {
+  return getPdfLib().rgb(red, green, blue);
+}
+
+function buildDirectorPacketExportId(eventId, ensembleId) {
+  return `${eventId}_${ensembleId}`;
+}
+
+function createSilentWavBuffer({
+  durationSec = 1,
+  sampleRate = 8000,
+  channels = 1,
+} = {}) {
+  const frameCount = Math.max(1, Math.floor(durationSec * sampleRate));
+  const bytesPerSample = 2;
+  const dataSize = frameCount * channels * bytesPerSample;
+  const buffer = Buffer.alloc(44 + dataSize);
+  buffer.write("RIFF", 0, 4, "ascii");
+  buffer.writeUInt32LE(36 + dataSize, 4);
+  buffer.write("WAVE", 8, 4, "ascii");
+  buffer.write("fmt ", 12, 4, "ascii");
+  buffer.writeUInt32LE(16, 16); // PCM chunk size
+  buffer.writeUInt16LE(1, 20); // PCM format
+  buffer.writeUInt16LE(channels, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * channels * bytesPerSample, 28);
+  buffer.writeUInt16LE(channels * bytesPerSample, 32);
+  buffer.writeUInt16LE(bytesPerSample * 8, 34);
+  buffer.write("data", 36, 4, "ascii");
+  buffer.writeUInt32LE(dataSize, 40);
+  return buffer;
+}
+
+function formLabelByJudgePosition(position) {
+  return position === JUDGE_POSITIONS.sight ? "Sight Reading Form" : "Stage Form";
+}
+
+function judgeLabelByPosition(position) {
+  if (position === JUDGE_POSITIONS.stage1) return "Stage 1 Judge";
+  if (position === JUDGE_POSITIONS.stage2) return "Stage 2 Judge";
+  if (position === JUDGE_POSITIONS.stage3) return "Stage 3 Judge";
+  if (position === JUDGE_POSITIONS.sight) return "Sight Judge";
+  return String(position || "Judge");
+}
+
+function drawWrappedText({
+  page,
+  font,
+  text = "",
+  x,
+  y,
+  maxWidth,
+  size = 9,
+  lineHeight = 10,
+  color = null,
+  maxLines = 1,
+} = {}) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return y;
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    const candidateWidth = font.widthOfTextAtSize(candidate, size);
+    if (candidateWidth <= maxWidth || !current) {
+      current = candidate;
+      continue;
+    }
+    lines.push(current);
+    current = word;
+    if (lines.length >= maxLines) break;
+  }
+  if (current && lines.length < maxLines) lines.push(current);
+  lines.slice(0, maxLines).forEach((line, index) => {
+    page.drawText(line, {
+      x,
+      y: y - (index * lineHeight),
+      size,
+      font,
+      color: color || pdfRgb(0.08, 0.08, 0.08),
+    });
+  });
+  return y - (Math.min(lines.length, maxLines) * lineHeight);
+}
+
+function drawSimpleValue({page, font, value, x, y, size = 9, color = null} = {}) {
+  const text = String(value || "").trim();
+  if (!text) return;
+  page.drawText(text, {x, y, size, font, color: color || pdfRgb(0.08, 0.08, 0.08)});
+}
+
+function renderStageTemplatePage({
+  page,
+  font,
+  eventId,
+  ensembleId,
+  schoolId,
+  grade,
+  position,
+  submission,
+} = {}) {
+  const dark = pdfRgb(0.07, 0.07, 0.07);
+  const pageWidth = page.getWidth();
+  const pageHeight = page.getHeight();
+  const margin = 40;
+  let y = pageHeight - margin;
+  const captions = submission?.captions && typeof submission.captions === "object" ?
+    submission.captions :
+    {};
+  const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge");
+  const judgeSlot = judgeLabelByPosition(position);
+  const ensembleLabel = String(ensembleId || "");
+  const schoolLabel = String(schoolId || "");
+  const heading = "NCBA Music Performance Adjudication - Stage Form";
+  drawSimpleValue({page, font, value: heading, x: margin, y, size: 16, color: dark});
+  y -= 24;
+  drawSimpleValue({
+    page,
+    font,
+    value: `Event: ${eventId}   School: ${schoolLabel}   Ensemble: ${ensembleLabel}`,
+    x: margin,
+    y,
+    size: 10,
+    color: dark,
+  });
+  y -= 16;
+  drawSimpleValue({
+    page,
+    font,
+    value: `Judge: ${judgeName} (${judgeSlot})   Grade: ${grade || "N/A"}   Rating: ${String(submission?.computedFinalRatingLabel || "N/A")}`,
+    x: margin,
+    y,
+    size: 10,
+    color: dark,
+  });
+  y -= 18;
+  drawSimpleValue({
+    page,
+    font,
+    value: `Caption Total: ${Number(submission?.captionScoreTotal || 0)}   Status: Released`,
+    x: margin,
+    y,
+    size: 10,
+    color: dark,
+  });
+  y -= 22;
+
+  const rows = CAPTION_TEMPLATES.stage || [];
+  for (const row of rows) {
+    const value = captions[row.key] || {};
+    const gradeText = `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim() || "N/A";
+    drawSimpleValue({
+      page,
+      font,
+      value: `${row.label}: ${gradeText}`,
+      x: margin,
+      y,
+      size: 10.5,
+      color: dark,
+    });
+    y -= 13;
+    y = drawWrappedText({
+      page,
+      font,
+      text: String(value.comment || "").trim() || "No comment provided.",
+      x: margin + 8,
+      y,
+      maxWidth: pageWidth - (margin * 2) - 8,
+      size: 9,
+      lineHeight: 11,
+      color: dark,
+      maxLines: 3,
+    });
+    y -= 8;
+    if (y < 90) break;
+  }
+  drawSimpleValue({page, font, value: "Adjudicator Signature:", x: margin, y: 48, size: 10, color: dark});
+  drawSimpleValue({page, font, value: judgeName, x: margin + 120, y: 48, size: 10, color: dark});
+}
+
+function renderSightTemplatePage({
+  page,
+  font,
+  eventId,
+  ensembleId,
+  schoolId,
+  grade,
+  position,
+  submission,
+} = {}) {
+  const dark = pdfRgb(0.07, 0.07, 0.07);
+  const pageWidth = page.getWidth();
+  const pageHeight = page.getHeight();
+  const margin = 40;
+  let y = pageHeight - margin;
+  const captions = submission?.captions && typeof submission.captions === "object" ?
+    submission.captions :
+    {};
+  const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge");
+  drawSimpleValue({page, font, value: "NCBA Music Performance Adjudication - Sight Reading Form", x: margin, y, size: 16, color: dark});
+  y -= 24;
+  drawSimpleValue({page, font, value: `Event: ${eventId}   School: ${schoolId}   Ensemble: ${ensembleId}`, x: margin, y, size: 10, color: dark});
+  y -= 16;
+  drawSimpleValue({page, font, value: `Judge: ${judgeName}`, x: margin, y, size: 10, color: dark});
+  y -= 16;
+  drawSimpleValue({
+    page,
+    font,
+    value: `Slot: ${judgeLabelByPosition(position)}  Grade: ${grade || "N/A"}`,
+    x: margin,
+    y,
+    size: 10,
+    color: dark,
+  });
+  y -= 22;
+
+  const captionOrder = [
+    "toneQuality",
+    "intonation",
+    "balance",
+    "technique",
+    "rhythm",
+    "musicianship",
+    "prepTime",
+  ];
+  captionOrder.forEach((key) => {
+    const value = captions[key] || {};
+    const label = key;
+    const gradeText = `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim() || "N/A";
+    const header = `${label}: ${gradeText}`;
+    drawSimpleValue({page, font, value: header, x: margin, y, size: 10.5, color: dark});
+    y -= 16;
+    y = drawWrappedText({
+      page,
+      font,
+      text: String(value.comment || "").trim(),
+      x: margin + 8,
+      y,
+      maxWidth: pageWidth - (margin * 2) - 8,
+      size: 9,
+      lineHeight: 11,
+      color: dark,
+      maxLines: 3,
+    });
+    y -= 8;
+  });
+
+  drawSimpleValue({
+    page,
+    font,
+    value: `Caption Total: ${Number(submission?.captionScoreTotal || 0)}  Final Rating: ${String(submission?.computedFinalRatingLabel || "N/A")}`,
+    x: margin,
+    y: 52,
+    size: 10,
+    color: dark,
+  });
+}
+
+async function renderSubmissionTemplatePdf({
+  eventId,
+  ensembleId,
+  schoolId,
+  grade,
+  position,
+  submission,
+} = {}) {
+  const {PDFDocument, StandardFonts} = getPdfLib();
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([612, 792]); // US Letter
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  if (position === JUDGE_POSITIONS.sight) {
+    renderSightTemplatePage({
+      page,
+      font,
+      eventId,
+      ensembleId,
+      schoolId,
+      grade,
+      position,
+      submission,
+    });
+  } else {
+    renderStageTemplatePage({
+      page,
+      font,
+      eventId,
+      ensembleId,
+      schoolId,
+      grade,
+      position,
+      submission,
+    });
+  }
+  return await pdfDoc.save();
+}
+
+async function generateDirectorPacketExportInternal({
+  eventId,
+  ensembleId,
+  grade,
+  actorUid = "",
+} = {}) {
+  const {PDFDocument} = getPdfLib();
+  if (!eventId || !ensembleId || !grade) {
+    throw new Error("eventId, ensembleId, and grade are required for export.");
+  }
+  const db = admin.firestore();
+  const bucket = admin.storage().bucket();
+  const positions = requiredPositionsForGrade(grade);
+  const submissionDocs = await Promise.all(
+      positions.map((position) => db.collection(COLLECTIONS.submissions).doc(`${eventId}_${ensembleId}_${position}`).get()),
+  );
+  const submissionsByPosition = {};
+  submissionDocs.forEach((docSnap, index) => {
+    const position = positions[index];
+    submissionsByPosition[position] = docSnap.exists ? docSnap.data() : null;
+  });
+
+  const schoolId = String(submissionsByPosition[positions[0]]?.schoolId || "");
+
+  const exportId = buildDirectorPacketExportId(eventId, ensembleId);
+  const judgeAssets = {};
+  const packetPdfBytes = [];
+  for (const position of positions) {
+    const submission = submissionsByPosition[position];
+    if (!submission) continue;
+    const judgePdfBytes = await renderSubmissionTemplatePdf({
+      eventId,
+      ensembleId,
+      schoolId,
+      grade,
+      position,
+      submission,
+    });
+    const judgePdfPath = `exports/${eventId}/${ensembleId}/${position}.pdf`;
+    await bucket.file(judgePdfPath).save(Buffer.from(judgePdfBytes), {
+      resumable: false,
+      contentType: "application/pdf",
+      metadata: {
+        metadata: {
+          eventId,
+          ensembleId,
+          judgePosition: position,
+          exportType: "director-judge-form",
+          templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
+        },
+      },
+    });
+    packetPdfBytes.push(judgePdfBytes);
+    judgeAssets[position] = {
+      judgePosition: position,
+      judgeLabel: judgeLabelByPosition(position),
+      formType: position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage,
+      formLabel: formLabelByJudgePosition(position),
+      judgeName: submission.judgeName || "",
+      judgeEmail: submission.judgeEmail || "",
+      pdfPath: judgePdfPath,
+      audioUrl: String(submission.audioUrl || ""),
+      audioPath: String(
+          submission.audioPath ||
+          getStoragePathFromUrl(submission.audioUrl) ||
+          "",
+      ),
+    };
+  }
+
+  const combinedDoc = await PDFDocument.create();
+  for (const bytes of packetPdfBytes) {
+    const single = await PDFDocument.load(bytes);
+    const copied = await combinedDoc.copyPages(single, single.getPageIndices());
+    copied.forEach((page) => combinedDoc.addPage(page));
+  }
+  const combinedPdfBytes = await combinedDoc.save();
+  const combinedPdfPath = `exports/${eventId}/${ensembleId}/packet_combined.pdf`;
+  await bucket.file(combinedPdfPath).save(Buffer.from(combinedPdfBytes), {
+    resumable: false,
+    contentType: "application/pdf",
+    metadata: {
+      metadata: {
+        eventId,
+        ensembleId,
+        exportType: "director-packet-combined",
+        templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
+      },
+    },
+  });
+
+  const exportRef = db.collection(COLLECTIONS.packetExports).doc(exportId);
+  await exportRef.set({
+    eventId,
+    ensembleId,
+    schoolId,
+    grade,
+    status: "ready",
+    templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
+    judgeAssets,
+    combinedPdfPath,
+    generatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    generatedBy: actorUid || "",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {
+    exportId,
+    combinedPdfPath,
+    judgeAssets,
+    templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
+  };
+}
+
+async function markDirectorPacketExportFailure({
+  eventId,
+  ensembleId,
+  schoolId = "",
+  error = "",
+  actorUid = "",
+} = {}) {
+  if (!eventId || !ensembleId) return;
+  const exportRef = admin
+      .firestore()
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  await exportRef.set({
+    eventId,
+    ensembleId,
+    schoolId,
+    status: "failed",
+    error: String(error || "Export generation failed."),
+    generatedBy: actorUid || "",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+}
+
+function buildMockCaptionsForForm(formType) {
+  const template = CAPTION_TEMPLATES[formType] || CAPTION_TEMPLATES.stage || [];
+  const letters = ["A", "A", "B", "A", "B", "A", "B"];
+  const captions = {};
+  template.forEach((item, index) => {
+    captions[item.key] = {
+      gradeLetter: letters[index % letters.length],
+      gradeModifier: index % 3 === 0 ? "+" : "",
+      comment: `${item.label}: strong fundamentals with clear ensemble response.`,
+    };
+  });
+  return captions;
+}
+
+async function fetchWithTimeout(url, options, timeoutMs = OPENAI_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {...options, signal: controller.signal});
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function transcribeAudioBuffer(buffer, contentType, apiKey) {
+  const form = new FormData();
+  form.append("model", "gpt-4o-mini-transcribe");
+  form.append("file", new Blob([buffer], {type: contentType}), "audio.webm");
+  const response = await fetchWithTimeout("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: form,
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    logger.error("transcribeAudioBuffer error", {errorText});
+    throw new HttpsError("internal", "Transcription failed.");
+  }
+  const dataJson = await response.json();
+  return String(dataJson.text || "").trim();
+}
+
+async function transcribePacketSegmentInternal({packetRef, packet, sessionId, apiKey}) {
+  if (!apiKey) {
+    throw new HttpsError("failed-precondition", "OpenAI API key not configured.");
+  }
+  const sessionRef = packetRef.collection("sessions").doc(sessionId);
+  const sessionSnap = await sessionRef.get();
+  if (!sessionSnap.exists) {
+    throw new HttpsError("not-found", "Session not found.");
+  }
+  const session = sessionSnap.data();
+  await sessionRef.set({
+    transcriptStatus: "running",
+    transcriptError: "",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+
+  let objectPath = session.masterAudioPath || getStoragePathFromUrl(session.masterAudioUrl);
+  if (!objectPath && packet.createdByJudgeUid) {
+    objectPath = `packet_audio/${packet.createdByJudgeUid}/${packetRef.id}/${sessionId}/master.webm`;
+  }
+
+  const bucket = admin.storage().bucket();
+  let transcript = "";
+
+  if (objectPath) {
+    const file = bucket.file(objectPath);
+    const [exists] = await file.exists();
+    if (exists) {
+      const [metadata] = await file.getMetadata();
+      const size = Number(metadata.size || 0);
+      if (size <= MAX_AUDIO_BYTES) {
+        const [buffer] = await file.download();
+        const contentType = metadata.contentType || "audio/webm";
+        transcript = await transcribeAudioBuffer(buffer, contentType, apiKey);
+      }
+    }
+  }
+
+  if (!transcript) {
+    const prefix = `packet_audio/${packet.createdByJudgeUid}/${packetRef.id}/${sessionId}/chunk_`;
+    const [files] = await bucket.getFiles({prefix});
+    if (!files.length) {
+      throw new HttpsError("not-found", "Audio file not found.");
+    }
+    const sorted = files
+        .map((file) => {
+          const match = file.name.match(/chunk_(\\d+)\\.webm$/);
+          return {
+            file,
+            index: match ? Number(match[1]) : Number.MAX_SAFE_INTEGER,
+          };
+        })
+        .sort((a, b) => a.index - b.index);
+    const parts = [];
+    for (const item of sorted) {
+      if (!item.file || item.index === Number.MAX_SAFE_INTEGER) continue;
+      const [buffer] = await item.file.download();
+      const [metadata] = await item.file.getMetadata();
+      const contentType = metadata.contentType || "audio/webm";
+      const text = await transcribeAudioBuffer(buffer, contentType, apiKey);
+      if (text) parts.push(text);
+      if (parts.join(" ").length >= MAX_TRANSCRIPT_CHARS) break;
+    }
+    transcript = parts.join(" ").trim();
+  }
+
+  transcript = transcript.slice(0, MAX_TRANSCRIPT_CHARS);
+  await sessionRef.set({
+    transcript,
+    transcriptStatus: "complete",
+    transcriptError: "",
+    transcriptUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {transcript};
+}
+
+function trimWords(text, maxWords) {
+  if (!text) return "";
+  const words = text.trim().split(/\s+/);
+  if (words.length <= maxWords) return text.trim();
+  return `${words.slice(0, maxWords).join(" ")}...`;
+}
+
+function truncateForModelInput(text = "", maxChars = MAX_PARSE_TRANSCRIPT_INPUT_CHARS) {
+  const value = String(text || "");
+  if (value.length <= maxChars) return value;
+  const half = Math.floor(maxChars / 2);
+  return `${value.slice(0, half)}\n...\n${value.slice(-half)}`;
+}
+
+function normalizeGroundingText(value) {
+  return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+}
+
+function sanitizeCaptionText(text = "") {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  return raw
+      // remove section/theme labels that leak from internal compression
+      .replace(/\b[a-z ]+(?:section|performance):\s*[a-z/ ]+\s*-\s*/gi, "")
+      .replace(/\b(?:early|middle|late)\s+performance:\s*[a-z/ ]+\s*-\s*/gi, "")
+      .replace(/\b[a-z ]+:\s*(?:tone quality|intonation|balance\/blend|precision|rhythm\/pulse|musicianship\/style)\s*-\s*/gi, "")
+      // collapse repeated dots and awkward punctuation artifacts
+      .replace(/\.{2,}/g, ".")
+      .replace(/([!?.,])\1+/g, "$1")
+      .replace(/[–—]+/g, "-")
+      .replace(/\s*-\s*which\b/gi, ", which")
+      .replace(/\s+([,.;!?])/g, "$1")
+      .replace(/(^|[.!?]\s+)([a-z])/g, (_m, p1, p2) => `${p1}${p2.toUpperCase()}`)
+      .replace(/\b([A-Za-z]+)\s+\1\b/gi, "$1")
+      .replace(/\b(?:and|or|but|so)\s*$/i, "")
+      .replace(/\b(?:with|to|for|of|in)\s*$/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+}
+
+function normalizeDraftContext(context = {}) {
+  const source = context && typeof context === "object" ? context : {};
+  const directorEntrySummary =
+    source.directorEntrySummary && typeof source.directorEntrySummary === "object" ?
+      source.directorEntrySummary :
+      {};
+  return {
+    schoolName: String(source.schoolName || "").trim(),
+    ensembleName: String(source.ensembleName || "").trim(),
+    judgePosition: String(source.judgePosition || "").trim(),
+    performanceGrade: String(source.performanceGrade || "").trim(),
+    assignmentEventId: String(source.assignmentEventId || "").trim(),
+    directorEntrySummary: {
+      performanceGrade: String(directorEntrySummary.performanceGrade || "").trim(),
+      performanceGradeFlex: Boolean(directorEntrySummary.performanceGradeFlex),
+      repertoire: directorEntrySummary.repertoire && typeof directorEntrySummary.repertoire === "object" ?
+        directorEntrySummary.repertoire :
+        {},
+      instrumentation:
+        directorEntrySummary.instrumentation &&
+        typeof directorEntrySummary.instrumentation === "object" ?
+          directorEntrySummary.instrumentation :
+          {},
+    },
+  };
+}
+
+function extractTranscriptDirectives(transcript = "", maxDirectives = 12) {
+  const text = String(transcript || "").trim();
+  if (!text) return [];
+  const directiveTokens = [
+    "want",
+    "need",
+    "make sure",
+    "be careful",
+    "should",
+    "must",
+    "do not",
+    "don't",
+    "remember",
+    "wanna",
+  ];
+  const sentences = text
+      .replace(/\s+/g, " ")
+      .split(/(?<=[.!?])\s+/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean);
+  const selected = [];
+  for (const sentence of sentences) {
+    const normalized = normalizeGroundingText(sentence);
+    if (!normalized) continue;
+    if (!directiveTokens.some((token) => normalized.includes(token))) continue;
+    selected.push(trimWords(sentence, 24));
+    if (selected.length >= maxDirectives) break;
+  }
+  return selected;
+}
+
+function hasLoudSoftBalanceDirective(transcript = "") {
+  const normalized = normalizeGroundingText(transcript);
+  if (!normalized) return false;
+  const loudBrass = /(trumpet|brass).{0,48}(loud|louder|forte)|(?:loud|louder|forte).{0,48}(trumpet|brass)/.test(normalized);
+  const softWoodwind = /(woodwind|clarinet|bass clarinet|alto).{0,64}(soft|softer|mezzo piano|mezzo forte|mp|mf)|(?:soft|softer|mezzo piano|mezzo forte|mp|mf).{0,64}(woodwind|clarinet|bass clarinet|alto)/.test(normalized);
+  return loudBrass && softWoodwind;
+}
+
+function enforceBalanceHierarchyDirective(captionText = "", transcriptDirectives = []) {
+  const text = String(captionText || "").trim();
+  if (!text) return text;
+  const normalized = normalizeGroundingText(text);
+  const inversionPattern = /(woodwinds?|clarinets?).{0,50}(dominat|stronger|lead).{0,40}(soft|mezzo)|(?:soft|mezzo).{0,50}(woodwinds?|clarinets?).{0,40}(dominat|stronger|lead)/.test(normalized) &&
+    /(brass|trumpet).{0,50}(shines?|dominates?|already)/.test(normalized);
+  if (inversionPattern) {
+    return "Prioritize role-based hierarchy: in softer sections, aim for woodwind color to carry mp/mf texture; in louder sections, let trumpet/brass core project at forte. Keep harmony support from overpowering moving lines.";
+  }
+  const hasLoudBrass =
+    (normalized.includes("loud") || normalized.includes("forte")) &&
+    (normalized.includes("brass") || normalized.includes("trumpet"));
+  const hasSoftWoodwind =
+    (normalized.includes("soft") || normalized.includes("mezzo")) &&
+    (normalized.includes("woodwind") || normalized.includes("clarinet"));
+  if (hasLoudBrass && hasSoftWoodwind) return text;
+  const directiveTail = (transcriptDirectives || []).length ?
+    " This matches the judge directive to prioritize woodwind color at mp/mf and brass core at forte." :
+    "";
+  return `${text} In louder sections, allow trumpet/brass core to project; in softer sections, prioritize woodwind color.${directiveTail}`;
+}
+
+function toSnakeCaseKey(value = "") {
+  return String(value || "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/[\s/-]+/g, "_")
+      .toLowerCase();
+}
+
+function buildCaptionKeyCandidates(canonicalKey = "") {
+  const key = String(canonicalKey || "").trim();
+  if (!key) return [];
+  const snake = toSnakeCaseKey(key);
+  const candidates = new Set([key, snake]);
+  const aliases = {
+    balanceBlend: ["balance_blend"],
+    basicMusicianship: ["basic_musicianship"],
+    interpretativeMusicianship: ["interpretive_musicianship", "interpretative_musicianship"],
+    toneQuality: ["tone_quality"],
+    generalFactors: ["general_factors"],
+    prepTime: ["prep_time"],
+  };
+  (aliases[key] || []).forEach((alias) => candidates.add(alias));
+  return Array.from(candidates);
+}
+
+function pickFirstCaptionValueFromObject(source = {}, keyCandidates = []) {
+  if (!source || typeof source !== "object") return undefined;
+  for (const key of keyCandidates) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      return source[key];
+    }
+  }
+  return undefined;
+}
+
+function extractCaptionTextFromModelValue(value) {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === "string") {
+    const cleaned = sanitizeCaptionText(value);
+    return cleaned || null;
+  }
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  if (value.included === false) {
+    return null;
+  }
+  if (value.comment === null) {
+    return null;
+  }
+  const rawComment = typeof value.comment === "string" ? value.comment : "";
+  if (!rawComment.trim()) {
+    return null;
+  }
+  const cleaned = sanitizeCaptionText(rawComment);
+  return cleaned || null;
+}
+
+function hasForbiddenCaptionStyle(text = "") {
+  const value = String(text || "").trim();
+  const normalized = value.toLowerCase();
+  if (!normalized) return false;
+
+  const bannedStarts = [
+    "multiple references",
+    "explicit reference",
+    "several observations",
+    "several timing",
+    "comments about",
+    "notes about",
+    "the adjudicator mentioned",
+    "interpretive/style comments",
+    "instrumentation and literature remarks",
+  ];
+
+  if (bannedStarts.some((prefix) => normalized.startsWith(prefix))) return true;
+  if (normalized.startsWith("several ")) return true;
+  if (normalized.includes("\":")) return true;
+  if (normalized.includes("observations:")) return true;
+  if (normalized.includes("references:")) return true;
+  if (normalized.includes("remarks:")) return true;
+  if (normalized.includes("throughout:")) return true;
+  if ((value.match(/["“”]/g) || []).length >= 2) return true;
+
+  return false;
+}
+
+function capSentenceCount(text = "", maxSentences = 4) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  const sentences = value
+      .split(/(?<=[.!?])\s+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  if (sentences.length <= maxSentences) return value;
+  return sentences.slice(0, maxSentences).join(" ");
+}
+
+function transcriptSupportsGeneralFactors(transcript = "") {
+  const normalized = normalizeGroundingText(transcript);
+  if (!normalized) return false;
+  const literaturePattern = /\b(literature|repertoire|piece selection|selection appropriateness|appropriate literature)\b/;
+  const instrumentationPattern = /\b(instrumentation|instrumentation list|scoring|instrumentation coverage|missing instrumentation)\b/;
+  const appearancePattern = /\b(appearance|uniform|presentation|stage presence)\b/;
+  const etiquettePattern = /\b(etiquette|concert etiquette|performance etiquette|audience etiquette|on stage behavior|stage behavior)\b/;
+  return (
+    literaturePattern.test(normalized) ||
+    instrumentationPattern.test(normalized) ||
+    appearancePattern.test(normalized) ||
+    etiquettePattern.test(normalized)
+  );
+}
+
+function transcriptSupportsBasicMusicianship(transcript = "") {
+  const normalized = normalizeGroundingText(transcript);
+  if (!normalized) return false;
+  const printedDynamicsPattern = /\b(printed dynamic|printed dynamics|dynamic contrast|dynamics|crescendo|decrescendo)\b/;
+  const tempoChangesPattern = /\b(printed tempo|tempo change|tempo changes|ritard|ritardando|accelerando|a tempo|rubato)\b/;
+  const mutePattern = /\b(mute|mutes|straight mute|cup mute|harmon mute)\b/;
+  const percussionImplementsPattern = /\b(percussion implement|implements|mallet|mallets|sticks|stick choice|beater|beaters|brushes)\b/;
+  return (
+    printedDynamicsPattern.test(normalized) ||
+    tempoChangesPattern.test(normalized) ||
+    mutePattern.test(normalized) ||
+    percussionImplementsPattern.test(normalized)
+  );
+}
+
+async function assertAdmin(request) {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const userSnap = await admin
+      .firestore()
+      .collection(COLLECTIONS.users)
+      .doc(request.auth.uid)
+      .get();
+  const profile = userSnap.exists ? (userSnap.data() || {}) : null;
+  if (!profile || !isAdminProfile(profile)) {
+    throw new HttpsError("permission-denied", "Admin access required.");
+  }
+  return profile;
+}
+
+async function assertOpsLead(request) {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const userSnap = await admin
+      .firestore()
+      .collection(COLLECTIONS.users)
+      .doc(request.auth.uid)
+      .get();
+  const profile = userSnap.exists ? (userSnap.data() || {}) : null;
+  if (!profile || !isOpsLeadProfile(profile)) {
+    throw new HttpsError("permission-denied", "Operations lead access required.");
+  }
+  return profile;
+}
+
+async function assertRole(request, allowedRoles) {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const userSnap = await admin
+      .firestore()
+      .collection(COLLECTIONS.users)
+      .doc(request.auth.uid)
+      .get();
+  const profile = userSnap.exists ? (userSnap.data() || {}) : {};
+  const role = getEffectiveRole(profile);
+  if (!allowedRoles.includes(role)) {
+    throw new HttpsError("permission-denied", "Not authorized.");
+  }
+  return profile;
+}
+
+function normalizeRoleValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  if (lower === "admin") return "admin";
+  if (lower === "judge") return "judge";
+  if (lower === "director") return "director";
+  if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") {
+    return "teamLead";
+  }
+  return "";
+}
+
+function isAdminProfile(profile = {}) {
+  return normalizeRoleValue(profile.role) === "admin" || profile.roles?.admin === true;
+}
+
+function isTeamLeadProfile(profile = {}) {
+  return normalizeRoleValue(profile.role) === "teamLead" || profile.roles?.teamLead === true;
+}
+
+function isOpsLeadProfile(profile = {}) {
+  return isAdminProfile(profile) || isTeamLeadProfile(profile);
+}
+
+function isJudgeProfile(profile = {}) {
+  return normalizeRoleValue(profile.role) === "judge" || profile.roles?.judge === true;
+}
+
+function getEffectiveRole(profile = {}) {
+  const normalizedRole = normalizeRoleValue(profile.role);
+  if (normalizedRole) return normalizedRole;
+  if (profile.roles?.admin === true) return "admin";
+  if (profile.roles?.teamLead === true) return "teamLead";
+  if (profile.roles?.director === true) return "director";
+  if (profile.roles?.judge === true) return "judge";
+  return null;
+}
+
+function detectJudgePositionFromAssignments(assignments, uid) {
+  if (!assignments || !uid) return null;
+  if (assignments.stage1Uid === uid) return JUDGE_POSITIONS.stage1;
+  if (assignments.stage2Uid === uid) return JUDGE_POSITIONS.stage2;
+  if (assignments.stage3Uid === uid) return JUDGE_POSITIONS.stage3;
+  if (assignments.sightUid === uid) return JUDGE_POSITIONS.sight;
+  return null;
+}
+
+function normalizeEventMode(value) {
+  return String(value || "").trim().toLowerCase() === EVENT_MODES.rehearsal ?
+    EVENT_MODES.rehearsal :
+    EVENT_MODES.live;
+}
+
+function normalizeAssignmentUid(value) {
+  return String(value || "").trim();
+}
+
+function buildAssignmentChecks(assignments = {}) {
+  const stage1Uid = normalizeAssignmentUid(assignments.stage1Uid);
+  const stage2Uid = normalizeAssignmentUid(assignments.stage2Uid);
+  const stage3Uid = normalizeAssignmentUid(assignments.stage3Uid);
+  const sightUid = normalizeAssignmentUid(assignments.sightUid);
+  const allPresent = Boolean(stage1Uid && stage2Uid && stage3Uid && sightUid);
+  const unique = allPresent &&
+    new Set([stage1Uid, stage2Uid, stage3Uid, sightUid]).size === 4;
+  return {
+    stage1Uid,
+    stage2Uid,
+    stage3Uid,
+    sightUid,
+    allPresent,
+    unique,
+  };
+}
+
+function normalizeOpenPacketJudgePosition(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return "";
+  return Object.values(JUDGE_POSITIONS).includes(candidate) ? candidate : "";
+}
+
+async function resolveActiveEventAssignmentForUser(uid) {
+  if (!uid) return null;
+  const db = admin.firestore();
+  const activeSnap = await db
+      .collection(COLLECTIONS.events)
+      .where(FIELDS.events.isActive, "==", true)
+      .limit(1)
+      .get();
+  if (activeSnap.empty) return null;
+  const eventDoc = activeSnap.docs[0];
+  const assignmentsSnap = await db
+      .collection(COLLECTIONS.events)
+      .doc(eventDoc.id)
+      .collection(COLLECTIONS.assignments)
+      .doc("positions")
+      .get();
+  if (!assignmentsSnap.exists) return null;
+  const judgePosition = detectJudgePositionFromAssignments(assignmentsSnap.data(), uid);
+  if (!judgePosition) return null;
+  return {
+    eventId: eventDoc.id,
+    judgePosition,
+  };
+}
+
+async function checkRateLimit(uid, key, limit, windowSeconds) {
+  const db = admin.firestore();
+  const ref = db.collection("rateLimits").doc(uid);
+  const now = admin.firestore.Timestamp.now();
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.exists ? snap.data() : {};
+    const entry = data?.[key] || {};
+    const windowStart = entry.windowStart?.toMillis ? entry.windowStart : null;
+    const nowMs = now.toMillis();
+    if (!windowStart || nowMs - windowStart.toMillis() > windowSeconds * 1000) {
+      tx.set(ref, {[key]: {windowStart: now, count: 1}}, {merge: true});
+      return;
+    }
+    const nextCount = Number(entry.count || 0) + 1;
+    if (nextCount > limit) {
+      throw new HttpsError(
+          "resource-exhausted",
+          "Rate limit exceeded. Please wait and try again.",
+      );
+    }
+    tx.set(
+        ref,
+        {[key]: {windowStart: windowStart, count: nextCount}},
+        {merge: true},
+    );
+  });
+}
+
+function normalizeGrade(value) {
+  if (!value) return null;
+  const text = String(value).trim().toUpperCase();
+  const roman = ["I", "II", "III", "IV", "V", "VI"];
+  if (roman.includes(text)) return text;
+  const num = Number(text);
+  if (!Number.isNaN(num) && num >= 1 && num <= 6) return roman[num - 1];
+  return null;
+}
+
+function canonicalizeSchoolText(value) {
+  return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+}
+
+function schoolPrefixVariants(schoolName) {
+  const base = canonicalizeSchoolText(schoolName);
+  if (!base) return [];
+  const variants = new Set([base]);
+
+  const withoutSchool = base.replace(/\bschool\b/g, "").replace(/\s+/g, " ").trim();
+  if (withoutSchool) variants.add(withoutSchool);
+
+  const shortForms = [
+    [/\bhigh school\b/g, "hs"],
+    [/\bmiddle school\b/g, "ms"],
+    [/\belementary school\b/g, "es"],
+  ];
+  shortForms.forEach(([pattern, replacement]) => {
+    const next = base.replace(pattern, replacement).replace(/\s+/g, " ").trim();
+    if (next) variants.add(next);
+  });
+
+  const descriptorTokens = new Set(["school", "high", "middle", "elementary", "hs", "ms", "es"]);
+  const seedVariants = Array.from(variants);
+  seedVariants.forEach((seed) => {
+    const tokens = seed.split(" ").filter(Boolean);
+    while (tokens.length > 1 && descriptorTokens.has(tokens[tokens.length - 1])) {
+      tokens.pop();
+      const next = tokens.join(" ").trim();
+      if (next) variants.add(next);
+    }
+  });
+
+  return [...variants]
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+}
+
+function normalizeEnsembleNameForSchool({schoolName, ensembleName}) {
+  const finalizeName = (value) => {
+    const text = String(value || "").trim();
+    const canonical = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return canonical === "band" ? "Concert Band" : text;
+  };
+  const original = String(ensembleName || "").trim();
+  if (!original) return "";
+  const variants = schoolPrefixVariants(schoolName);
+  if (!variants.length) return finalizeName(original);
+
+  const compactName = original.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const matched = variants.find((variant) =>
+    compactName === variant || compactName.startsWith(`${variant} `));
+  if (!matched) return finalizeName(original);
+
+  const tokens = matched.split(" ").filter(Boolean);
+  const sourceTokens = original.split(/\s+/);
+  let sourceIdx = 0;
+  let matchIdx = 0;
+  while (sourceIdx < sourceTokens.length && matchIdx < tokens.length) {
+    const token = sourceTokens[sourceIdx];
+    const canonical = token.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const target = tokens[matchIdx].replace(/[^a-z0-9]/g, "");
+    if (!canonical) {
+      sourceIdx += 1;
+      continue;
+    }
+    if (canonical === target) {
+      sourceIdx += 1;
+      matchIdx += 1;
+      continue;
+    }
+    return finalizeName(original);
+  }
+  if (matchIdx !== tokens.length) return finalizeName(original);
+
+  const remainder = sourceTokens.slice(sourceIdx).join(" ")
+      .replace(/^[\s\-:|/]+/, "")
+      .trim();
+  return finalizeName(remainder || original);
+}
+
+function generateTempPassword() {
+  return crypto.randomBytes(9).toString("base64").replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
+}
+
+function getStoragePathFromUrl(audioUrl) {
+  if (!audioUrl) return null;
+  try {
+    const url = new URL(audioUrl);
+    const parts = url.pathname.split("/o/");
+    if (parts.length < 2) return null;
+    const encodedPath = parts[1].split("?")[0];
+    if (!encodedPath) return null;
+    return decodeURIComponent(encodedPath);
+  } catch (error) {
+    return null;
+  }
+}
+
+const {
+  GRADE_ONE_MAP,
+  computeGradeOneKey,
+} = require("./shared/grade1-lookup");
+
+async function resolvePerformanceGrade(eventId, ensembleId) {
+  const db = admin.firestore();
+  const entrySnap = await db
+      .collection(COLLECTIONS.events)
+      .doc(eventId)
+      .collection(COLLECTIONS.entries)
+      .doc(ensembleId)
+      .get();
+  if (entrySnap.exists) {
+    const grade = normalizeGrade(
+        entrySnap.data()[FIELDS.entries.performanceGrade],
+    );
+    if (grade) return grade;
+  }
+
+  const ensembleSnap = await db
+      .collection(COLLECTIONS.ensembles)
+      .doc(ensembleId)
+      .get();
+  if (ensembleSnap.exists) {
+    const grade = normalizeGrade(ensembleSnap.data().performanceGrade);
+    if (grade) return grade;
+  }
+
+  const scheduleSnap = await db
+      .collection(COLLECTIONS.events)
+      .doc(eventId)
+      .collection(COLLECTIONS.schedule)
+      .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+      .limit(1)
+      .get();
+
+  if (!scheduleSnap.empty) {
+    const grade = normalizeGrade(
+        scheduleSnap.docs[0].data().performanceGrade,
+    );
+    if (grade) return grade;
+  }
+
+  return null;
+}
+
+function requiredPositionsForGrade(grade) {
+  if (grade === "I") {
+    return [
+      JUDGE_POSITIONS.stage1,
+      JUDGE_POSITIONS.stage2,
+      JUDGE_POSITIONS.stage3,
+    ];
+  }
+  return [
+    JUDGE_POSITIONS.stage1,
+    JUDGE_POSITIONS.stage2,
+    JUDGE_POSITIONS.stage3,
+    JUDGE_POSITIONS.sight,
+  ];
+}
+
+function normalizeAdjudicationMode(value) {
+  return value === ADJUDICATION_MODES.official ?
+    ADJUDICATION_MODES.official :
+    ADJUDICATION_MODES.practice;
+}
+
+async function assertOfficialPacketEligibility({
+  db,
+  eventId,
+  schoolId,
+  ensembleId,
+}) {
+  if (!eventId || !schoolId || !ensembleId) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Official adjudication requires active event, school, and ensemble.",
+    );
+  }
+  const scheduleSnap = await db
+      .collection(COLLECTIONS.events)
+      .doc(eventId)
+      .collection(COLLECTIONS.schedule)
+      .where(FIELDS.schedule.schoolId, "==", schoolId)
+      .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+      .limit(1)
+      .get();
+  if (scheduleSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Official adjudication must target a scheduled ensemble in the active event.",
+    );
+  }
+}
+
+function isSubmissionReady(submission) {
+  if (!submission) return false;
+  if (submission.status !== STATUSES.submitted) return false;
+  if (submission.locked !== true) return false;
+  if (!submission.audioUrl) return false;
+  if (!submission.captions) return false;
+  if (Object.keys(submission.captions).length < 7) return false;
+  if (typeof submission.captionScoreTotal !== "number") return false;
+  if (typeof submission.computedFinalRatingJudge !== "number") return false;
+  return true;
+}
+
+function calculateCaptionTotal(captions = {}) {
+  return Object.values(captions).reduce((sum, caption) => {
+    const letter = caption?.gradeLetter || "";
+    const score = GRADE_VALUES[letter] || 0;
+    return sum + score;
+  }, 0);
+}
+
+function computeFinalRatingFromTotal(total) {
+  if (total >= 7 && total <= 10) return {label: "I", value: 1};
+  if (total >= 11 && total <= 17) return {label: "II", value: 2};
+  if (total >= 18 && total <= 24) return {label: "III", value: 3};
+  if (total >= 25 && total <= 31) return {label: "IV", value: 4};
+  if (total >= 32 && total <= 35) return {label: "V", value: 5};
+  return {label: "N/A", value: null};
+}
+
+async function writePacketAudit(packetRef, {action, fromStatus, toStatus, actor}) {
+  const auditRef = packetRef.collection("audit").doc();
+  await auditRef.set({
+    action,
+    fromStatus: fromStatus || null,
+    toStatus: toStatus || null,
+    actorUid: actor?.uid || null,
+    actorRole: actor?.role || null,
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+async function deleteDocsInBatches(db, docs, chunkSize = 400) {
+  if (!docs || !docs.length) return 0;
+  let totalDeleted = 0;
+  for (let idx = 0; idx < docs.length; idx += chunkSize) {
+    const chunk = docs.slice(idx, idx + chunkSize);
+    const batch = db.batch();
+    chunk.forEach((docSnap) => batch.delete(docSnap.ref));
+    await batch.commit();
+    totalDeleted += chunk.length;
+  }
+  return totalDeleted;
+}
+
+function isReleasedOpenPacketStatus(value) {
+  return String(value || "").trim() === "released";
+}
+
+async function deleteOpenPacketDocument({
+  db,
+  bucket,
+  packetRef,
+  packet,
+  packetId,
+}) {
+  const sessionsSnap = await packetRef.collection("sessions").get();
+  const sessionIds = sessionsSnap.docs.map((docSnap) => docSnap.id);
+
+  for (const sessionId of sessionIds) {
+    const sessionRef = packetRef.collection("sessions").doc(sessionId);
+    const sessionSnap = await sessionRef.get();
+    const session = sessionSnap.exists ? (sessionSnap.data() || {}) : {};
+
+    const candidatePaths = new Set();
+    if (session.masterAudioPath) {
+      candidatePaths.add(String(session.masterAudioPath));
+    }
+    const derivedPath = getStoragePathFromUrl(session.masterAudioUrl);
+    if (derivedPath) {
+      candidatePaths.add(derivedPath);
+    }
+    if (packet.createdByJudgeUid) {
+      candidatePaths.add(
+          `packet_audio/${packet.createdByJudgeUid}/${packetId}/${sessionId}/master.webm`,
+      );
+    }
+
+    for (const objectPath of candidatePaths) {
+      if (!objectPath) continue;
+      try {
+        await bucket.file(objectPath).delete({ignoreNotFound: true});
+      } catch (error) {
+        logger.warn("deleteOpenPacket master audio delete failed", {
+          packetId,
+          sessionId,
+          objectPath,
+          error: error?.message || String(error),
+        });
+      }
+    }
+
+    if (packet.createdByJudgeUid) {
+      const chunkPrefix =
+        `packet_audio/${packet.createdByJudgeUid}/${packetId}/${sessionId}/chunk_`;
+      try {
+        const [files] = await bucket.getFiles({prefix: chunkPrefix});
+        await Promise.all(files.map((file) => file.delete({ignoreNotFound: true})));
+      } catch (error) {
+        logger.warn("deleteOpenPacket chunk delete failed", {
+          packetId,
+          sessionId,
+          chunkPrefix,
+          error: error?.message || String(error),
+        });
+      }
+    }
+  }
+
+  const auditSnap = await packetRef.collection("audit").get();
+  const deletedSessionCount = await deleteDocsInBatches(db, sessionsSnap.docs);
+  const deletedAuditCount = await deleteDocsInBatches(db, auditSnap.docs);
+  await packetRef.delete();
+  return {
+    deletedSessionCount,
+    deletedAuditCount,
+  };
+}
+
+async function deleteScheduledPacketGroup({
+  db,
+  eventId,
+  ensembleId,
+}) {
+  const positions = Object.values(JUDGE_POSITIONS);
+  const submissionRefs = positions.map((position) =>
+    db.collection(COLLECTIONS.submissions).doc(`${eventId}_${ensembleId}_${position}`),
+  );
+  const submissionSnaps = await Promise.all(submissionRefs.map((ref) => ref.get()));
+  const existingDocs = submissionSnaps.filter((docSnap) => docSnap.exists);
+  if (!existingDocs.length) {
+    return {
+      found: false,
+      hasReleased: false,
+      deletedSubmissions: 0,
+      deletedPacketExport: 0,
+    };
+  }
+
+  const hasReleased = existingDocs.some((docSnap) => {
+    const submission = docSnap.data() || {};
+    return submission.status === STATUSES.released;
+  });
+  if (hasReleased) {
+    return {
+      found: true,
+      hasReleased: true,
+      deletedSubmissions: 0,
+      deletedPacketExport: 0,
+    };
+  }
+
+  const deletedSubmissions = await deleteDocsInBatches(db, existingDocs);
+  let deletedPacketExport = 0;
+  const exportRef = db
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  const exportSnap = await exportRef.get();
+  if (exportSnap.exists) {
+    await exportRef.delete();
+    deletedPacketExport = 1;
+  }
+
+  return {
+    found: true,
+    hasReleased: false,
+    deletedSubmissions,
+    deletedPacketExport,
+  };
+}
+
+exports.parseTranscript = onCall(
+    {
+      ...APPCHECK_SENSITIVE_SECRET_OPTIONS,
+      maxInstances: 30,
+      timeoutSeconds: PARSE_TRANSCRIPT_TIMEOUT_SECONDS,
+    },
+    async (request) => {
+      await assertRole(request, ["judge", "admin"]);
+      await checkRateLimit(request.auth.uid, "parseTranscript", 20, 60);
+      const data = request.data || {};
+      const formType = data.formType;
+      let transcript = String(data.transcript || "");
+      const metadataContext = normalizeDraftContext(data.context || {});
+
+      if (![FORM_TYPES.stage, FORM_TYPES.sight].includes(formType)) {
+        throw new HttpsError("invalid-argument", "Invalid formType.");
+      }
+      if (transcript.length > MAX_PARSE_TRANSCRIPT_INPUT_CHARS) {
+        transcript = truncateForModelInput(transcript, MAX_PARSE_TRANSCRIPT_INPUT_CHARS);
+      }
+
+      const template = CAPTION_TEMPLATES[formType] || [];
+      const categories = template.map((item) => ({
+        key: item.key,
+        label: item.label,
+      }));
+
+      if (!transcript || !transcript.trim()) {
+        const emptyCaptions = template.reduce((acc, item) => {
+          acc[item.key] = formType === FORM_TYPES.stage ? null : "";
+          return acc;
+        }, {});
+        return {captions: emptyCaptions, formType};
+      }
+
+      const apiKey = OPENAI_API_KEY.value();
+      if (!apiKey) {
+        throw new HttpsError(
+            "failed-precondition",
+            "OpenAI API key not configured.",
+        );
+      }
+
+      const transcriptDirectives = extractTranscriptDirectives(transcript);
+      const loudSoftBalanceDirective = hasLoudSoftBalanceDirective(transcript);
+      const transcriptForModel =
+        formType === FORM_TYPES.stage ?
+          truncateForModelInput(transcript, MAX_STAGE_SYNTHESIS_TRANSCRIPT_CHARS) :
+          transcript;
+      const buildDraftRequestBody = ({messages, model = OPENAI_DRAFT_MODEL} = {}) => {
+        const body = {
+          model,
+          response_format: {type: "json_object"},
+          messages,
+        };
+        return body;
+      };
+      const callDraftModel = async ({
+        systemPrompt,
+        userPrompt,
+        timeoutMs = OPENAI_CHAT_TIMEOUT_MS,
+        model = OPENAI_DRAFT_MODEL,
+      } = {}) => {
+        const response = await fetchWithTimeout(
+            "https://api.openai.com/v1/chat/completions",
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(buildDraftRequestBody({
+                model,
+                messages: [
+                  {role: "system", content: systemPrompt},
+                  {role: "user", content: userPrompt},
+                ],
+              })),
+            },
+            timeoutMs,
+        );
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error("Caption draft failed", {
+            status: response.status,
+            body: errorText.slice(0, 500),
+          });
+          throw new HttpsError("internal", "Caption drafting failed.");
+        }
+        const payload = await response.json();
+        const content = payload?.choices?.[0]?.message?.content || "";
+        if (!content) return {};
+        try {
+          return JSON.parse(content);
+        } catch (error) {
+          logger.error("Caption draft JSON parse failed", {
+            error: String(error?.message || error),
+            content: content.slice(0, 500),
+          });
+          throw new HttpsError("internal", "Caption drafting failed.");
+        }
+      };
+
+      const stageSynthesisPrompt = [
+        "You are an experienced NCBA-style concert band adjudicator filling out the Concert Band Stage Form.",
+        "Write one finished comment for each supported caption as a director-facing adjudicator paragraph.",
+        "Use only information explicitly supported by the transcript. Do not invent observations or move evidence to the wrong caption.",
+        "If support is weak, return included=false and comment=null.",
+        "General Factors only if literature appropriateness, instrumentation, appearance, or etiquette is explicitly discussed.",
+        "Basic Musicianship only if printed dynamics, dynamic contrast, tempo changes, mutes, or percussion implements are explicitly discussed.",
+        "Each included comment must be 3 to 4 sentences and read like a finished stage-sheet remark, not notes or an evidence summary.",
+        "Sentence 1 states the main musical takeaway. Sentence 2 describes the repeated pattern. Sentence 3 adds one specific context, contrast, or result. Sentence 4 is optional and must stay supported.",
+        "Do not use quotation marks, colon-led evidence lists, meta-language, or phrases like Multiple references, Explicit reference, Several observations, Comments about, Notes about, or The adjudicator mentioned.",
+        "Return JSON only with canonical caption keys and values shaped as {included, comment}.",
+      ].join("\n");
+
+      const sightSynthesisPrompt = [
+        "You are writing NCBA-style adjudication caption comments from a spoken judge transcript.",
+        "Write from the same voice and intent as the transcript.",
+        "Use only information present in the transcript and provided context.",
+        "Do not invent facts, instrumentation, score markings, measures, or performance details.",
+        "For each canonical caption key, write a concise final summary comment that aligns to that caption.",
+        "If evidence is not meaningful for a caption, omit it by setting included=false and comment=null.",
+        "Do not include grades (A/B/C/D/F), plus/minus, bullets, labels, or prefixed section tags.",
+        "Return only valid JSON where each caption key maps to: {\"included\":true|false,\"comment\":\"...\"|null}.",
+      ].join("\n");
+
+      const synthesisPrompt = formType === FORM_TYPES.stage ? stageSynthesisPrompt : sightSynthesisPrompt;
+      const sightFallbackPrompt = [
+        "NCBA sight-reading caption writer.",
+        "Use only explicit transcript evidence and do not invent.",
+        "Omit unsupported captions with included=false and comment=null.",
+        "Return JSON only with canonical caption keys and {included, comment}.",
+      ].join("\n");
+
+      const synthesisUserPrompt =
+        formType === FORM_TYPES.stage ?
+          [
+            `Form Type: ${formType}`,
+            "",
+            "Canonical Captions:",
+            categories.map((c) => `${c.key}: ${c.label}`).join("\n"),
+            "",
+            "Transcript:",
+            transcriptForModel,
+          ].join("\n") :
+          [
+            `Form Type: ${formType}`,
+            "",
+            "Canonical Captions:",
+            categories.map((c) => `${c.key}: ${c.label}`).join("\n"),
+            "",
+            "Performance Metadata:",
+            JSON.stringify(metadataContext, null, 2),
+            "",
+            "Transcript:",
+            transcriptForModel,
+          ].join("\n");
+      const sightFallbackUserPrompt = [
+        `Form Type: ${formType}`,
+        "Canonical Captions:",
+        categories.map((c) => `${c.key}: ${c.label}`).join("\n"),
+        "",
+        "Transcript:",
+        truncateForModelInput(transcriptForModel, 20000),
+      ].join("\n");
+
+      let synthesisResult = {};
+      let usedFallback = false;
+      let draftStatus = "generated";
+      let draftMessage = "";
+      try {
+        synthesisResult = await callDraftModel({
+          systemPrompt: synthesisPrompt,
+          userPrompt: synthesisUserPrompt,
+          timeoutMs: formType === FORM_TYPES.stage ? STAGE_OPENAI_CHAT_TIMEOUT_MS : OPENAI_CHAT_TIMEOUT_MS,
+          model: formType === FORM_TYPES.stage ? STAGE_OPENAI_DRAFT_MODEL : OPENAI_DRAFT_MODEL,
+        });
+      } catch (error) {
+        logger.error("parseTranscript synthesis failed", {
+          uid: request.auth.uid,
+          formType,
+          transcriptLength: transcript.length,
+          error: String(error?.message || error),
+        });
+        if (formType !== FORM_TYPES.stage) {
+          try {
+            synthesisResult = await callDraftModel({
+              systemPrompt: sightFallbackPrompt,
+              userPrompt: sightFallbackUserPrompt,
+            });
+            usedFallback = true;
+          } catch (fallbackError) {
+            logger.error("parseTranscript fallback synthesis failed", {
+              uid: request.auth.uid,
+              formType,
+              transcriptLength: transcript.length,
+              error: String(fallbackError?.message || fallbackError),
+            });
+            synthesisResult = {};
+            draftStatus = "model_failed";
+            draftMessage = "Drafting failed before captions were generated.";
+          }
+        } else {
+          synthesisResult = {};
+          draftStatus = "model_failed";
+          draftMessage = "Drafting timed out or failed before captions were generated.";
+        }
+      }
+
+      const captions = {};
+      const modelRoot = synthesisResult && typeof synthesisResult === "object" ? synthesisResult : {};
+      const modelCaptionsRaw =
+        modelRoot.captions && typeof modelRoot.captions === "object" ?
+          modelRoot.captions :
+          {};
+      const perKeyLog = {};
+
+      template.forEach((item) => {
+        const key = item.key;
+        const keyCandidates = buildCaptionKeyCandidates(key);
+        const rawValue =
+          pickFirstCaptionValueFromObject(modelCaptionsRaw, keyCandidates) ??
+          pickFirstCaptionValueFromObject(modelRoot, keyCandidates);
+        let caption = extractCaptionTextFromModelValue(rawValue);
+
+        if (
+          formType === FORM_TYPES.stage &&
+          key === "generalFactors" &&
+          !transcriptSupportsGeneralFactors(transcript)
+        ) {
+          caption = null;
+        }
+
+        if (
+          formType === FORM_TYPES.stage &&
+          key === "basicMusicianship" &&
+          !transcriptSupportsBasicMusicianship(transcript)
+        ) {
+          caption = null;
+        }
+        if (
+          caption &&
+          caption.trim() &&
+          loudSoftBalanceDirective &&
+          (formType === FORM_TYPES.sight && key === "balance")
+        ) {
+          caption = enforceBalanceHierarchyDirective(caption, transcriptDirectives);
+        }
+        let finalCaption = caption ? trimWords(capSentenceCount(sanitizeCaptionText(caption), 4), MAX_FINAL_CAPTION_WORDS) : null;
+        if (formType === FORM_TYPES.stage && finalCaption && hasForbiddenCaptionStyle(finalCaption)) {
+          finalCaption = null;
+        }
+        if (!finalCaption && formType !== FORM_TYPES.stage) {
+          finalCaption = "";
+        }
+        captions[key] = finalCaption;
+        const omitted = formType === FORM_TYPES.stage ? finalCaption === null : !finalCaption;
+        perKeyLog[key] = {
+          usedFallback,
+          omitted,
+          styleRejected: formType === FORM_TYPES.stage && caption !== null && finalCaption === null,
+          generatedLength: finalCaption ? finalCaption.length : 0,
+        };
+      });
+
+      const generatedCount = Object.values(captions).reduce((count, value) => {
+        if (typeof value === "string") {
+          return count + (value.trim() ? 1 : 0);
+        }
+        return count + (value !== null && value !== undefined ? 1 : 0);
+      }, 0);
+      const omittedCount = template.length - generatedCount;
+      const styleRejectedCount = Object.values(perKeyLog).reduce(
+          (count, item) => count + (item.styleRejected ? 1 : 0),
+          0,
+      );
+
+      if (draftStatus === "generated" && generatedCount === 0) {
+        draftStatus = "no_supported_captions";
+        draftMessage = "Drafting returned no usable captions.";
+      }
+
+      logger.info("parseTranscript evidenceSummary", {
+        formType,
+        transcriptLength: transcript.length,
+        draftStatus,
+        generatedCount,
+        omittedCount,
+        styleRejectedCount,
+        perKey: perKeyLog,
+      });
+
+      return {
+        captions,
+        formType,
+        meta: {
+          status: draftStatus,
+          generatedCount,
+          omittedCount,
+          styleRejectedCount,
+          usedFallback,
+          message: draftMessage || null,
+        },
+      };
+    },
+);
+
+exports.transcribeSubmissionAudio = onCall(
+    APPCHECK_SENSITIVE_SECRET_OPTIONS,
+    async (request) => {
+      if (!request.auth || !request.auth.uid) {
+        throw new HttpsError("unauthenticated", "Authentication required.");
+      }
+      await checkRateLimit(request.auth.uid, "transcribeSubmissionAudio", 10, 60);
+
+      const data = request.data || {};
+      const eventId = data.eventId;
+      const ensembleId = data.ensembleId;
+      const judgePosition = data.judgePosition;
+
+      if (!eventId || !ensembleId || !judgePosition) {
+        throw new HttpsError(
+            "invalid-argument",
+            "eventId, ensembleId, and judgePosition required.",
+        );
+      }
+
+      const apiKey = OPENAI_API_KEY.value();
+      if (!apiKey) {
+        throw new HttpsError(
+            "failed-precondition",
+            "OpenAI API key not configured.",
+        );
+      }
+
+      const submissionId = `${eventId}_${ensembleId}_${judgePosition}`;
+      const submissionRef = admin
+          .firestore()
+          .collection(COLLECTIONS.submissions)
+          .doc(submissionId);
+      const submissionSnap = await submissionRef.get();
+      if (!submissionSnap.exists) {
+        throw new HttpsError("not-found", "Submission not found.");
+      }
+      const submission = submissionSnap.data();
+
+      const userSnap = await admin
+          .firestore()
+          .collection(COLLECTIONS.users)
+          .doc(request.auth.uid)
+          .get();
+      const isAdmin = isAdminProfile(userSnap.data() || {});
+      const isOwner = submission.judgeUid === request.auth.uid;
+      if (!isAdmin && !isOwner) {
+        throw new HttpsError(
+            "permission-denied",
+            "Only the owning judge or an admin can transcribe.",
+        );
+      }
+      if (!isAdmin && submission.locked === true) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Submission is locked. Admin must unlock before transcription.",
+        );
+      }
+
+      let objectPath = getStoragePathFromUrl(submission.audioUrl);
+      if (!objectPath && submission.judgeUid) {
+        objectPath = `audio/${submission.judgeUid}/${submissionId}/recording.webm`;
+      }
+      if (!objectPath) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Unable to resolve audio storage path.",
+        );
+      }
+
+      const bucket = admin.storage().bucket();
+      const file = bucket.file(objectPath);
+      const [exists] = await file.exists();
+      if (!exists) {
+        throw new HttpsError("not-found", "Audio file not found.");
+      }
+
+      const [metadata] = await file.getMetadata();
+      const size = Number(metadata.size || 0);
+      if (size > MAX_AUDIO_BYTES) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Audio file exceeds the 25MB transcription limit.",
+        );
+      }
+
+      const [buffer] = await file.download();
+      const form = new FormData();
+      const contentType = metadata.contentType || "audio/webm";
+      form.append("model", "gpt-4o-mini-transcribe");
+      form.append(
+          "file",
+          new Blob([buffer], {type: contentType}),
+          "recording.webm",
+      );
+
+      let response;
+      try {
+        response = await fetchWithTimeout(
+            "https://api.openai.com/v1/audio/transcriptions",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+              },
+              body: form,
+            },
+        );
+      } catch (error) {
+        logger.error("OpenAI transcription failed", {
+          error: String(error),
+          submissionId,
+        });
+        throw new HttpsError("internal", "Transcription failed.");
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error("OpenAI transcription failed", {
+          status: response.status,
+          body: errorText.slice(0, 500),
+          submissionId,
+        });
+        throw new HttpsError("internal", "Transcription failed.");
+      }
+
+      const payload = await response.json();
+      const transcript = String(payload.text || "").trim();
+
+      await submissionRef.update({
+        [FIELDS.submissions.transcript]: transcript,
+        [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      return {transcript};
+    },
+);
+
+exports.createOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertRole(request, ["judge", "admin"]);
+  const data = request.data || {};
+  const schoolId = String(data.schoolId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  if (!schoolId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "Select an existing school and ensemble.");
+  }
+  const schoolName = String(data.schoolName || "").trim();
+  const ensembleName = normalizeEnsembleNameForSchool({
+    schoolName,
+    ensembleName: String(data.ensembleName || "").trim(),
+  });
+  const formType = data.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
+  const useActiveEventDefaults = data.useActiveEventDefaults !== false;
+  const mode = normalizeAdjudicationMode(data.mode);
+  const assignment = useActiveEventDefaults ?
+    await resolveActiveEventAssignmentForUser(request.auth.uid) :
+    null;
+  if (mode === ADJUDICATION_MODES.official && !assignment) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Official adjudication requires an active event judge assignment.",
+    );
+  }
+  const officialEventId = mode === ADJUDICATION_MODES.official ?
+    String(assignment?.eventId || "").trim() :
+    "";
+  const officialJudgePosition = mode === ADJUDICATION_MODES.official ?
+    String(assignment?.judgePosition || "").trim() :
+    "";
+  if (mode === ADJUDICATION_MODES.official) {
+    await assertOfficialPacketEligibility({
+      db: admin.firestore(),
+      eventId: officialEventId,
+      schoolId,
+      ensembleId,
+    });
+  }
+  const incomingSnapshot =
+    data.ensembleSnapshot && typeof data.ensembleSnapshot === "object" ?
+      data.ensembleSnapshot :
+      null;
+  const ensembleSnapshot = incomingSnapshot ?
+    {
+      ...incomingSnapshot,
+      schoolName: schoolName || incomingSnapshot.schoolName || "",
+      ensembleName,
+    } :
+    null;
+  const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc();
+  const payload = {
+    [FIELDS.packets.status]: "draft",
+    [FIELDS.packets.locked]: false,
+    [FIELDS.packets.createdByJudgeUid]: request.auth.uid,
+    [FIELDS.packets.createdByJudgeName]: data.createdByJudgeName || "",
+    [FIELDS.packets.createdByJudgeEmail]: data.createdByJudgeEmail || "",
+    [FIELDS.packets.schoolName]: schoolName,
+    [FIELDS.packets.ensembleName]: ensembleName,
+    [FIELDS.packets.schoolId]: schoolId,
+    [FIELDS.packets.ensembleId]: ensembleId,
+    [FIELDS.packets.ensembleSnapshot]: ensembleSnapshot,
+    [FIELDS.packets.directorEntrySnapshot]: data.directorEntrySnapshot || null,
+    [FIELDS.packets.formType]: formType,
+    [FIELDS.packets.assignmentEventId]: assignment?.eventId || "",
+    [FIELDS.packets.judgePosition]: assignment?.judgePosition || "",
+    [FIELDS.packets.assignmentMode]: mode === ADJUDICATION_MODES.official ?
+      "official" :
+      (assignment ? "activeEventDefault" : "open"),
+    [FIELDS.packets.mode]: mode,
+    [FIELDS.packets.officialEventId]: officialEventId,
+    [FIELDS.packets.officialJudgePosition]: officialJudgePosition,
+    [FIELDS.packets.officialSubmissionId]:
+      mode === ADJUDICATION_MODES.official && officialEventId && ensembleId && officialJudgePosition ?
+        `${officialEventId}_${ensembleId}_${officialJudgePosition}` :
+        "",
+    [FIELDS.packets.transcript]: "",
+    [FIELDS.packets.transcriptFull]: "",
+    [FIELDS.packets.captions]: {},
+    [FIELDS.packets.captionScoreTotal]: null,
+    [FIELDS.packets.computedFinalRatingJudge]: null,
+    [FIELDS.packets.computedFinalRatingLabel]: "N/A",
+    [FIELDS.packets.audioSessionCount]: 0,
+    [FIELDS.packets.activeSessionId]: null,
+    [FIELDS.packets.segmentCount]: 0,
+    [FIELDS.packets.tapeDurationSec]: 0,
+    [FIELDS.packets.createdAt]: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  await packetRef.set(payload);
+  await writePacketAudit(packetRef, {
+    action: "create",
+    fromStatus: null,
+    toStatus: "draft",
+    actor: {uid: request.auth.uid, role: "judge"},
+  });
+  return {packetId: packetRef.id};
+});
+
+exports.setUserPrefs = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const prefs = data.preferences || {};
+  const next = {};
+  const formType = prefs.judgeOpenDefaultFormType;
+  if (formType) {
+    if (![FORM_TYPES.stage, FORM_TYPES.sight].includes(formType)) {
+      throw new HttpsError("invalid-argument", "Invalid form type.");
+    }
+    next.judgeOpenDefaultFormType = formType;
+  }
+  if (typeof prefs.lastJudgeOpenPacketId === "string") {
+    next.lastJudgeOpenPacketId = prefs.lastJudgeOpenPacketId;
+  }
+  if (typeof prefs.lastJudgeOpenFormType === "string") {
+    next.lastJudgeOpenFormType = prefs.lastJudgeOpenFormType;
+  }
+  if (typeof prefs.judgeOpenUseActiveEventDefaults === "boolean") {
+    next.judgeOpenUseActiveEventDefaults = prefs.judgeOpenUseActiveEventDefaults;
+  }
+  if (typeof prefs.judgeAdjudicationMode === "string") {
+    const mode = normalizeAdjudicationMode(prefs.judgeAdjudicationMode);
+    next.judgeAdjudicationMode = mode;
+  }
+  const userRef = admin.firestore().collection(COLLECTIONS.users).doc(request.auth.uid);
+  const userSnap = await userRef.get();
+  const currentPrefs = userSnap.exists ? (userSnap.data().preferences || {}) : {};
+  await userRef.set({
+    preferences: {...currentPrefs, ...next},
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true};
+});
+
+exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertRole(request, ["judge", "admin"]);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) {
+    throw new HttpsError("invalid-argument", "packetId required.");
+  }
+  const db = admin.firestore();
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  const userSnap = await admin
+      .firestore()
+      .collection(COLLECTIONS.users)
+      .doc(request.auth.uid)
+      .get();
+  const userRole = userSnap.exists ? userSnap.data().role : null;
+  const isAdmin = isAdminProfile(userSnap.data() || {});
+  const useActiveEventDefaults = data.useActiveEventDefaults !== false;
+  const assignment = useActiveEventDefaults ?
+    await resolveActiveEventAssignmentForUser(request.auth.uid) :
+    null;
+  const requestedMode = normalizeAdjudicationMode(data.mode);
+  const nextStatus = "locked";
+  const captions = data.captions || {};
+  const captionScoreTotal = calculateCaptionTotal(captions);
+  const rating = computeFinalRatingFromTotal(captionScoreTotal);
+  let currentStatus = "draft";
+  await db.runTransaction(async (tx) => {
+    const packetSnap = await tx.get(packetRef);
+    if (!packetSnap.exists) {
+      throw new HttpsError("not-found", "Packet not found.");
+    }
+    const packet = packetSnap.data() || {};
+    const isOwner = packet.createdByJudgeUid === request.auth.uid;
+    if (!isAdmin && !isOwner) {
+      throw new HttpsError("permission-denied", "Not authorized.");
+    }
+    if (!isAdmin && packet.locked === true) {
+      throw new HttpsError("failed-precondition", "Packet is locked.");
+    }
+    currentStatus = packet.status || "draft";
+    if (!["draft", "reopened"].includes(currentStatus)) {
+      throw new HttpsError("failed-precondition", "Packet cannot be submitted.");
+    }
+    const packetMode = normalizeAdjudicationMode(packet.mode || requestedMode);
+    const nextSchoolName = String(data.schoolName || packet.schoolName || "");
+    const nextEnsembleName = normalizeEnsembleNameForSchool({
+      schoolName: nextSchoolName,
+      ensembleName: String(data.ensembleName || packet.ensembleName || ""),
+    });
+    const nextSchoolId = String(data.schoolId || packet.schoolId || "");
+    const nextEnsembleId = String(data.ensembleId || packet.ensembleId || "");
+    if (!nextSchoolId || !nextEnsembleId) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Packet must be linked to an existing school and ensemble before submit.",
+      );
+    }
+    const activeAssignmentEventId = String(assignment?.eventId || "").trim();
+    const activeAssignmentJudgePosition = String(assignment?.judgePosition || "").trim();
+    const effectiveOfficialEventId =
+      packetMode === ADJUDICATION_MODES.official ?
+        String(
+            data.officialEventId ||
+            packet.officialEventId ||
+            activeAssignmentEventId ||
+            packet.assignmentEventId ||
+            "",
+        ).trim() :
+        "";
+    const effectiveOfficialJudgePosition =
+      packetMode === ADJUDICATION_MODES.official ?
+        String(
+            data.officialJudgePosition ||
+            packet.officialJudgePosition ||
+            activeAssignmentJudgePosition ||
+            packet.judgePosition ||
+            "",
+        ).trim() :
+        "";
+    if (packetMode === ADJUDICATION_MODES.official) {
+      if (!effectiveOfficialEventId || !effectiveOfficialJudgePosition) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Official adjudication requires active event assignment metadata.",
+        );
+      }
+      if (
+        !isAdmin &&
+        assignment &&
+        (
+          String(assignment.eventId || "").trim() !== effectiveOfficialEventId ||
+          String(assignment.judgePosition || "").trim() !== effectiveOfficialJudgePosition
+        )
+      ) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Official adjudication must match your active event assignment.",
+        );
+      }
+      const scheduleQuery = db
+          .collection(COLLECTIONS.events)
+          .doc(effectiveOfficialEventId)
+          .collection(COLLECTIONS.schedule)
+          .where(FIELDS.schedule.schoolId, "==", nextSchoolId)
+          .where(FIELDS.schedule.ensembleId, "==", nextEnsembleId)
+          .limit(1);
+      const scheduleSnap = await tx.get(scheduleQuery);
+      if (scheduleSnap.empty) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Official adjudication must target a scheduled ensemble in the active event.",
+        );
+      }
+      const latestAudioUrl = String(packet.latestAudioUrl || "").trim();
+      if (!latestAudioUrl) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Official adjudication requires at least one uploaded audio segment.",
+        );
+      }
+      const submissionId = `${effectiveOfficialEventId}_${nextEnsembleId}_${effectiveOfficialJudgePosition}`;
+      const submissionRef = db.collection(COLLECTIONS.submissions).doc(submissionId);
+      const submissionSnap = await tx.get(submissionRef);
+      const existingSubmission = submissionSnap.exists ? (submissionSnap.data() || {}) : {};
+      if (existingSubmission.locked === true && !isAdmin) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Official submission is locked. Ask admin to unlock before resubmitting.",
+        );
+      }
+      tx.set(submissionRef, {
+        [FIELDS.submissions.status]: STATUSES.submitted,
+        [FIELDS.submissions.locked]: true,
+        [FIELDS.submissions.judgeUid]: request.auth.uid,
+        [FIELDS.submissions.judgeName]:
+          data.createdByJudgeName || packet.createdByJudgeName || existingSubmission.judgeName || "",
+        [FIELDS.submissions.judgeEmail]:
+          data.createdByJudgeEmail || packet.createdByJudgeEmail || existingSubmission.judgeEmail || "",
+        [FIELDS.submissions.judgeTitle]: existingSubmission.judgeTitle || "",
+        [FIELDS.submissions.judgeAffiliation]: existingSubmission.judgeAffiliation || "",
+        [FIELDS.submissions.schoolId]: nextSchoolId,
+        [FIELDS.submissions.eventId]: effectiveOfficialEventId,
+        [FIELDS.submissions.ensembleId]: nextEnsembleId,
+        [FIELDS.submissions.judgePosition]: effectiveOfficialJudgePosition,
+        [FIELDS.submissions.formType]:
+          (data.formType === FORM_TYPES.sight || data.formType === FORM_TYPES.stage) ?
+            data.formType :
+            (packet.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage),
+        [FIELDS.submissions.audioUrl]: latestAudioUrl,
+        [FIELDS.submissions.audioDurationSec]: Number(packet.tapeDurationSec || 0),
+        [FIELDS.submissions.transcript]: String(data.transcriptFull || data.transcript || ""),
+        [FIELDS.submissions.captions]: captions,
+        [FIELDS.submissions.captionScoreTotal]: captionScoreTotal,
+        [FIELDS.submissions.computedFinalRatingJudge]: rating.value,
+        [FIELDS.submissions.computedFinalRatingLabel]: rating.label,
+        [FIELDS.submissions.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: submissionSnap.exists ?
+          (existingSubmission.createdAt || admin.firestore.FieldValue.serverTimestamp()) :
+          admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+    const incomingSnapshot =
+      data.ensembleSnapshot && typeof data.ensembleSnapshot === "object" ?
+        data.ensembleSnapshot :
+        null;
+    const baseSnapshot = incomingSnapshot || packet.ensembleSnapshot || null;
+    const nextEnsembleSnapshot =
+      baseSnapshot && typeof baseSnapshot === "object" ?
+        {
+          ...baseSnapshot,
+          schoolName: nextSchoolName || baseSnapshot.schoolName || "",
+          ensembleName: nextEnsembleName,
+        } :
+        null;
+    const nextFormType =
+      (data.formType === FORM_TYPES.sight || data.formType === FORM_TYPES.stage) ?
+        data.formType :
+        (packet.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage);
+    const payload = {
+      [FIELDS.packets.status]: nextStatus,
+      [FIELDS.packets.locked]: true,
+      [FIELDS.packets.schoolName]: nextSchoolName,
+      [FIELDS.packets.ensembleName]: nextEnsembleName,
+      [FIELDS.packets.schoolId]: nextSchoolId,
+      [FIELDS.packets.ensembleId]: nextEnsembleId,
+      [FIELDS.packets.ensembleSnapshot]: nextEnsembleSnapshot,
+      [FIELDS.packets.directorEntrySnapshot]:
+        data.directorEntrySnapshot ?? packet.directorEntrySnapshot ?? null,
+      [FIELDS.packets.formType]: nextFormType,
+      [FIELDS.packets.assignmentEventId]: packet.assignmentMode === "adminOverride" ?
+        (packet.assignmentEventId || "") :
+        (assignment?.eventId || packet.assignmentEventId || ""),
+      [FIELDS.packets.judgePosition]: packet.assignmentMode === "adminOverride" ?
+        (packet.judgePosition || "") :
+        (assignment?.judgePosition || packet.judgePosition || ""),
+      [FIELDS.packets.assignmentMode]: packet.assignmentMode === "adminOverride" ?
+        "adminOverride" :
+        (packetMode === ADJUDICATION_MODES.official ?
+          "official" :
+          (assignment ? "activeEventDefault" : (packet.assignmentMode || "open"))),
+      [FIELDS.packets.mode]: packetMode,
+      [FIELDS.packets.officialEventId]:
+        packetMode === ADJUDICATION_MODES.official ?
+          String(data.officialEventId || packet.officialEventId || assignment?.eventId || packet.assignmentEventId || "") :
+          "",
+      [FIELDS.packets.officialJudgePosition]:
+        packetMode === ADJUDICATION_MODES.official ?
+          String(data.officialJudgePosition || packet.officialJudgePosition || assignment?.judgePosition || packet.judgePosition || "") :
+          "",
+      [FIELDS.packets.officialSubmissionId]:
+        packetMode === ADJUDICATION_MODES.official ?
+          String(
+              data.officialSubmissionId ||
+              packet.officialSubmissionId ||
+              `${String(data.officialEventId || packet.officialEventId || assignment?.eventId || packet.assignmentEventId || "")}_${nextEnsembleId}_${String(data.officialJudgePosition || packet.officialJudgePosition || assignment?.judgePosition || packet.judgePosition || "")}`,
+          ) :
+          "",
+      [FIELDS.packets.transcript]: String(data.transcript || ""),
+      [FIELDS.packets.transcriptFull]: String(data.transcriptFull || data.transcript || ""),
+      [FIELDS.packets.captions]: captions,
+      [FIELDS.packets.captionScoreTotal]: captionScoreTotal,
+      [FIELDS.packets.computedFinalRatingJudge]: rating.value,
+      [FIELDS.packets.computedFinalRatingLabel]: rating.label,
+      [FIELDS.packets.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      [FIELDS.packets.releasedAt]: null,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    tx.set(packetRef, payload, {merge: true});
+  });
+  await writePacketAudit(packetRef, {
+    action: "submit",
+    fromStatus: currentStatus,
+    toStatus: nextStatus,
+    actor: {uid: request.auth.uid, role: userRole || "judge"},
+  });
+  return {packetId, status: nextStatus, autoReleased: false};
+});
+
+exports.lockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
+  const db = admin.firestore();
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  let priorStatus = null;
+  await db.runTransaction(async (tx) => {
+    const packetSnap = await tx.get(packetRef);
+    if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
+    const packet = packetSnap.data() || {};
+    priorStatus = packet.status || null;
+    tx.set(packetRef, {
+      [FIELDS.packets.locked]: true,
+      [FIELDS.packets.status]: "locked",
+      [FIELDS.packets.releasedAt]: null,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+  await writePacketAudit(packetRef, {
+    action: "lock",
+    fromStatus: priorStatus,
+    toStatus: "locked",
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {packetId, status: "locked"};
+});
+
+exports.unlockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
+  const db = admin.firestore();
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  let priorStatus = null;
+  await db.runTransaction(async (tx) => {
+    const packetSnap = await tx.get(packetRef);
+    if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
+    const packet = packetSnap.data() || {};
+    priorStatus = packet.status || null;
+    if (packet.locked !== true) {
+      throw new HttpsError("failed-precondition", "Packet is not locked.");
+    }
+    tx.set(packetRef, {
+      [FIELDS.packets.locked]: false,
+      [FIELDS.packets.status]: "reopened",
+      [FIELDS.packets.releasedAt]: null,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+  await writePacketAudit(packetRef, {
+    action: "unlock",
+    fromStatus: priorStatus,
+    toStatus: "reopened",
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {packetId, status: "reopened"};
+});
+
+exports.releaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
+  const db = admin.firestore();
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  let priorStatus = null;
+  await db.runTransaction(async (tx) => {
+    const packetSnap = await tx.get(packetRef);
+    if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
+    const packet = packetSnap.data() || {};
+    priorStatus = packet.status || null;
+    const mode = normalizeAdjudicationMode(packet.mode);
+    if (mode !== ADJUDICATION_MODES.official) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Only official adjudications can be released.",
+      );
+    }
+    if (packet.locked !== true) {
+      throw new HttpsError("failed-precondition", "Open packet must be locked before release.");
+    }
+    if (packet.status !== "locked") {
+      throw new HttpsError("failed-precondition", "Only locked packets can be released.");
+    }
+    tx.set(packetRef, {
+      [FIELDS.packets.status]: "released",
+      [FIELDS.packets.releasedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+  await writePacketAudit(packetRef, {
+    action: "release",
+    fromStatus: priorStatus,
+    toStatus: "released",
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {packetId, status: "released"};
+});
+
+exports.unreleaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
+  const db = admin.firestore();
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  let priorStatus = null;
+  let nextStatus = "reopened";
+  await db.runTransaction(async (tx) => {
+    const packetSnap = await tx.get(packetRef);
+    if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
+    const packet = packetSnap.data() || {};
+    priorStatus = packet.status || null;
+    if (packet.status !== "released") {
+      throw new HttpsError("failed-precondition", "Only released packets can be unreleased.");
+    }
+    nextStatus = packet.locked === true ? "locked" : "reopened";
+    tx.set(packetRef, {
+      [FIELDS.packets.status]: nextStatus,
+      [FIELDS.packets.releasedAt]: null,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+  await writePacketAudit(packetRef, {
+    action: "unrelease",
+    fromStatus: priorStatus,
+    toStatus: nextStatus,
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {packetId, status: nextStatus};
+});
+
+exports.linkOpenPacketToEnsemble = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = data.packetId;
+  const schoolId = data.schoolId;
+  const ensembleId = data.ensembleId;
+  if (!packetId || !schoolId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "packetId, schoolId, ensembleId required.");
+  }
+  const db = admin.firestore();
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const schoolRef = db.collection(COLLECTIONS.schools).doc(schoolId);
+  const schoolSnap = await schoolRef.get();
+  if (!schoolSnap.exists) {
+    throw new HttpsError("not-found", "School not found.");
+  }
+  const ensembleRef = schoolRef.collection("ensembles").doc(ensembleId);
+  const ensembleSnap = await ensembleRef.get();
+  if (!ensembleSnap.exists) {
+    throw new HttpsError("not-found", "Ensemble not found.");
+  }
+  const schoolName = schoolSnap.data()?.name || schoolId;
+  const ensembleName = ensembleSnap.data()?.name || ensembleId;
+  const ensembleSnapshot = {
+    schoolId,
+    schoolName,
+    ensembleId,
+    ensembleName,
+  };
+  await packetRef.set({
+    [FIELDS.packets.schoolId]: schoolId,
+    [FIELDS.packets.ensembleId]: ensembleId,
+    [FIELDS.packets.schoolName]: schoolName,
+    [FIELDS.packets.ensembleName]: ensembleName,
+    [FIELDS.packets.ensembleSnapshot]: ensembleSnapshot,
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "link",
+    fromStatus: packetSnap.data()?.status || null,
+    toStatus: packetSnap.data()?.status || null,
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {ok: true};
+});
+
+exports.setOpenPacketJudgePosition = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = String(data.packetId || "").trim();
+  if (!packetId) {
+    throw new HttpsError("invalid-argument", "packetId required.");
+  }
+  const judgePosition = normalizeOpenPacketJudgePosition(data.judgePosition);
+  const assignmentEventId = String(data.assignmentEventId || "").trim();
+  const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const packet = packetSnap.data() || {};
+  if ((packet.status || "") === "released") {
+    throw new HttpsError("failed-precondition", "Revoke packet before changing judge slot.");
+  }
+  await packetRef.set({
+    [FIELDS.packets.judgePosition]: judgePosition,
+    [FIELDS.packets.assignmentEventId]: judgePosition ?
+      (assignmentEventId || packet.assignmentEventId || "") :
+      "",
+    [FIELDS.packets.assignmentMode]: judgePosition ? "adminOverride" : "open",
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "set_judge_position",
+    fromStatus: packet.status || null,
+    toStatus: packet.status || null,
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+  return {ok: true, judgePosition};
+});
+
+exports.deleteOpenPacket = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const packetId = String(data.packetId || "").trim();
+  if (!packetId) {
+    throw new HttpsError("invalid-argument", "packetId required.");
+  }
+
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const userRole = userSnap.exists ? userSnap.data().role : null;
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const packet = packetSnap.data() || {};
+  const isAdmin = isAdminProfile(userSnap.data() || {});
+  const isOwner = packet.createdByJudgeUid === request.auth.uid;
+  if (!isAdmin && !isOwner) {
+    throw new HttpsError("permission-denied", "Not authorized to delete this packet.");
+  }
+  if (isReleasedOpenPacketStatus(packet.status)) {
+    throw new HttpsError(
+        "failed-precondition",
+        "This open packet is released. Unrelease it before deleting.",
+    );
+  }
+
+  const bucket = admin.storage().bucket();
+  const {deletedSessionCount, deletedAuditCount} = await deleteOpenPacketDocument({
+    db,
+    bucket,
+    packetRef,
+    packet,
+    packetId,
+  });
+
+  logger.info("deleteOpenPacket", {
+    packetId,
+    deletedSessionCount,
+    deletedAuditCount,
+    actorUid: request.auth.uid,
+    actorRole: userRole || null,
+  });
+
+  return {ok: true, packetId};
+});
+
+exports.deleteScheduledPacket = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+
+  const db = admin.firestore();
+  const result = await deleteScheduledPacketGroup({
+    db,
+    eventId,
+    ensembleId,
+  });
+  if (!result.found) {
+    throw new HttpsError("not-found", "No scheduled packet submissions found.");
+  }
+  if (result.hasReleased) {
+    throw new HttpsError(
+        "failed-precondition",
+        "This packet is released. Unrelease it before deleting.",
+    );
+  }
+
+  logger.info("deleteScheduledPacket", {
+    eventId,
+    ensembleId,
+    deletedSubmissions: result.deletedSubmissions,
+    deletedPacketExport: result.deletedPacketExport,
+    actorUid: request.auth.uid,
+  });
+
+  return {
+    ok: true,
+    eventId,
+    ensembleId,
+    deletedSubmissions: result.deletedSubmissions,
+    deletedPacketExport: result.deletedPacketExport,
+  };
+});
+
+exports.setEventAssignments = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  if (!eventId) {
+    throw new HttpsError("invalid-argument", "eventId is required.");
+  }
+  const checks = buildAssignmentChecks(data);
+  const blockers = [];
+  if (!checks.allPresent) {
+    blockers.push({
+      code: "assignments-incomplete",
+      message: "All judge positions must be assigned.",
+    });
+  }
+  if (checks.allPresent && !checks.unique) {
+    blockers.push({
+      code: "assignments-not-unique",
+      message: "Each judge position must use a unique judge.",
+    });
+  }
+  if (blockers.length) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Judge assignments are invalid.",
+        {blockers},
+    );
+  }
+  const db = admin.firestore();
+  const eventRef = db.collection(COLLECTIONS.events).doc(eventId);
+  const eventSnap = await eventRef.get();
+  if (!eventSnap.exists) {
+    throw new HttpsError("not-found", "Event not found.");
+  }
+  await db
+      .collection(COLLECTIONS.events)
+      .doc(eventId)
+      .collection(COLLECTIONS.assignments)
+      .doc("positions")
+      .set({
+        stage1Uid: checks.stage1Uid,
+        stage2Uid: checks.stage2Uid,
+        stage3Uid: checks.stage3Uid,
+        sightUid: checks.sightUid,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: request.auth.uid,
+      }, {merge: true});
+  await eventRef.set({
+    readinessState: {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+  }, {merge: true});
+  return {
+    ok: true,
+    eventId,
+    assignments: {
+      stage1Uid: checks.stage1Uid,
+      stage2Uid: checks.stage2Uid,
+      stage3Uid: checks.stage3Uid,
+      sightUid: checks.sightUid,
+    },
+  };
+});
+
+exports.runEventPreflight = onCall(async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  if (!eventId) {
+    throw new HttpsError("invalid-argument", "eventId is required.");
+  }
+  const db = admin.firestore();
+  const eventRef = db.collection(COLLECTIONS.events).doc(eventId);
+  const [eventSnap, assignmentsSnap, scheduleSnap] = await Promise.all([
+    eventRef.get(),
+    db.collection(COLLECTIONS.events)
+        .doc(eventId)
+        .collection(COLLECTIONS.assignments)
+        .doc("positions")
+        .get(),
+    db.collection(COLLECTIONS.events)
+        .doc(eventId)
+        .collection(COLLECTIONS.schedule)
+        .get(),
+  ]);
+  if (!eventSnap.exists) {
+    throw new HttpsError("not-found", "Event not found.");
+  }
+  const event = eventSnap.data() || {};
+  const readinessState = event.readinessState && typeof event.readinessState === "object" ?
+    event.readinessState :
+    {};
+  const readinessSteps = readinessState.steps && typeof readinessState.steps === "object" ?
+    readinessState.steps :
+    {};
+  const existingWalkthrough =
+    readinessState.walkthrough && typeof readinessState.walkthrough === "object" ?
+      readinessState.walkthrough :
+      {};
+  const existingWalkthroughStatus = String(existingWalkthrough.status || "").trim().toLowerCase();
+  const existingWalkthroughNote = String(existingWalkthrough.note || "").trim();
+  const existingStartedAt = existingWalkthrough.startedAt || null;
+  const existingStartedBy = String(existingWalkthrough.startedBy || "").trim();
+  const existingCompletedAt = existingWalkthrough.completedAt || null;
+  const existingCompletedBy = String(existingWalkthrough.completedBy || "").trim();
+  const walkthroughComplete = READINESS_STEP_ORDER.every(
+      (key) => String(readinessSteps?.[key]?.status || "").trim().toLowerCase() === "complete",
+  );
+  const isLiveEvent = normalizeEventMode(event.eventMode) === EVENT_MODES.live;
+  const assignments = assignmentsSnap.exists ? (assignmentsSnap.data() || {}) : {};
+  const assignmentChecks = buildAssignmentChecks(assignments);
+  const assignedUids = [assignmentChecks.stage1Uid, assignmentChecks.stage2Uid, assignmentChecks.stage3Uid, assignmentChecks.sightUid]
+      .filter(Boolean);
+  const assignedJudgeIssues = [];
+  if (assignmentChecks.allPresent) {
+    const userSnaps = await Promise.all(
+        assignedUids.map((uid) => db.collection(COLLECTIONS.users).doc(uid).get()),
+    );
+    userSnaps.forEach((snap, index) => {
+      if (!snap.exists) {
+        assignedJudgeIssues.push({
+          uid: assignedUids[index],
+          issue: "missing-user",
+        });
+        return;
+      }
+      const profile = snap.data() || {};
+      if (!isJudgeProfile(profile)) {
+        assignedJudgeIssues.push({
+          uid: assignedUids[index],
+          issue: "not-judge-role",
+        });
+      }
+    });
+  }
+
+  const scheduleEntries = scheduleSnap.docs.map((docSnap) => ({
+    id: docSnap.id,
+    ...(docSnap.data() || {}),
+  }));
+  const scheduledEnsembleIds = Array.from(
+      new Set(scheduleEntries.map((entry) => String(entry.ensembleId || "").trim()).filter(Boolean)),
+  );
+  const entrySnaps = await Promise.all(
+      scheduledEnsembleIds.map((ensembleId) =>
+        db.collection(COLLECTIONS.events)
+            .doc(eventId)
+            .collection(COLLECTIONS.entries)
+            .doc(ensembleId)
+            .get(),
+      ),
+  );
+  const missingEntryIds = [];
+  const notReadyEntryIds = [];
+  entrySnaps.forEach((snap, index) => {
+    if (!snap.exists) {
+      missingEntryIds.push(scheduledEnsembleIds[index]);
+      return;
+    }
+    const status = String(snap.data()?.status || "").trim().toLowerCase();
+    if (status !== "ready") {
+      notReadyEntryIds.push(scheduledEnsembleIds[index]);
+    }
+  });
+  const checks = [
+    {
+      key: "activeEvent",
+      label: "Event is active",
+      pass: Boolean(event.isActive),
+      message: event.isActive ?
+        "Active event confirmed." :
+        "Set this event as active before live operations.",
+    },
+    {
+      key: "assignmentsComplete",
+      label: "All judge positions assigned",
+      pass: assignmentChecks.allPresent,
+      message: assignmentChecks.allPresent ?
+        "Stage 1/2/3 and Sight assignments are set." :
+        "Assign Stage 1/2/3 and Sight judges.",
+    },
+    {
+      key: "assignmentsUnique",
+      label: "Judge assignments are unique",
+      pass: assignmentChecks.allPresent ? assignmentChecks.unique : true,
+      message: assignmentChecks.allPresent ?
+        (assignmentChecks.unique ?
+          "Each judge position has a unique UID." :
+          "One or more judge positions share the same user.") :
+        "Uniqueness is checked after all positions are assigned.",
+    },
+    {
+      key: "assignedUsersValid",
+      label: "Assigned users exist and are judge-role",
+      pass: assignmentChecks.allPresent ? assignedJudgeIssues.length === 0 : true,
+      message: assignmentChecks.allPresent ?
+        (assignedJudgeIssues.length === 0 ?
+          "All assigned users are valid judge accounts." :
+          `${assignedJudgeIssues.length} assigned user(s) are missing or not judge-role.`) :
+        "User-role validation runs after all positions are assigned.",
+    },
+    {
+      key: "schedulePresent",
+      label: "Schedule has entries",
+      pass: scheduleEntries.length > 0,
+      message: scheduleEntries.length > 0 ?
+        `${scheduleEntries.length} schedule row(s) loaded.` :
+        "Create schedule entries before event operations.",
+    },
+    {
+      key: "entriesPresentForScheduled",
+      label: "Scheduled ensembles have entry docs",
+      pass: scheduleEntries.length === 0 ? true : missingEntryIds.length === 0,
+      message: scheduleEntries.length === 0 ?
+        "Entry coverage is evaluated once schedules exist." :
+        (missingEntryIds.length === 0 ?
+          "All scheduled ensembles have an event entry document." :
+          `${missingEntryIds.length} scheduled ensemble(s) are missing entry documents.`),
+    },
+    {
+      key: "directorEntriesReady",
+      label: "Scheduled entries are marked ready",
+      pass: scheduleEntries.length === 0 ?
+        true :
+        (missingEntryIds.length === 0 && notReadyEntryIds.length === 0),
+      message: scheduleEntries.length === 0 ?
+        "Director readiness is evaluated once schedules exist." :
+        (missingEntryIds.length > 0 ?
+          "Resolve missing entry docs before readiness can be confirmed." :
+          (notReadyEntryIds.length === 0 ?
+            "All scheduled entries are ready." :
+            `${notReadyEntryIds.length} scheduled entry(ies) are still draft.`)),
+    },
+    {
+      key: "walkthroughComplete",
+      label: "Readiness walkthrough is complete",
+      pass: isLiveEvent ? walkthroughComplete : true,
+      message: isLiveEvent ?
+        (walkthroughComplete ?
+          "All walkthrough checkpoints are complete." :
+          "Complete all walkthrough checkpoints in Admin > Readiness.") :
+        "Walkthrough completion is not required for rehearsal events.",
+    },
+  ];
+  const blockers = checks
+      .filter((check) => !check.pass)
+      .map((check) => ({code: check.key, message: check.message}));
+  const preflight = {
+    pass: blockers.length === 0,
+    checks,
+    blockers,
+    ranAt: admin.firestore.FieldValue.serverTimestamp(),
+    ranBy: request.auth.uid,
+  };
+  const nextWalkthroughStatus = walkthroughComplete ?
+    "complete" :
+    (hasWalkthroughActivity ? "in-progress" : "not-started");
+  const defaultWalkthroughNote = walkthroughComplete ?
+    "Walkthrough complete" :
+    (hasWalkthroughActivity ? "Walkthrough in progress" : "Walkthrough not started");
+  const nextWalkthroughNote = existingWalkthroughNote && existingWalkthroughStatus === nextWalkthroughStatus ?
+    existingWalkthroughNote :
+    defaultWalkthroughNote;
+  const hasWalkthroughActivity =
+    Boolean(existingStartedAt) ||
+    Boolean(existingStartedBy) ||
+    READINESS_STEP_ORDER.some(
+        (key) => {
+          const step = readinessSteps?.[key] || {};
+          const status = String(step.status || "").trim().toLowerCase();
+          return (
+            status === "complete" ||
+            Boolean(step.updatedAt) ||
+            Boolean(String(step.updatedBy || "").trim()) ||
+            Boolean(String(step.note || "").trim())
+          );
+        },
+    );
+  const nextStartedAt = hasWalkthroughActivity ?
+    (existingStartedAt || admin.firestore.FieldValue.serverTimestamp()) :
+    null;
+  const nextStartedBy = hasWalkthroughActivity ?
+    (existingStartedBy || request.auth.uid) :
+    "";
+  await eventRef.set({
+    eventMode: normalizeEventMode(event.eventMode),
+    readinessState: {
+      preflight,
+      walkthrough: {
+        status: nextWalkthroughStatus,
+        note: nextWalkthroughNote,
+        startedAt: nextStartedAt,
+        startedBy: nextStartedBy,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: request.auth.uid,
+        completedAt: walkthroughComplete ?
+          (existingCompletedAt || admin.firestore.FieldValue.serverTimestamp()) :
+          null,
+        completedBy: walkthroughComplete ?
+          (existingCompletedBy || request.auth.uid) :
+          "",
+      },
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+  }, {merge: true});
+  return {
+    ok: true,
+    eventId,
+    pass: blockers.length === 0,
+    checks,
+    blockers,
+  };
+});
+
+exports.markReadinessStep = onCall(async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const stepKey = String(data.stepKey || "").trim();
+  const note = String(data.note || "").trim();
+  const rawStatus = String(data.status || "").trim().toLowerCase();
+  if (rawStatus !== "complete" && rawStatus !== "incomplete") {
+    throw new HttpsError("invalid-argument", "status must be complete or incomplete.");
+  }
+  if (note.length > MAX_READINESS_NOTE_LENGTH) {
+    throw new HttpsError(
+        "invalid-argument",
+        `note must be <= ${MAX_READINESS_NOTE_LENGTH} characters.`,
+    );
+  }
+  const status = rawStatus;
+  if (!eventId || !stepKey) {
+    throw new HttpsError("invalid-argument", "eventId and stepKey required.");
+  }
+  if (!READINESS_STEP_KEYS.has(stepKey)) {
+    throw new HttpsError("invalid-argument", "Unsupported readiness step.");
+  }
+  const db = admin.firestore();
+  const eventRef = db.collection(COLLECTIONS.events).doc(eventId);
+  const eventSnap = await eventRef.get();
+  if (!eventSnap.exists) {
+    throw new HttpsError("not-found", "Event not found.");
+  }
+  const readinessState = eventSnap.data()?.readinessState || {};
+  const currentSteps = readinessState.steps && typeof readinessState.steps === "object" ?
+    readinessState.steps :
+    {};
+  const currentWalkthrough =
+    readinessState.walkthrough && typeof readinessState.walkthrough === "object" ?
+      readinessState.walkthrough :
+      {};
+  const nextStatuses = {};
+  READINESS_STEP_ORDER.forEach((key) => {
+    const existingStatus = String(currentSteps?.[key]?.status || "").trim().toLowerCase();
+    nextStatuses[key] = key === stepKey ? status : (existingStatus === "complete" ? "complete" : "incomplete");
+  });
+  const allComplete = READINESS_STEP_ORDER.every((key) => nextStatuses[key] === "complete");
+  const persistedStartedAt = currentWalkthrough.startedAt || null;
+  const persistedStartedBy = String(currentWalkthrough.startedBy || "").trim();
+  await eventRef.set({
+    readinessState: {
+      steps: {
+        [stepKey]: {
+          status,
+          note,
+          source: "ui",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedBy: request.auth.uid,
+        },
+      },
+      walkthrough: {
+        status: allComplete ? "complete" : "in-progress",
+        note: note || (allComplete ? "Walkthrough complete" : "Walkthrough step updated"),
+        startedAt: persistedStartedAt || admin.firestore.FieldValue.serverTimestamp(),
+        startedBy: persistedStartedBy || request.auth.uid,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: request.auth.uid,
+        completedAt: allComplete ? admin.firestore.FieldValue.serverTimestamp() : null,
+        completedBy: allComplete ? request.auth.uid : "",
+      },
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+  }, {merge: true});
+  return {ok: true, eventId, stepKey, status};
+});
+
+exports.setReadinessWalkthrough = onCall(async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const rawStatus = String(data.status || "").trim().toLowerCase();
+  if (rawStatus !== "incomplete") {
+    throw new HttpsError("invalid-argument", "setReadinessWalkthrough only supports incomplete resets.");
+  }
+  const status = rawStatus;
+  const note = String(data.note || "").trim();
+  if (note.length > MAX_READINESS_NOTE_LENGTH) {
+    throw new HttpsError(
+        "invalid-argument",
+        `note must be <= ${MAX_READINESS_NOTE_LENGTH} characters.`,
+    );
+  }
+  if (!eventId) {
+    throw new HttpsError("invalid-argument", "eventId is required.");
+  }
+  const db = admin.firestore();
+  const eventRef = db.collection(COLLECTIONS.events).doc(eventId);
+  const eventSnap = await eventRef.get();
+  if (!eventSnap.exists) {
+    throw new HttpsError("not-found", "Event not found.");
+  }
+  const stepPatch = {};
+  READINESS_STEP_ORDER.forEach((stepKey) => {
+    stepPatch[stepKey] = {
+      status,
+      note,
+      source: "ui",
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedBy: request.auth.uid,
+    };
+  });
+  const normalizedWalkthroughStatus = "in-progress";
+  await eventRef.set({
+    readinessState: {
+      steps: stepPatch,
+      walkthrough: {
+        status: normalizedWalkthroughStatus,
+        note,
+        startedAt: admin.firestore.FieldValue.serverTimestamp(),
+        startedBy: request.auth.uid,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: request.auth.uid,
+        completedAt: null,
+        completedBy: "",
+      },
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+  }, {merge: true});
+  return {
+    ok: true,
+    eventId,
+    status,
+    steps: READINESS_STEP_ORDER,
+  };
+});
+
+exports.cleanupRehearsalArtifacts = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  if (!eventId) {
+    throw new HttpsError("invalid-argument", "eventId is required.");
+  }
+  const db = admin.firestore();
+  const bucket = admin.storage().bucket();
+  const eventRef = db.collection(COLLECTIONS.events).doc(eventId);
+  const eventSnap = await eventRef.get();
+  if (!eventSnap.exists) {
+    throw new HttpsError("not-found", "Event not found.");
+  }
+  const event = eventSnap.data() || {};
+  if (normalizeEventMode(event.eventMode) !== EVENT_MODES.rehearsal) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Cleanup is limited to rehearsal events.",
+    );
+  }
+
+  let deletedOpenPackets = 0;
+  let skippedReleasedOpenPackets = 0;
+  let deletedOpenPacketSessions = 0;
+  let deletedOpenPacketAuditDocs = 0;
+  let deletedScheduledPackets = 0;
+  let skippedReleasedScheduledPackets = 0;
+  let deletedSubmissions = 0;
+  let deletedPacketExports = 0;
+
+  const [assignmentPacketsSnap, officialPacketsSnap] = await Promise.all([
+    db.collection(COLLECTIONS.packets)
+        .where(FIELDS.packets.assignmentEventId, "==", eventId)
+        .get(),
+    db.collection(COLLECTIONS.packets)
+        .where(FIELDS.packets.officialEventId, "==", eventId)
+        .get(),
+  ]);
+  const openPacketDocs = new Map();
+  assignmentPacketsSnap.docs.forEach((docSnap) => openPacketDocs.set(docSnap.id, docSnap));
+  officialPacketsSnap.docs.forEach((docSnap) => openPacketDocs.set(docSnap.id, docSnap));
+  for (const packetDoc of openPacketDocs.values()) {
+    const packet = packetDoc.data() || {};
+    if (isReleasedOpenPacketStatus(packet.status)) {
+      skippedReleasedOpenPackets += 1;
+      continue;
+    }
+    const deletionResult = await deleteOpenPacketDocument({
+      db,
+      bucket,
+      packetRef: packetDoc.ref,
+      packet,
+      packetId: packetDoc.id,
+    });
+    deletedOpenPackets += 1;
+    deletedOpenPacketSessions += deletionResult.deletedSessionCount;
+    deletedOpenPacketAuditDocs += deletionResult.deletedAuditCount;
+  }
+
+  const submissionsSnap = await db
+      .collection(COLLECTIONS.submissions)
+      .where(FIELDS.submissions.eventId, "==", eventId)
+      .get();
+  const scheduledGroups = new Map();
+  submissionsSnap.forEach((docSnap) => {
+    const submission = docSnap.data() || {};
+    const ensembleId = String(submission.ensembleId || "").trim();
+    if (!ensembleId) return;
+    if (!scheduledGroups.has(ensembleId)) {
+      scheduledGroups.set(ensembleId, {ensembleId, hasReleased: false});
+    }
+    if (submission.status === STATUSES.released) {
+      scheduledGroups.get(ensembleId).hasReleased = true;
+    }
+  });
+  for (const group of scheduledGroups.values()) {
+    if (group.hasReleased) {
+      skippedReleasedScheduledPackets += 1;
+      continue;
+    }
+    const result = await deleteScheduledPacketGroup({
+      db,
+      eventId,
+      ensembleId: group.ensembleId,
+    });
+    if (!result.found || result.hasReleased) {
+      if (result.hasReleased) skippedReleasedScheduledPackets += 1;
+      continue;
+    }
+    if (result.deletedSubmissions > 0) {
+      deletedScheduledPackets += 1;
+      deletedSubmissions += result.deletedSubmissions;
+      deletedPacketExports += result.deletedPacketExport;
+    }
+  }
+
+  await eventRef.set({
+    readinessState: {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+  }, {merge: true});
+
+  return {
+    ok: true,
+    eventId,
+    deletedOpenPackets,
+    skippedReleasedOpenPackets,
+    deletedOpenPacketSessions,
+    deletedOpenPacketAuditDocs,
+    deletedScheduledPackets,
+    skippedReleasedScheduledPackets,
+    deletedSubmissions,
+    deletedPacketExports,
+  };
+});
+
+exports.deleteAllUnreleasedPackets = onCall(async (request) => {
+  await assertAdmin(request);
+  const db = admin.firestore();
+  const bucket = admin.storage().bucket();
+
+  let deletedOpenPackets = 0;
+  let skippedReleasedOpenPackets = 0;
+  let deletedOpenPacketSessions = 0;
+  let deletedOpenPacketAuditDocs = 0;
+  let deletedScheduledPackets = 0;
+  let skippedReleasedScheduledPackets = 0;
+  let deletedSubmissions = 0;
+  let deletedPacketExports = 0;
+
+  const openPacketsSnap = await db.collection(COLLECTIONS.packets).get();
+  for (const packetDoc of openPacketsSnap.docs) {
+    const packet = packetDoc.data() || {};
+    if (isReleasedOpenPacketStatus(packet.status)) {
+      skippedReleasedOpenPackets += 1;
+      continue;
+    }
+    const deletionResult = await deleteOpenPacketDocument({
+      db,
+      bucket,
+      packetRef: packetDoc.ref,
+      packet,
+      packetId: packetDoc.id,
+    });
+    deletedOpenPackets += 1;
+    deletedOpenPacketSessions += deletionResult.deletedSessionCount;
+    deletedOpenPacketAuditDocs += deletionResult.deletedAuditCount;
+  }
+
+  const submissionsSnap = await db.collection(COLLECTIONS.submissions).get();
+  const scheduledGroups = new Map();
+  submissionsSnap.forEach((docSnap) => {
+    const submission = docSnap.data() || {};
+    const eventId = String(submission.eventId || "").trim();
+    const ensembleId = String(submission.ensembleId || "").trim();
+    if (!eventId || !ensembleId) return;
+    const key = `${eventId}__${ensembleId}`;
+    if (!scheduledGroups.has(key)) {
+      scheduledGroups.set(key, {eventId, ensembleId, hasReleased: false});
+    }
+    const group = scheduledGroups.get(key);
+    if (submission.status === STATUSES.released) {
+      group.hasReleased = true;
+    }
+  });
+
+  for (const group of scheduledGroups.values()) {
+    if (group.hasReleased) {
+      skippedReleasedScheduledPackets += 1;
+      continue;
+    }
+    const result = await deleteScheduledPacketGroup({
+      db,
+      eventId: group.eventId,
+      ensembleId: group.ensembleId,
+    });
+    if (!result.found || result.hasReleased) {
+      if (result.hasReleased) skippedReleasedScheduledPackets += 1;
+      continue;
+    }
+    if (result.deletedSubmissions > 0) {
+      deletedScheduledPackets += 1;
+      deletedSubmissions += result.deletedSubmissions;
+      deletedPacketExports += result.deletedPacketExport;
+    }
+  }
+
+  logger.info("deleteAllUnreleasedPackets", {
+    actorUid: request.auth.uid,
+    deletedOpenPackets,
+    skippedReleasedOpenPackets,
+    deletedOpenPacketSessions,
+    deletedOpenPacketAuditDocs,
+    deletedScheduledPackets,
+    skippedReleasedScheduledPackets,
+    deletedSubmissions,
+    deletedPacketExports,
+  });
+
+  return {
+    ok: true,
+    deletedOpenPackets,
+    skippedReleasedOpenPackets,
+    deletedOpenPacketSessions,
+    deletedOpenPacketAuditDocs,
+    deletedScheduledPackets,
+    skippedReleasedScheduledPackets,
+    deletedSubmissions,
+    deletedPacketExports,
+  };
+});
+
+exports.transcribePacketSession = onCall(
+    APPCHECK_SENSITIVE_SECRET_OPTIONS,
+    async (request) => {
+      if (!request.auth || !request.auth.uid) {
+        throw new HttpsError("unauthenticated", "Authentication required.");
+      }
+      await checkRateLimit(request.auth.uid, "transcribePacketSession", 10, 60);
+
+      const data = request.data || {};
+      const packetId = data.packetId;
+      const sessionId = data.sessionId;
+      if (!packetId || !sessionId) {
+        throw new HttpsError("invalid-argument", "packetId and sessionId required.");
+      }
+
+      const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+      const packetSnap = await packetRef.get();
+      if (!packetSnap.exists) {
+        throw new HttpsError("not-found", "Packet not found.");
+      }
+      const packet = packetSnap.data();
+
+      const userSnap = await admin
+          .firestore()
+          .collection(COLLECTIONS.users)
+          .doc(request.auth.uid)
+          .get();
+      const isAdmin = isAdminProfile(userSnap.data() || {});
+      const isOwner = packet.createdByJudgeUid === request.auth.uid;
+      if (!isAdmin && !isOwner) {
+        throw new HttpsError(
+            "permission-denied",
+            "Only the owning judge or an admin can transcribe.",
+        );
+      }
+      if (!isAdmin && packet.locked === true) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Packet is locked. Admin must unlock before transcription.",
+        );
+      }
+
+      const result = await transcribePacketSegmentInternal({
+        packetRef,
+        packet,
+        sessionId,
+        apiKey: OPENAI_API_KEY.value(),
+      });
+      await packetRef.set({
+        [FIELDS.packets.transcript]: result.transcript,
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      return {transcript: result.transcript};
+    },
+);
+
+exports.transcribePacketSegment = onCall(
+    APPCHECK_SENSITIVE_SECRET_OPTIONS,
+    async (request) => {
+      if (!request.auth || !request.auth.uid) {
+        throw new HttpsError("unauthenticated", "Authentication required.");
+      }
+      await checkRateLimit(request.auth.uid, "transcribePacketSegment", 10, 60);
+      const data = request.data || {};
+      const packetId = data.packetId;
+      const sessionId = data.sessionId;
+      if (!packetId || !sessionId) {
+        throw new HttpsError("invalid-argument", "packetId and sessionId required.");
+      }
+      const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+      const packetSnap = await packetRef.get();
+      if (!packetSnap.exists) {
+        throw new HttpsError("not-found", "Packet not found.");
+      }
+      const packet = packetSnap.data();
+      const userSnap = await admin
+          .firestore()
+          .collection(COLLECTIONS.users)
+          .doc(request.auth.uid)
+          .get();
+      const isAdmin = isAdminProfile(userSnap.data() || {});
+      const isOwner = packet.createdByJudgeUid === request.auth.uid;
+      if (!isAdmin && !isOwner) {
+        throw new HttpsError("permission-denied", "Not authorized.");
+      }
+      if (!isAdmin && packet.locked === true) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Packet is locked. Admin must unlock before transcription.",
+        );
+      }
+      const result = await transcribePacketSegmentInternal({
+        packetRef,
+        packet,
+        sessionId,
+        apiKey: OPENAI_API_KEY.value(),
+      });
+      return {transcript: result.transcript};
+    },
+);
+
+exports.transcribePacketTape = onCall(
+    APPCHECK_SENSITIVE_SECRET_OPTIONS,
+    async (request) => {
+      if (!request.auth || !request.auth.uid) {
+        throw new HttpsError("unauthenticated", "Authentication required.");
+      }
+      await checkRateLimit(request.auth.uid, "transcribePacketTape", 6, 60);
+      const data = request.data || {};
+      const packetId = data.packetId;
+      if (!packetId) {
+        throw new HttpsError("invalid-argument", "packetId required.");
+      }
+      const packetRef = admin.firestore().collection(COLLECTIONS.packets).doc(packetId);
+      const packetSnap = await packetRef.get();
+      if (!packetSnap.exists) {
+        throw new HttpsError("not-found", "Packet not found.");
+      }
+      const packet = packetSnap.data();
+      const userSnap = await admin
+          .firestore()
+          .collection(COLLECTIONS.users)
+          .doc(request.auth.uid)
+          .get();
+      const isAdmin = isAdminProfile(userSnap.data() || {});
+      const isOwner = packet.createdByJudgeUid === request.auth.uid;
+      if (!isAdmin && !isOwner) {
+        throw new HttpsError("permission-denied", "Not authorized.");
+      }
+      if (!isAdmin && packet.locked === true) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Packet is locked. Admin must unlock before transcription.",
+        );
+      }
+      const sessionsSnap = await packetRef.collection("sessions").orderBy("startedAt", "asc").get();
+      if (sessionsSnap.empty) {
+        throw new HttpsError("failed-precondition", "No segments to transcribe.");
+      }
+
+      await packetRef.set({
+        [FIELDS.packets.transcriptStatus]: "running",
+        [FIELDS.packets.transcriptError]: "",
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+      const mergedParts = [];
+      let failedCount = 0;
+      for (const docSnap of sessionsSnap.docs) {
+        const sessionId = docSnap.id;
+        const session = docSnap.data();
+        if (session.transcriptStatus === "complete") {
+          if (session.transcript) mergedParts.push(session.transcript);
+          continue;
+        }
+        try {
+          const result = await transcribePacketSegmentInternal({
+            packetRef,
+            packet,
+            sessionId,
+            apiKey: OPENAI_API_KEY.value(),
+          });
+          if (result.transcript) mergedParts.push(result.transcript);
+        } catch (error) {
+          failedCount += 1;
+          await packetRef.collection("sessions").doc(sessionId).set({
+            transcriptStatus: "failed",
+            transcriptError: String(error?.message || "Transcription failed."),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, {merge: true});
+        }
+      }
+
+      const transcriptFull = mergedParts.join(" ").trim().slice(0, MAX_TRANSCRIPT_CHARS);
+      const transcriptStatus = failedCount > 0 ?
+        (mergedParts.length ? "partial" : "failed") :
+        "complete";
+      await packetRef.set({
+        [FIELDS.packets.transcriptFull]: transcriptFull,
+        [FIELDS.packets.transcript]: transcriptFull,
+        [FIELDS.packets.transcriptStatus]: transcriptStatus,
+        [FIELDS.packets.transcriptError]: failedCount > 0 ? "One or more segments failed." : "",
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      return {transcriptFull, transcriptStatus};
+    },
+);
+
+exports.transcribeTestAudio = onCall(
+    APPCHECK_SENSITIVE_SECRET_OPTIONS,
+    async (request) => {
+      if (!request.auth || !request.auth.uid) {
+        throw new HttpsError("unauthenticated", "Authentication required.");
+      }
+      await checkRateLimit(request.auth.uid, "transcribeTestAudio", 10, 60);
+
+      const data = request.data || {};
+      const audioBase64 = String(data.audioBase64 || "").trim();
+      const mimeType = String(data.mimeType || "audio/webm").trim();
+
+      if (!audioBase64) {
+        throw new HttpsError("invalid-argument", "audioBase64 is required.");
+      }
+
+      const buffer = Buffer.from(audioBase64, "base64");
+      if (!buffer.length) {
+        throw new HttpsError("invalid-argument", "Audio payload is empty.");
+      }
+      if (buffer.length > MAX_AUDIO_BYTES) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Audio file exceeds the 25MB transcription limit.",
+        );
+      }
+
+      const apiKey = OPENAI_API_KEY.value();
+      if (!apiKey) {
+        throw new HttpsError(
+            "failed-precondition",
+            "OpenAI API key not configured.",
+        );
+      }
+
+      logger.info("transcribeTestAudio", {
+        uid: request.auth.uid,
+        bytes: buffer.length,
+        mimeType,
+      });
+
+      const form = new FormData();
+      form.append("model", "gpt-4o-mini-transcribe");
+      form.append(
+          "file",
+          new Blob([buffer], {type: mimeType || "audio/webm"}),
+          "recording.webm",
+      );
+
+      let response;
+      try {
+        response = await fetchWithTimeout(
+            "https://api.openai.com/v1/audio/transcriptions",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+              },
+              body: form,
+            },
+        );
+      } catch (error) {
+        logger.error("OpenAI test transcription failed", {
+          error: String(error),
+        });
+        throw new HttpsError("internal", "Transcription failed.");
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error("OpenAI test transcription failed", {
+          status: response.status,
+          body: errorText.slice(0, 500),
+        });
+        throw new HttpsError("internal", "Transcription failed.");
+      }
+
+      const payload = await response.json();
+      const transcript = String(payload.text || "").trim();
+
+      return {transcript};
+    },
+);
+
+exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = data.eventId;
+  const ensembleId = data.ensembleId;
+
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+
+  const grade = await resolvePerformanceGrade(eventId, ensembleId);
+  if (!grade) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Performance grade required.",
+    );
+  }
+
+  const db = admin.firestore();
+  const positions = requiredPositionsForGrade(grade);
+  const submissionRefs = positions.map((position) => {
+    const submissionId = `${eventId}_${ensembleId}_${position}`;
+    return db.collection(COLLECTIONS.submissions).doc(submissionId);
+  });
+  let schoolId = "";
+  await db.runTransaction(async (tx) => {
+    const submissionDocs = await Promise.all(submissionRefs.map((ref) => tx.get(ref)));
+    const submissions = submissionDocs.map((docSnap) =>
+      docSnap.exists ? docSnap.data() : null,
+    );
+    if (!submissions.every((submission) => isSubmissionReady(submission))) {
+      const blockers = submissions.map((submission, index) => ({
+        position: positions[index],
+        label: judgeLabelByPosition(positions[index]),
+        ready: isSubmissionReady(submission),
+      })).filter((item) => !item.ready);
+      throw new HttpsError(
+          "failed-precondition",
+          "All required submissions must be complete, locked, and submitted.",
+          {blockers},
+      );
+    }
+
+    if (grade === "I") {
+      const stageScores = [
+        submissions[0]?.computedFinalRatingJudge,
+        submissions[1]?.computedFinalRatingJudge,
+        submissions[2]?.computedFinalRatingJudge,
+      ];
+      if (stageScores.some((value) => typeof value !== "number")) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Grade I packet missing stage ratings.",
+        );
+      }
+      const key = computeGradeOneKey(stageScores);
+      if (!GRADE_ONE_MAP[key]) {
+        throw new HttpsError(
+            "failed-precondition",
+            `Grade I mapping missing for key ${key}.`,
+        );
+      }
+    }
+    schoolId = String(submissions[0]?.schoolId || "");
+    submissionRefs.forEach((ref) => {
+      tx.update(ref, {
+        [FIELDS.submissions.status]: STATUSES.released,
+        releasedAt: admin.firestore.FieldValue.serverTimestamp(),
+        releasedBy: request.auth.uid,
+      });
+    });
+  });
+  try {
+    await generateDirectorPacketExportInternal({
+      eventId,
+      ensembleId,
+      grade,
+      actorUid: request.auth.uid,
+    });
+  } catch (error) {
+    logger.error("generateDirectorPacketExportInternal failed during releasePacket", {
+      eventId,
+      ensembleId,
+      error: error?.message || String(error),
+    });
+    await markDirectorPacketExportFailure({
+      eventId,
+      ensembleId,
+      schoolId,
+      error: error?.message || String(error),
+      actorUid: request.auth.uid,
+    });
+  }
+  return {released: true, grade};
+});
+
+exports.unreleasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = data.eventId;
+  const ensembleId = data.ensembleId;
+
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+
+  const grade = await resolvePerformanceGrade(eventId, ensembleId);
+  if (!grade) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Performance grade required.",
+    );
+  }
+
+  const db = admin.firestore();
+  const positions = requiredPositionsForGrade(grade);
+  const submissionRefs = positions.map((position) => {
+    const submissionId = `${eventId}_${ensembleId}_${position}`;
+    return db.collection(COLLECTIONS.submissions).doc(submissionId);
+  });
+  await db.runTransaction(async (tx) => {
+    const submissionDocs = await Promise.all(submissionRefs.map((ref) => tx.get(ref)));
+    const submissions = submissionDocs.map((docSnap) =>
+      docSnap.exists ? docSnap.data() : null,
+    );
+    if (
+      !submissions.every((submission) => submission?.status === STATUSES.released)
+    ) {
+      const blockers = submissions.map((submission, index) => ({
+        position: positions[index],
+        label: judgeLabelByPosition(positions[index]),
+        status: String(submission?.status || "missing"),
+      })).filter((item) => item.status !== STATUSES.released);
+      throw new HttpsError(
+          "failed-precondition",
+          "All required submissions must be released to unrelease.",
+          {blockers},
+      );
+    }
+    submissionRefs.forEach((ref) => {
+      tx.update(ref, {
+        [FIELDS.submissions.status]: STATUSES.submitted,
+        releasedAt: admin.firestore.FieldValue.delete(),
+        releasedBy: admin.firestore.FieldValue.delete(),
+      });
+    });
+  });
+  const batch = db.batch();
+  const exportRef = db
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  batch.set(exportRef, {
+    status: "revoked",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await batch.commit();
+  return {released: false, grade};
+});
+
+exports.regenerateDirectorPacketExport = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+  const grade = await resolvePerformanceGrade(eventId, ensembleId);
+  if (!grade) {
+    throw new HttpsError("failed-precondition", "Performance grade required.");
+  }
+  try {
+    const result = await generateDirectorPacketExportInternal({
+      eventId,
+      ensembleId,
+      grade,
+      actorUid: request.auth.uid,
+    });
+    return {ok: true, ...result};
+  } catch (error) {
+    await markDirectorPacketExportFailure({
+      eventId,
+      ensembleId,
+      error: error?.message || String(error),
+      actorUid: request.auth.uid,
+    });
+    throw new HttpsError("internal", error?.message || "Unable to regenerate packet export.");
+  }
+});
+
+exports.getDirectorPacketAssets = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const user = userSnap.exists ? (userSnap.data() || {}) : {};
+  const role = String(user.role || "");
+  const isAdmin = isAdminProfile(user);
+  const exportRef = db
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  const exportSnap = await exportRef.get();
+  if (!exportSnap.exists) {
+    throw new HttpsError("not-found", "Packet assets not found.");
+  }
+  const exportData = exportSnap.data() || {};
+  const schoolId = String(exportData.schoolId || "");
+  if (!isAdmin) {
+    if (role !== "director") {
+      throw new HttpsError("permission-denied", "Not authorized.");
+    }
+    if (!schoolId || String(user.schoolId || "") !== schoolId) {
+      throw new HttpsError("permission-denied", "Not authorized for this school.");
+    }
+  }
+  if (String(exportData.status || "") !== "ready") {
+    return {
+      status: exportData.status || "pending",
+      templateVersion: exportData.templateVersion || "",
+      generatedAt: exportData.generatedAt || null,
+      error: exportData.error || "",
+      combined: null,
+      judges: {},
+    };
+  }
+  const bucket = admin.storage().bucket();
+  const expires = Date.now() + DIRECTOR_PACKET_EXPORT_TTL_MS;
+  const signed = async (path) => {
+    const value = String(path || "").trim();
+    if (!value) return "";
+    if (value.startsWith("http://") || value.startsWith("https://")) return value;
+    try {
+      const file = bucket.file(value);
+      const [exists] = await file.exists();
+      if (!exists) return "";
+      try {
+        const [url] = await file.getSignedUrl({
+          version: "v4",
+          action: "read",
+          expires,
+        });
+        if (url) return url;
+      } catch (signedErr) {
+        logger.warn("getDirectorPacketAssets signed URL unavailable; falling back to token URL", {
+          path: value,
+          error: signedErr?.message || String(signedErr),
+        });
+      }
+
+      // Fallback to Firebase token URL if signed URLs are unavailable in this project IAM setup.
+      const [metadata] = await file.getMetadata();
+      const existingTokenRaw =
+        metadata?.metadata?.firebaseStorageDownloadTokens ||
+        metadata?.firebaseStorageDownloadTokens ||
+        "";
+      let token = String(existingTokenRaw || "")
+          .split(",")
+          .map((item) => item.trim())
+          .find(Boolean);
+      if (!token) {
+        token = crypto.randomUUID();
+        const nextMetadata = {
+          ...(metadata?.metadata || {}),
+          firebaseStorageDownloadTokens: token,
+        };
+        await file.setMetadata({metadata: nextMetadata});
+      }
+      return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(value)}?alt=media&token=${token}`;
+    } catch (error) {
+      logger.error("getDirectorPacketAssets signed URL failed", {
+        path: value,
+        error: error?.message || String(error),
+      });
+      return "";
+    }
+  };
+  const judgeAssets = exportData.judgeAssets && typeof exportData.judgeAssets === "object" ?
+    exportData.judgeAssets :
+    {};
+  const judgeKeys = Object.keys(judgeAssets);
+  const signedJudges = {};
+  for (const key of judgeKeys) {
+    const item = judgeAssets[key] || {};
+    signedJudges[key] = {
+      ...item,
+      pdfUrl: item.pdfPath ? await signed(item.pdfPath) : "",
+      audioUrl: item.audioPath ? await signed(item.audioPath) : (item.audioUrl || ""),
+    };
+  }
+  const combinedPath = String(exportData.combinedPdfPath || "");
+  const combinedUrl = combinedPath ? await signed(combinedPath) : "";
+  return {
+    status: "ready",
+    templateVersion: exportData.templateVersion || "",
+    generatedAt: exportData.generatedAt || null,
+    error: exportData.error || "",
+    combined: combinedPath ? {path: combinedPath, url: combinedUrl} : null,
+    judges: signedJudges,
+  };
+});
+
+exports.releaseMockPacketForAshleyTesting = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const db = admin.firestore();
+  const activeSnap = await db
+      .collection(COLLECTIONS.events)
+      .where(FIELDS.events.isActive, "==", true)
+      .limit(1)
+      .get();
+  if (activeSnap.empty) {
+    throw new HttpsError("failed-precondition", "No active event.");
+  }
+  const eventId = activeSnap.docs[0].id;
+  const schoolIdInput = String(data.schoolId || "").trim();
+  const ensembleIdInput = String(data.ensembleId || "").trim();
+  const grade = normalizeGrade(String(data.grade || "IV")) || "IV";
+
+  let schoolId = schoolIdInput;
+  let schoolName = "";
+  if (!schoolId) {
+    const schoolsSnap = await db.collection(COLLECTIONS.schools).get();
+    const match = schoolsSnap.docs.find((docSnap) => {
+      const name = String(docSnap.data()?.name || "").toLowerCase();
+      return name.includes("ashley") && name.includes("high");
+    });
+    if (!match) {
+      throw new HttpsError("not-found", "Ashley High School was not found.");
+    }
+    schoolId = match.id;
+    schoolName = String(match.data()?.name || "");
+  } else {
+    const schoolSnap = await db.collection(COLLECTIONS.schools).doc(schoolId).get();
+    if (!schoolSnap.exists) {
+      throw new HttpsError("not-found", "School not found.");
+    }
+    schoolName = String(schoolSnap.data()?.name || schoolId);
+  }
+
+  let ensembleId = ensembleIdInput;
+  let ensembleName = "";
+  if (!ensembleId) {
+    const scheduleSnap = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventId)
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.schoolId, "==", schoolId)
+        .get();
+    if (!scheduleSnap.empty) {
+      const preferred = scheduleSnap.docs.find((docSnap) => {
+        const name = String(docSnap.data()?.ensembleName || "").toLowerCase();
+        return name.includes("concert") && name.includes("band");
+      }) || scheduleSnap.docs[0];
+      ensembleId = String(preferred.data()?.ensembleId || preferred.id);
+      ensembleName = String(preferred.data()?.ensembleName || ensembleId);
+    }
+  }
+  if (!ensembleId) {
+    const ensembleSnap = await db
+        .collection(COLLECTIONS.schools)
+        .doc(schoolId)
+        .collection(COLLECTIONS.ensembles)
+        .limit(1)
+        .get();
+    if (ensembleSnap.empty) {
+      throw new HttpsError("not-found", "No ensemble found for school.");
+    }
+    ensembleId = ensembleSnap.docs[0].id;
+    ensembleName = String(ensembleSnap.docs[0].data()?.name || ensembleId);
+  }
+  if (!ensembleName) {
+    const scheduleDoc = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventId)
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+        .limit(1)
+        .get();
+    if (!scheduleDoc.empty) {
+      ensembleName = String(scheduleDoc.docs[0].data()?.ensembleName || ensembleId);
+    } else {
+      const ensSnap = await db
+          .collection(COLLECTIONS.schools)
+          .doc(schoolId)
+          .collection(COLLECTIONS.ensembles)
+          .doc(ensembleId)
+          .get();
+      ensembleName = ensSnap.exists ? String(ensSnap.data()?.name || ensembleId) : ensembleId;
+    }
+  }
+
+  await db
+      .collection(COLLECTIONS.events)
+      .doc(eventId)
+      .collection(COLLECTIONS.entries)
+      .doc(ensembleId)
+      .set({
+        eventId,
+        schoolId,
+        schoolName,
+        ensembleId,
+        ensembleName,
+        [FIELDS.entries.performanceGrade]: grade,
+        status: "ready",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+  const bucket = admin.storage().bucket();
+  const positions = requiredPositionsForGrade(grade);
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const writeOps = [];
+  for (const position of positions) {
+    const formType = position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
+    const captions = buildMockCaptionsForForm(formType);
+    const total = calculateCaptionTotal(captions);
+    const rating = computeFinalRatingFromTotal(total);
+    const audioPath = `audio/mock/${eventId}/${ensembleId}/${position}.wav`;
+    const wav = createSilentWavBuffer({durationSec: 4});
+    await bucket.file(audioPath).save(wav, {
+      resumable: false,
+      contentType: "audio/wav",
+      metadata: {
+        metadata: {
+          eventId,
+          ensembleId,
+          judgePosition: position,
+          source: "mock",
+        },
+      },
+    });
+    const submissionId = `${eventId}_${ensembleId}_${position}`;
+    const ref = db.collection(COLLECTIONS.submissions).doc(submissionId);
+    writeOps.push(ref.set({
+      eventId,
+      ensembleId,
+      schoolId,
+      judgePosition: position,
+      formType,
+      status: STATUSES.released,
+      locked: true,
+      audioUrl: "",
+      audioPath,
+      audioDurationSec: 4,
+      transcript: `${judgeLabelByPosition(position)} mock transcript for Ashley High School testing.`,
+      captions,
+      captionScoreTotal: total,
+      computedFinalRatingJudge: rating.value,
+      computedFinalRatingLabel: rating.label,
+      judgeName: `${judgeLabelByPosition(position)} Mock`,
+      judgeEmail: `${position}.mock@mpajudge.local`,
+      judgeTitle: "Mock Judge",
+      judgeAffiliation: "Testing",
+      submittedAt: now,
+      releasedAt: now,
+      releasedBy: request.auth.uid,
+      updatedAt: now,
+      createdAt: now,
+    }, {merge: true}));
+  }
+  await Promise.all(writeOps);
+
+  try {
+    await generateDirectorPacketExportInternal({
+      eventId,
+      ensembleId,
+      grade,
+      actorUid: request.auth.uid,
+    });
+  } catch (error) {
+    await markDirectorPacketExportFailure({
+      eventId,
+      ensembleId,
+      schoolId,
+      error: error?.message || String(error),
+      actorUid: request.auth.uid,
+    });
+    throw new HttpsError("internal", `Mock submissions created, but export failed: ${error?.message || String(error)}`);
+  }
+
+  return {
+    ok: true,
+    eventId,
+    schoolId,
+    schoolName,
+    ensembleId,
+    ensembleName,
+    grade,
+    released: true,
+  };
+});
+
+exports.unlockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = data.eventId;
+  const ensembleId = data.ensembleId;
+  const judgePosition = data.judgePosition;
+
+  if (!eventId || !ensembleId || !judgePosition) {
+    throw new HttpsError(
+        "invalid-argument",
+        "eventId, ensembleId, and judgePosition required.",
+    );
+  }
+
+  const submissionId = `${eventId}_${ensembleId}_${judgePosition}`;
+  const db = admin.firestore();
+  const submissionRef = db
+      .collection(COLLECTIONS.submissions)
+      .doc(submissionId);
+  await db.runTransaction(async (tx) => {
+    const submissionSnap = await tx.get(submissionRef);
+    if (!submissionSnap.exists) {
+      throw new HttpsError("not-found", "Submission not found.");
+    }
+    const submission = submissionSnap.data() || {};
+    if (submission.status !== STATUSES.submitted) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Only submitted packets can be unlocked.",
+      );
+    }
+    if (submission.locked !== true) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Submission is already unlocked.",
+      );
+    }
+    tx.update(submissionRef, {
+      [FIELDS.submissions.locked]: false,
+      unlockedAt: admin.firestore.FieldValue.serverTimestamp(),
+      unlockedBy: request.auth.uid,
+    });
+  });
+  return {locked: false};
+});
+
+exports.lockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = data.eventId;
+  const ensembleId = data.ensembleId;
+  const judgePosition = data.judgePosition;
+
+  if (!eventId || !ensembleId || !judgePosition) {
+    throw new HttpsError(
+        "invalid-argument",
+        "eventId, ensembleId, and judgePosition required.",
+    );
+  }
+
+  const submissionId = `${eventId}_${ensembleId}_${judgePosition}`;
+  const db = admin.firestore();
+  const submissionRef = db
+      .collection(COLLECTIONS.submissions)
+      .doc(submissionId);
+  await db.runTransaction(async (tx) => {
+    const submissionSnap = await tx.get(submissionRef);
+    if (!submissionSnap.exists) {
+      throw new HttpsError("not-found", "Submission not found.");
+    }
+    const submission = submissionSnap.data() || {};
+    if (submission.status !== STATUSES.submitted && submission.status !== STATUSES.released) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Only submitted or released submissions can be locked.",
+      );
+    }
+    if (submission.locked === true) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Submission is already locked.",
+      );
+    }
+    tx.update(submissionRef, {
+      [FIELDS.submissions.locked]: true,
+    });
+  });
+  return {locked: true};
+});
+
+exports.provisionUser = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const email = String(data.email || "").trim().toLowerCase();
+  const displayName = String(data.displayName || "").trim();
+  const role = String(data.role || "").trim();
+  const rawSchoolId =
+    typeof data.schoolId === "string" ? data.schoolId.trim() : "";
+  const schoolId = rawSchoolId || null;
+  const tempPassword = String(data.tempPassword || "").trim();
+
+  if (!email) {
+    throw new HttpsError("invalid-argument", "Email is required.");
+  }
+  if (!["admin", "teamLead", "judge", "director"].includes(role)) {
+    throw new HttpsError(
+        "invalid-argument",
+        "Role must be admin, teamLead, judge, or director.",
+    );
+  }
+
+  let userRecord;
+  let createdAuthUser = false;
+  let generatedPassword = "";
+
+  try {
+    userRecord = await admin.auth().getUserByEmail(email);
+  } catch (error) {
+    if (error.code !== "auth/user-not-found") {
+      throw new HttpsError("internal", "Failed to look up auth user.");
+    }
+  }
+
+  if (!userRecord) {
+    const password = tempPassword || generateTempPassword();
+    generatedPassword = tempPassword ? "" : password;
+    userRecord = await admin.auth().createUser({
+      email,
+      password,
+      emailVerified: false,
+    });
+    createdAuthUser = true;
+  }
+
+  const userRef = admin.firestore().collection(COLLECTIONS.users).doc(userRecord.uid);
+  const existingSnap = await userRef.get();
+  if (existingSnap.exists && isAdminProfile(existingSnap.data() || {})) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Cannot overwrite an admin user via provisioning.",
+    );
+  }
+
+  if (role === "director" && schoolId) {
+    const schoolSnap = await admin
+        .firestore()
+        .collection(COLLECTIONS.schools)
+        .doc(schoolId)
+        .get();
+    if (!schoolSnap.exists) {
+      throw new HttpsError("failed-precondition", "School not found.");
+    }
+  }
+
+  await userRef.set(
+      {
+        [FIELDS.users.role]: role,
+        [FIELDS.users.roles]: {
+          director: role === "director",
+          judge: role === "judge",
+          admin: role === "admin",
+          teamLead: role === "teamLead",
+        },
+        [FIELDS.users.schoolId]: role === "director" ? schoolId : null,
+        [FIELDS.users.email]: email,
+        ...(displayName ? {displayName} : {}),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        ...(existingSnap.exists ? {} : {createdAt: admin.firestore.FieldValue.serverTimestamp()}),
+      },
+      {merge: true},
+  );
+
+  logger.info("provisionUser", {
+    uid: userRecord.uid,
+    email,
+    role,
+    createdAuthUser,
+  });
+
+  return {
+    uid: userRecord.uid,
+    email,
+    role,
+    schoolId: role === "director" ? schoolId : null,
+    createdAuthUser,
+    generatedPassword: generatedPassword || undefined,
+    displayName: displayName || undefined,
+  };
+});
+
+async function collectDeleteUserBlockers({
+  db,
+  targetUid,
+  targetProfile = {},
+} = {}) {
+  const blockers = [];
+  const schoolId = String(targetProfile.schoolId || "").trim();
+  if (schoolId) {
+    blockers.push({
+      code: "school-assigned",
+      message: "User is still assigned to a school.",
+      details: {schoolId},
+    });
+  }
+
+  const eventsSnap = await db.collection(COLLECTIONS.events).get();
+  const assignmentEvents = [];
+  for (const eventDoc of eventsSnap.docs) {
+    const assignmentsSnap = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventDoc.id)
+        .collection(COLLECTIONS.assignments)
+        .doc("positions")
+        .get();
+    if (!assignmentsSnap.exists) continue;
+    const assignments = assignmentsSnap.data() || {};
+    const assigned =
+      assignments.stage1Uid === targetUid ||
+      assignments.stage2Uid === targetUid ||
+      assignments.stage3Uid === targetUid ||
+      assignments.sightUid === targetUid;
+    if (assigned) assignmentEvents.push(eventDoc.id);
+  }
+  if (assignmentEvents.length) {
+    blockers.push({
+      code: "judge-assignments-exist",
+      message: "User is referenced in judge assignments.",
+      details: {eventIds: assignmentEvents},
+    });
+  }
+
+  const [
+    submissionsSnap,
+    packetsSnap,
+  ] = await Promise.all([
+    db.collection(COLLECTIONS.submissions)
+        .where(FIELDS.submissions.judgeUid, "==", targetUid)
+        .limit(1)
+        .get(),
+    db.collection(COLLECTIONS.packets)
+        .where(FIELDS.packets.createdByJudgeUid, "==", targetUid)
+        .limit(1)
+        .get(),
+  ]);
+
+  if (!submissionsSnap.empty) {
+    blockers.push({
+      code: "submissions-exist",
+      message: "User still owns one or more submissions.",
+      details: {sampleSubmissionId: submissionsSnap.docs[0].id},
+    });
+  }
+  if (!packetsSnap.empty) {
+    blockers.push({
+      code: "packets-exist",
+      message: "User still owns one or more open packets.",
+      details: {samplePacketId: packetsSnap.docs[0].id},
+    });
+  }
+  let hasEntryUserReference = false;
+  for (const eventDoc of eventsSnap.docs) {
+    const [createdSnap, registeredSnap, readySnap] = await Promise.all([
+      db.collection(COLLECTIONS.events)
+          .doc(eventDoc.id)
+          .collection(COLLECTIONS.entries)
+          .where("createdByUid", "==", targetUid)
+          .limit(1)
+          .get(),
+      db.collection(COLLECTIONS.events)
+          .doc(eventDoc.id)
+          .collection(COLLECTIONS.entries)
+          .where("registeredByUid", "==", targetUid)
+          .limit(1)
+          .get(),
+      db.collection(COLLECTIONS.events)
+          .doc(eventDoc.id)
+          .collection(COLLECTIONS.entries)
+          .where("readyByUid", "==", targetUid)
+          .limit(1)
+          .get(),
+    ]);
+    if (!createdSnap.empty || !registeredSnap.empty || !readySnap.empty) {
+      hasEntryUserReference = true;
+      break;
+    }
+  }
+  if (hasEntryUserReference) {
+    blockers.push({
+      code: "event-entries-exist",
+      message: "User is referenced by event entry metadata.",
+    });
+  }
+
+  return blockers;
+}
+
+exports.deleteUserAccount = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const targetUid = String(data.targetUid || "").trim();
+  if (!targetUid) {
+    throw new HttpsError("invalid-argument", "targetUid is required.");
+  }
+  if (targetUid === request.auth.uid) {
+    throw new HttpsError("failed-precondition", "You cannot delete your own account.");
+  }
+
+  const db = admin.firestore();
+  const userRef = db.collection(COLLECTIONS.users).doc(targetUid);
+  const userSnap = await userRef.get();
+  let targetAuthUser = null;
+  try {
+    targetAuthUser = await admin.auth().getUser(targetUid);
+  } catch (error) {
+    if (error.code !== "auth/user-not-found") {
+      throw new HttpsError("internal", "Failed to load auth user.");
+    }
+  }
+  if (!userSnap.exists && !targetAuthUser) {
+    throw new HttpsError("not-found", "User not found.");
+  }
+
+  const targetProfile = userSnap.exists ? (userSnap.data() || {}) : {};
+  const targetRole = getEffectiveRole(targetProfile);
+  if (targetRole === "admin" || targetRole === "teamLead") {
+    const usersSnap = await db.collection(COLLECTIONS.users).get();
+    const adminCount = usersSnap.docs.reduce((count, docSnap) => {
+      return count + (isAdminProfile(docSnap.data() || {}) ? 1 : 0);
+    }, 0);
+    if (adminCount <= 1) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Cannot delete the last admin account.",
+      );
+    }
+  }
+
+  const blockers = await collectDeleteUserBlockers({
+    db,
+    targetUid,
+    targetProfile,
+  });
+  if (blockers.length) {
+    throw new HttpsError(
+        "failed-precondition",
+        "User cannot be deleted until blockers are cleared.",
+        {blockers},
+    );
+  }
+
+  const cardPath = String(targetProfile.nafmeCardImagePath || "").trim();
+  if (cardPath) {
+    try {
+      await admin.storage().bucket().file(cardPath).delete({ignoreNotFound: true});
+    } catch (error) {
+      logger.warn("deleteUserAccount card cleanup failed", {
+        targetUid,
+        cardPath,
+        error: error?.message || String(error),
+      });
+    }
+  }
+
+  let firestoreDeleted = false;
+  if (userSnap.exists) {
+    await userRef.delete();
+    firestoreDeleted = true;
+  }
+  await db.collection("rateLimits").doc(targetUid).delete();
+
+  let authDeleted = false;
+  try {
+    await admin.auth().deleteUser(targetUid);
+    authDeleted = true;
+  } catch (error) {
+    if (error.code !== "auth/user-not-found") {
+      throw new HttpsError("internal", "Failed to delete auth user.");
+    }
+  }
+
+  logger.info("deleteUserAccount", {
+    actorUid: request.auth.uid,
+    targetUid,
+    targetRole: targetRole || null,
+    firestoreDeleted,
+    authDeleted,
+  });
+  return {
+    deleted: true,
+    uid: targetUid,
+    firestoreDeleted,
+    authDeleted,
+  };
+});
+
+exports.assignDirectorSchool = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const directorUid = String(data.directorUid || "").trim();
+  const schoolId = String(data.schoolId || "").trim();
+  if (!directorUid || !schoolId) {
+    throw new HttpsError("invalid-argument", "directorUid and schoolId are required.");
+  }
+  const db = admin.firestore();
+  const [directorSnap, schoolSnap] = await Promise.all([
+    db.collection(COLLECTIONS.users).doc(directorUid).get(),
+    db.collection(COLLECTIONS.schools).doc(schoolId).get(),
+  ]);
+  if (!directorSnap.exists) {
+    throw new HttpsError("not-found", "Director user not found.");
+  }
+  if (!schoolSnap.exists) {
+    throw new HttpsError("not-found", "School not found.");
+  }
+  const directorData = directorSnap.data() || {};
+  const isDirectorCapable = String(directorData.role || "") === "director" ||
+    String(directorData.role || "") === "admin" ||
+    directorData?.roles?.director === true;
+  if (!isDirectorCapable) {
+    throw new HttpsError("failed-precondition", "Target user is not director-capable.");
+  }
+  const existingRoles = directorData.roles && typeof directorData.roles === "object" ?
+    directorData.roles :
+    {};
+  await directorSnap.ref.set({
+    [FIELDS.users.schoolId]: schoolId,
+    [FIELDS.users.roles]: {
+      ...existingRoles,
+      director: true,
+      admin: directorData.role === "admin" || existingRoles.admin === true,
+      judge: existingRoles.judge === true,
+      teamLead: existingRoles.teamLead === true,
+    },
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true, directorUid, schoolId};
+});
+
+exports.unassignDirectorSchool = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const directorUid = String(data.directorUid || "").trim();
+  if (!directorUid) {
+    throw new HttpsError("invalid-argument", "directorUid is required.");
+  }
+  const db = admin.firestore();
+  const directorRef = db.collection(COLLECTIONS.users).doc(directorUid);
+  const directorSnap = await directorRef.get();
+  if (!directorSnap.exists) {
+    throw new HttpsError("not-found", "Director user not found.");
+  }
+  const directorData = directorSnap.data() || {};
+  const isDirector = String(directorData.role || "") === "director" ||
+    directorData?.roles?.director === true;
+  if (!isDirector) {
+    throw new HttpsError("failed-precondition", "Target user is not a director.");
+  }
+  await directorRef.set({
+    [FIELDS.users.schoolId]: null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true, directorUid};
+});
+
+exports.deleteEnsemble = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const schoolId = String(data.schoolId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const forceDelete = data.force === true;
+  if (!schoolId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "schoolId and ensembleId required.");
+  }
+
+  const userSnap = await admin
+      .firestore()
+      .collection(COLLECTIONS.users)
+      .doc(request.auth.uid)
+      .get();
+  const userRole = userSnap.exists ? userSnap.data().role : null;
+  const userSchoolId = userSnap.exists ? userSnap.data().schoolId : null;
+  const isAdmin = isAdminProfile(userSnap.data() || {});
+  const isDirector = userRole === "director";
+  if (!isAdmin && !(isDirector && userSchoolId === schoolId)) {
+    throw new HttpsError("permission-denied", "Not authorized to delete.");
+  }
+  if (forceDelete && !isAdmin) {
+    throw new HttpsError("permission-denied", "Admin required for force delete.");
+  }
+
+  const db = admin.firestore();
+  const ensembleRef = db
+      .collection(COLLECTIONS.schools)
+      .doc(schoolId)
+      .collection(COLLECTIONS.ensembles)
+      .doc(ensembleId);
+  const ensembleSnap = await ensembleRef.get();
+  if (!ensembleSnap.exists) {
+    throw new HttpsError("not-found", "Ensemble not found.");
+  }
+
+  const deleteDocsInBatches = async (docs) => {
+    if (!docs || !docs.length) return 0;
+    let totalDeleted = 0;
+    for (let idx = 0; idx < docs.length; idx += 400) {
+      const chunk = docs.slice(idx, idx + 400);
+      const batch = db.batch();
+      chunk.forEach((docSnap) => batch.delete(docSnap.ref));
+      await batch.commit();
+      totalDeleted += chunk.length;
+    }
+    return totalDeleted;
+  };
+
+  const eventsSnap = await db.collection(COLLECTIONS.events).get();
+  if (!forceDelete) {
+    for (const eventDoc of eventsSnap.docs) {
+      const entryRef = db
+          .collection(COLLECTIONS.events)
+          .doc(eventDoc.id)
+          .collection(COLLECTIONS.entries)
+          .doc(ensembleId);
+      const entrySnap = await entryRef.get();
+      if (entrySnap.exists) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Event entry exists for this ensemble.",
+        );
+      }
+
+      const scheduleSnap = await db
+          .collection(COLLECTIONS.events)
+          .doc(eventDoc.id)
+          .collection(COLLECTIONS.schedule)
+          .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+          .limit(1)
+          .get();
+      if (!scheduleSnap.empty) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Schedule entries exist for this ensemble.",
+        );
+      }
+    }
+
+    const submissionsSnap = await db
+        .collection(COLLECTIONS.submissions)
+        .where(FIELDS.submissions.ensembleId, "==", ensembleId)
+        .limit(1)
+        .get();
+    if (!submissionsSnap.empty) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Submissions exist for this ensemble.",
+      );
+    }
+
+    await ensembleRef.delete();
+    return {deleted: true, forced: false};
+  }
+
+  let deletedEntries = 0;
+  let deletedSchedule = 0;
+  let deletedSubmissions = 0;
+  let deletedPacketExports = 0;
+  let deletedPackets = 0;
+
+  for (const eventDoc of eventsSnap.docs) {
+    const eventRef = db.collection(COLLECTIONS.events).doc(eventDoc.id);
+    const entryRef = eventRef.collection(COLLECTIONS.entries).doc(ensembleId);
+    const entrySnap = await entryRef.get();
+    if (entrySnap.exists) {
+      const entryData = entrySnap.data() || {};
+      const entrySchoolId = String(entryData.schoolId || "");
+      if (!entrySchoolId || entrySchoolId === schoolId) {
+        await entryRef.delete();
+        deletedEntries += 1;
+      }
+    }
+
+    const scheduleSnap = await eventRef
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+        .get();
+    if (!scheduleSnap.empty) {
+      const targetDocs = scheduleSnap.docs.filter((docSnap) => {
+        const row = docSnap.data() || {};
+        const rowSchoolId = String(row.schoolId || "");
+        return !rowSchoolId || rowSchoolId === schoolId;
+      });
+      deletedSchedule += await deleteDocsInBatches(targetDocs);
+    }
+  }
+
+  const submissionsSnap = await db
+      .collection(COLLECTIONS.submissions)
+      .where(FIELDS.submissions.ensembleId, "==", ensembleId)
+      .get();
+  if (!submissionsSnap.empty) {
+    const targetDocs = submissionsSnap.docs.filter((docSnap) => {
+      const row = docSnap.data() || {};
+      const rowSchoolId = String(row.schoolId || "");
+      return !rowSchoolId || rowSchoolId === schoolId;
+    });
+    deletedSubmissions += await deleteDocsInBatches(targetDocs);
+  }
+
+  const packetExportsSnap = await db
+      .collection(COLLECTIONS.packetExports)
+      .where(FIELDS.packetExports.ensembleId, "==", ensembleId)
+      .get();
+  if (!packetExportsSnap.empty) {
+    const targetDocs = packetExportsSnap.docs.filter((docSnap) => {
+      const row = docSnap.data() || {};
+      const rowSchoolId = String(row.schoolId || "");
+      return !rowSchoolId || rowSchoolId === schoolId;
+    });
+    deletedPacketExports += await deleteDocsInBatches(targetDocs);
+  }
+
+  const packetsSnap = await db
+      .collection(COLLECTIONS.packets)
+      .where(FIELDS.packets.ensembleId, "==", ensembleId)
+      .get();
+  if (!packetsSnap.empty) {
+    for (const packetDoc of packetsSnap.docs) {
+      const packetData = packetDoc.data() || {};
+      const packetSchoolId = String(packetData.schoolId || "");
+      if (packetSchoolId && packetSchoolId !== schoolId) continue;
+      if (typeof db.recursiveDelete === "function") {
+        await db.recursiveDelete(packetDoc.ref);
+      } else {
+        const sessionsSnap = await packetDoc.ref.collection("sessions").get();
+        await deleteDocsInBatches(sessionsSnap.docs);
+        const auditSnap = await packetDoc.ref.collection("audit").get();
+        await deleteDocsInBatches(auditSnap.docs);
+        await packetDoc.ref.delete();
+      }
+      deletedPackets += 1;
+    }
+  }
+
+  await ensembleRef.delete();
+
+  logger.info("deleteEnsemble force delete complete", {
+    schoolId,
+    ensembleId,
+    deletedEntries,
+    deletedSchedule,
+    deletedSubmissions,
+    deletedPackets,
+    deletedPacketExports,
+    actorUid: request.auth.uid,
+  });
+
+  return {
+    deleted: true,
+    forced: true,
+    deletedEntries,
+    deletedSchedule,
+    deletedSubmissions,
+    deletedPackets,
+    deletedPacketExports,
+  };
+});
+
+exports.renameEnsemble = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const schoolId = String(data.schoolId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const requestedName = String(data.name || "").trim();
+  if (!schoolId || !ensembleId || !requestedName) {
+    throw new HttpsError("invalid-argument", "schoolId, ensembleId, and name required.");
+  }
+
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const userRole = userSnap.exists ? userSnap.data().role : null;
+  const userSchoolId = userSnap.exists ? userSnap.data().schoolId : null;
+  const isAdmin = isAdminProfile(userSnap.data() || {});
+  const isDirector = userRole === "director";
+  if (!isAdmin && !(isDirector && userSchoolId === schoolId)) {
+    throw new HttpsError("permission-denied", "Not authorized to rename ensemble.");
+  }
+
+  const ensembleRef = db
+      .collection(COLLECTIONS.schools)
+      .doc(schoolId)
+      .collection(COLLECTIONS.ensembles)
+      .doc(ensembleId);
+  const ensembleSnap = await ensembleRef.get();
+  if (!ensembleSnap.exists) {
+    throw new HttpsError("not-found", "Ensemble not found.");
+  }
+  const schoolSnap = await db.collection(COLLECTIONS.schools).doc(schoolId).get();
+  const schoolName = schoolSnap.exists ? String(schoolSnap.data()?.name || "") : "";
+  const name = normalizeEnsembleNameForSchool({schoolName, ensembleName: requestedName});
+
+  await ensembleRef.set({
+    name,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+
+  const packetsSnap = await db
+      .collection(COLLECTIONS.packets)
+      .where(FIELDS.packets.schoolId, "==", schoolId)
+      .where(FIELDS.packets.ensembleId, "==", ensembleId)
+      .get();
+
+  const unreleasedStatuses = new Set(["draft", "reopened", "submitted", "locked"]);
+  let updatedPacketCount = 0;
+  const batch = db.batch();
+  packetsSnap.docs.forEach((packetDoc) => {
+    const packet = packetDoc.data() || {};
+    const status = String(packet.status || "draft");
+    if (!unreleasedStatuses.has(status)) return;
+    const nextEnsembleSnapshot = packet.ensembleSnapshot &&
+      typeof packet.ensembleSnapshot === "object" ?
+      {...packet.ensembleSnapshot, ensembleName: name} :
+      {
+        schoolId,
+        schoolName: packet.schoolName || "",
+        ensembleId,
+        ensembleName: name,
+      };
+    batch.set(packetDoc.ref, {
+      [FIELDS.packets.ensembleName]: name,
+      [FIELDS.packets.ensembleSnapshot]: nextEnsembleSnapshot,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    updatedPacketCount += 1;
+  });
+  if (updatedPacketCount > 0) {
+    await batch.commit();
+  }
+
+  const eventsSnap = await db.collection(COLLECTIONS.events).get();
+  let updatedEntryCount = 0;
+  let updatedScheduleCount = 0;
+  for (const eventDoc of eventsSnap.docs) {
+    const eventRef = db.collection(COLLECTIONS.events).doc(eventDoc.id);
+
+    const entryRef = eventRef.collection(COLLECTIONS.entries).doc(ensembleId);
+    const entrySnap = await entryRef.get();
+    if (entrySnap.exists) {
+      const entryData = entrySnap.data() || {};
+      const entrySchoolId = String(entryData.schoolId || "");
+      const entryEnsembleName = String(entryData.ensembleName || "");
+      if ((!entrySchoolId || entrySchoolId === schoolId) && entryEnsembleName !== name) {
+        await entryRef.set({
+          ensembleName: name,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        updatedEntryCount += 1;
+      }
+    }
+
+    const scheduleSnap = await eventRef
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+        .get();
+    if (!scheduleSnap.empty) {
+      const scheduleBatch = db.batch();
+      let scheduleWrites = 0;
+      scheduleSnap.docs.forEach((docSnap) => {
+        const row = docSnap.data() || {};
+        const rowSchoolId = String(row.schoolId || "");
+        const rowEnsembleName = String(row.ensembleName || "");
+        if (rowSchoolId && rowSchoolId !== schoolId) return;
+        if (rowEnsembleName === name) return;
+        scheduleBatch.set(docSnap.ref, {
+          [FIELDS.schedule.ensembleName]: name,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        scheduleWrites += 1;
+      });
+      if (scheduleWrites > 0) {
+        await scheduleBatch.commit();
+        updatedScheduleCount += scheduleWrites;
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    ensembleId,
+    name,
+    updatedPacketCount,
+    updatedEntryCount,
+    updatedScheduleCount,
+  };
+});
+
+exports.normalizeUnreleasedPacketNames = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const dryRun = data.dryRun !== false;
+  const limitRaw = Number(data.limit || 0);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ?
+    Math.min(Math.floor(limitRaw), 5000) :
+    0;
+  const statuses = ["draft", "reopened", "submitted", "locked"];
+  const db = admin.firestore();
+
+  let scanned = 0;
+  let changed = 0;
+  let updated = 0;
+  let skippedNoSchool = 0;
+  let skippedEmptyResult = 0;
+  let lastDoc = null;
+
+  let hasMore = true;
+  while (hasMore) {
+    let queryRef = db
+        .collection(COLLECTIONS.packets)
+        .where(FIELDS.packets.status, "in", statuses)
+        .orderBy(FIELDS.packets.status)
+        .limit(300);
+    if (lastDoc) {
+      queryRef = queryRef.startAfter(lastDoc);
+    }
+    const snap = await queryRef.get();
+    if (snap.empty) {
+      hasMore = false;
+      continue;
+    }
+
+    const batch = db.batch();
+    let batchWrites = 0;
+
+    for (const docSnap of snap.docs) {
+      if (limit > 0 && scanned >= limit) break;
+      scanned += 1;
+
+      const packet = docSnap.data() || {};
+      const schoolName = String(packet.schoolName || "").trim();
+      const ensembleName = String(packet.ensembleName || "").trim();
+      if (!schoolName) {
+        skippedNoSchool += 1;
+        continue;
+      }
+      if (!ensembleName) {
+        skippedEmptyResult += 1;
+        continue;
+      }
+
+      const normalizedName = normalizeEnsembleNameForSchool({schoolName, ensembleName});
+      if (!normalizedName || normalizedName === ensembleName) continue;
+
+      changed += 1;
+      if (dryRun) continue;
+
+      const snapshot = packet.ensembleSnapshot && typeof packet.ensembleSnapshot === "object" ?
+        {
+          ...packet.ensembleSnapshot,
+          ensembleName: normalizedName,
+        } :
+        null;
+      const payload = {
+        [FIELDS.packets.ensembleName]: normalizedName,
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (snapshot) {
+        payload[FIELDS.packets.ensembleSnapshot] = snapshot;
+      }
+      batch.set(docSnap.ref, payload, {merge: true});
+      batchWrites += 1;
+      updated += 1;
+    }
+
+    if (!dryRun && batchWrites > 0) {
+      await batch.commit();
+    }
+
+    lastDoc = snap.docs[snap.docs.length - 1];
+    if (limit > 0 && scanned >= limit) {
+      hasMore = false;
+    }
+  }
+
+  return {
+    ok: true,
+    dryRun,
+    scanned,
+    changed,
+    updated,
+    skippedNoSchool,
+    skippedEmptyResult,
+  };
+});
+
+exports.normalizeEventEnsembleNames = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const dryRun = data.dryRun !== false;
+  const eventIdFilter = String(data.eventId || "").trim();
+  const limitRaw = Number(data.limit || 0);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ?
+    Math.min(Math.floor(limitRaw), 10000) :
+    0;
+  const db = admin.firestore();
+
+  const summary = {
+    ok: true,
+    dryRun,
+    eventId: eventIdFilter || null,
+    scanned: 0,
+    changed: 0,
+    updated: 0,
+    scannedSchedule: 0,
+    changedSchedule: 0,
+    updatedSchedule: 0,
+    scannedEntries: 0,
+    changedEntries: 0,
+    updatedEntries: 0,
+    skippedEmptyResult: 0,
+  };
+
+  const eventIds = [];
+  if (eventIdFilter) {
+    const eventSnap = await db.collection(COLLECTIONS.events).doc(eventIdFilter).get();
+    if (!eventSnap.exists) {
+      throw new HttpsError("not-found", "Event not found.");
+    }
+    eventIds.push(eventIdFilter);
+  } else {
+    const eventsSnap = await db.collection(COLLECTIONS.events).get();
+    eventsSnap.docs.forEach((docSnap) => eventIds.push(docSnap.id));
+  }
+
+  const processSubcollection = async ({eventId, subcollection, nameField, bucketKey}) => {
+    let lastDoc = null;
+    let hasMore = true;
+    while (hasMore) {
+      let queryRef = db
+          .collection(COLLECTIONS.events)
+          .doc(eventId)
+          .collection(subcollection)
+          .orderBy(admin.firestore.FieldPath.documentId())
+          .limit(300);
+      if (lastDoc) {
+        queryRef = queryRef.startAfter(lastDoc);
+      }
+      const snap = await queryRef.get();
+      if (snap.empty) {
+        hasMore = false;
+        continue;
+      }
+
+      const batch = db.batch();
+      let batchWrites = 0;
+
+      for (const docSnap of snap.docs) {
+        if (limit > 0 && summary.scanned >= limit) {
+          hasMore = false;
+          break;
+        }
+        summary.scanned += 1;
+        summary[`scanned${bucketKey}`] += 1;
+
+        const data = docSnap.data() || {};
+        const schoolName = String(data.schoolName || "").trim();
+        const ensembleName = String(data[nameField] || "").trim();
+        if (!ensembleName) {
+          summary.skippedEmptyResult += 1;
+          continue;
+        }
+
+        const normalizedName = normalizeEnsembleNameForSchool({schoolName, ensembleName});
+        if (!normalizedName || normalizedName === ensembleName) continue;
+
+        summary.changed += 1;
+        summary[`changed${bucketKey}`] += 1;
+        if (dryRun) continue;
+
+        batch.set(docSnap.ref, {
+          [nameField]: normalizedName,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        batchWrites += 1;
+        summary.updated += 1;
+        summary[`updated${bucketKey}`] += 1;
+      }
+
+      if (!dryRun && batchWrites > 0) {
+        await batch.commit();
+      }
+
+      lastDoc = snap.docs[snap.docs.length - 1];
+      if (limit > 0 && summary.scanned >= limit) {
+        hasMore = false;
+      }
+    }
+  };
+
+  for (const eventId of eventIds) {
+    if (limit > 0 && summary.scanned >= limit) break;
+    await processSubcollection({
+      eventId,
+      subcollection: COLLECTIONS.schedule,
+      nameField: FIELDS.schedule.ensembleName,
+      bucketKey: "Schedule",
+    });
+    if (limit > 0 && summary.scanned >= limit) break;
+    await processSubcollection({
+      eventId,
+      subcollection: COLLECTIONS.entries,
+      nameField: FIELDS.entries.ensembleName,
+      bucketKey: "Entries",
+    });
+  }
+
+  return summary;
+});
+
+exports.deleteSchool = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const schoolId = String(data.schoolId || "").trim();
+  if (!schoolId) {
+    throw new HttpsError("invalid-argument", "schoolId is required.");
+  }
+
+  const db = admin.firestore();
+  const schoolRef = db.collection(COLLECTIONS.schools).doc(schoolId);
+  const schoolSnap = await schoolRef.get();
+  if (!schoolSnap.exists) {
+    throw new HttpsError("not-found", "School not found.");
+  }
+
+  const ensemblesSnap = await schoolRef.collection(COLLECTIONS.ensembles).limit(1).get();
+  if (!ensemblesSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Delete all ensembles in this school before deleting the school.",
+    );
+  }
+
+  const directorsSnap = await db
+      .collection(COLLECTIONS.users)
+      .where(FIELDS.users.schoolId, "==", schoolId)
+      .limit(1)
+      .get();
+  if (!directorsSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "One or more users are still attached to this school.",
+    );
+  }
+
+  const eventsSnap = await db.collection(COLLECTIONS.events).get();
+  for (const eventDoc of eventsSnap.docs) {
+    const scheduleSnap = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventDoc.id)
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.schoolId, "==", schoolId)
+        .limit(1)
+        .get();
+    if (!scheduleSnap.empty) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Event schedule entries exist for this school.",
+      );
+    }
+
+    const entriesSnap = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventDoc.id)
+        .collection(COLLECTIONS.entries)
+        .where(FIELDS.entries.schoolId, "==", schoolId)
+        .limit(1)
+        .get();
+    if (!entriesSnap.empty) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Event entries exist for this school.",
+      );
+    }
+  }
+
+  const openPacketsSnap = await db
+      .collection(COLLECTIONS.packets)
+      .where(FIELDS.packets.schoolId, "==", schoolId)
+      .limit(1)
+      .get();
+  if (!openPacketsSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Open packets are linked to this school.",
+    );
+  }
+
+  await schoolRef.delete();
+  return {deleted: true};
+});
+
+exports.deleteEvent = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  if (!eventId) {
+    throw new HttpsError("invalid-argument", "eventId is required.");
+  }
+
+  const db = admin.firestore();
+  const eventRef = db.collection(COLLECTIONS.events).doc(eventId);
+  const eventSnap = await eventRef.get();
+  if (!eventSnap.exists) {
+    throw new HttpsError("not-found", "Event not found.");
+  }
+
+  const releasedSnap = await db
+      .collection(COLLECTIONS.submissions)
+      .where(FIELDS.submissions.eventId, "==", eventId)
+      .where(FIELDS.submissions.status, "==", STATUSES.released)
+      .limit(1)
+      .get();
+  if (!releasedSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Cannot delete event: released results exist.",
+    );
+  }
+
+  let lastDoc = null;
+  let hasMore = true;
+  // Delete non-released submissions for this event.
+  while (hasMore) {
+    let queryRef = db
+        .collection(COLLECTIONS.submissions)
+        .where(FIELDS.submissions.eventId, "==", eventId)
+        .orderBy(FIELDS.submissions.eventId)
+        .limit(400);
+    if (lastDoc) queryRef = queryRef.startAfter(lastDoc);
+    const snap = await queryRef.get();
+    if (snap.empty) {
+      hasMore = false;
+      break;
+    }
+    const batch = db.batch();
+    snap.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+    await batch.commit();
+    lastDoc = snap.docs[snap.docs.length - 1];
+  }
+
+  if (typeof db.recursiveDelete === "function") {
+    await db.recursiveDelete(eventRef);
+  } else {
+    // Fallback: delete event document only.
+    await eventRef.delete();
+  }
+
+  return {deleted: true};
+});
+
+exports.cleanupStalePacketArtifacts = onSchedule("15 3 * * *", async () => {
+  const db = admin.firestore();
+  const bucket = admin.storage().bucket();
+  const nowMs = Date.now();
+  const readyCutoffMs = nowMs - DIRECTOR_PACKET_EXPORT_RETENTION_MS;
+  const staleFailureCutoffMs = nowMs - DIRECTOR_PACKET_EXPORT_STALE_FAILURE_MS;
+  const orphanSessionCutoffMs = nowMs - ORPHAN_PACKET_SESSION_RETENTION_MS;
+
+  const summary = {
+    scannedExports: 0,
+    deletedExports: 0,
+    deletedExportFiles: 0,
+    scannedSessions: 0,
+    deletedOrphanSessions: 0,
+  };
+
+  let lastExportDoc = null;
+  let hasMoreExports = true;
+  while (hasMoreExports) {
+    let queryRef = db
+        .collection(COLLECTIONS.packetExports)
+        .orderBy(admin.firestore.FieldPath.documentId())
+        .limit(300);
+    if (lastExportDoc) queryRef = queryRef.startAfter(lastExportDoc);
+    const snap = await queryRef.get();
+    if (snap.empty) {
+      hasMoreExports = false;
+      continue;
+    }
+
+    for (const docSnap of snap.docs) {
+      summary.scannedExports += 1;
+      const data = docSnap.data() || {};
+      const status = String(data.status || "");
+      const generatedAt = data.generatedAt?.toMillis ? data.generatedAt.toMillis() : 0;
+      const updatedAt = data.updatedAt?.toMillis ? data.updatedAt.toMillis() : 0;
+      const effectiveTs = Math.max(generatedAt, updatedAt, 0);
+      const isReadyAndOld = status === "ready" && effectiveTs > 0 && effectiveTs < readyCutoffMs;
+      const isFailedOrPendingAndOld =
+        ["failed", "pending", "generating", "revoked"].includes(status) &&
+        effectiveTs > 0 &&
+        effectiveTs < staleFailureCutoffMs;
+
+      if (!isReadyAndOld && !isFailedOrPendingAndOld) continue;
+
+      if (isReadyAndOld) {
+        const paths = new Set();
+        const combinedPath = String(data.combinedPdfPath || "").trim();
+        if (combinedPath) paths.add(combinedPath);
+        const judgeAssets = data.judgeAssets && typeof data.judgeAssets === "object" ?
+          data.judgeAssets :
+          {};
+        Object.values(judgeAssets).forEach((asset) => {
+          const path = String(asset?.pdfPath || "").trim();
+          if (path) paths.add(path);
+        });
+        for (const path of paths) {
+          try {
+            const file = bucket.file(path);
+            const [exists] = await file.exists();
+            if (!exists) continue;
+            await file.delete();
+            summary.deletedExportFiles += 1;
+          } catch (error) {
+            logger.warn("cleanupStalePacketArtifacts file delete failed", {
+              path,
+              error: error?.message || String(error),
+            });
+          }
+        }
+      }
+
+      await docSnap.ref.delete();
+      summary.deletedExports += 1;
+    }
+    lastExportDoc = snap.docs[snap.docs.length - 1];
+  }
+
+  const packetExistsCache = new Map();
+  let lastSessionDoc = null;
+  let hasMoreSessions = true;
+  while (hasMoreSessions) {
+    let queryRef = db
+        .collectionGroup("sessions")
+        .orderBy(admin.firestore.FieldPath.documentId())
+        .limit(300);
+    if (lastSessionDoc) queryRef = queryRef.startAfter(lastSessionDoc);
+    const snap = await queryRef.get();
+    if (snap.empty) {
+      hasMoreSessions = false;
+      continue;
+    }
+
+    for (const sessionDoc of snap.docs) {
+      summary.scannedSessions += 1;
+      const sessionData = sessionDoc.data() || {};
+      const updatedAtMs = sessionData.updatedAt?.toMillis ? sessionData.updatedAt.toMillis() : 0;
+      if (!updatedAtMs || updatedAtMs >= orphanSessionCutoffMs) continue;
+      const packetRef = sessionDoc.ref.parent?.parent || null;
+      if (!packetRef) continue;
+      const packetPath = packetRef.path;
+      let exists = packetExistsCache.get(packetPath);
+      if (exists === undefined) {
+        const packetSnap = await packetRef.get();
+        exists = packetSnap.exists;
+        packetExistsCache.set(packetPath, exists);
+      }
+      if (exists) continue;
+      await sessionDoc.ref.delete();
+      summary.deletedOrphanSessions += 1;
+    }
+    lastSessionDoc = snap.docs[snap.docs.length - 1];
+  }
+
+  logger.info("cleanupStalePacketArtifacts complete", summary);
+  return summary;
+});

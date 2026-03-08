@@ -1,0 +1,98 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userData() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userRole() {
+      return userData().role;
+    }
+
+    function userSchoolId() {
+      return userData().schoolId;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && (userRole() == "admin" || userData().roles.admin == true);
+    }
+
+    function isJudge() {
+      return isSignedIn()
+        && (userRole() == "judge" || userData().roles.judge == true);
+    }
+
+    function isTeamLead() {
+      return isSignedIn()
+        && (userRole() == "teamLead" || userData().roles.teamLead == true);
+    }
+
+    function isOpsLead() {
+      return isAdmin() || isTeamLead();
+    }
+
+    function isDirector() {
+      return isSignedIn()
+        && (userRole() == "director" || userData().roles.director == true);
+    }
+
+    function isDirectorForSchool(schoolId) {
+      return isDirector() && userSchoolId() == schoolId;
+    }
+
+    function submissionDoc(submissionId) {
+      return firestore.get(
+        /databases/(default)/documents/submissions/$(submissionId)
+      ).data;
+    }
+
+    function packetDoc(packetId) {
+      return firestore.get(
+        /databases/(default)/documents/packets/$(packetId)
+      ).data;
+    }
+
+    match /audio/{judgeUid}/{submissionId}/{fileName} {
+      allow read: if isAdmin()
+        || (isJudge() && request.auth.uid == judgeUid)
+        || (isDirectorForSchool(submissionDoc(submissionId).schoolId)
+          && submissionDoc(submissionId).status == "released");
+
+      allow write: if isAdmin()
+        || (isJudge() && request.auth.uid == judgeUid);
+    }
+
+    match /packet_audio/{judgeUid}/{packetId}/{sessionId}/{fileName} {
+      allow read: if isAdmin()
+        || (isJudge() && request.auth.uid == judgeUid)
+        || (isDirectorForSchool(packetDoc(packetId).schoolId)
+          && packetDoc(packetId).status == "released");
+      allow write: if isAdmin()
+        || (isJudge() && request.auth.uid == judgeUid);
+    }
+
+    match /director_cards/{uid}/{fileName} {
+      allow read: if isOpsLead()
+        || (isDirector() && request.auth.uid == uid);
+      allow write: if isAdmin()
+        || (isDirector() && request.auth.uid == uid);
+    }
+
+    match /signed_forms/{eventId}/{schoolId}/{fileName} {
+      allow read: if isOpsLead()
+        || isDirectorForSchool(schoolId);
+      allow write: if isAdmin()
+        || isDirectorForSchool(schoolId);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

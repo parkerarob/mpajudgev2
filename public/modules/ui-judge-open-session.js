@@ -19,6 +19,55 @@ export function createJudgeOpenSession({
   applyOpenEventAssignmentDefaults,
   setOpenPacketHint,
 } = {}) {
+  const metadataDurationCacheSec = new Map();
+  const metadataDurationPending = new Set();
+
+  function cleanupMetadataProbe(audioEl, objectUrl = "") {
+    if (!audioEl) return;
+    audioEl.removeAttribute("src");
+    audioEl.load?.();
+    if (objectUrl) {
+      try {
+        URL.revokeObjectURL(objectUrl);
+      } catch {
+        // no-op
+      }
+    }
+  }
+
+  function getSessionDurationSec(session) {
+    const stored = Number(session?.durationSec || 0);
+    if (Number.isFinite(stored) && stored > 0) return stored;
+    const cached = Number(metadataDurationCacheSec.get(session?.id) || 0);
+    if (Number.isFinite(cached) && cached > 0) return cached;
+    return 0;
+  }
+
+  function probeSessionDurationIfNeeded(session) {
+    const sessionId = String(session?.id || "");
+    const url = String(session?.masterAudioUrl || "");
+    if (!sessionId || !url) return;
+    if (getSessionDurationSec(session) > 0) return;
+    if (metadataDurationPending.has(sessionId)) return;
+    metadataDurationPending.add(sessionId);
+    const audio = document.createElement("audio");
+    audio.preload = "metadata";
+    audio.src = url;
+    audio.onloadedmetadata = () => {
+      const duration = Number(audio.duration || 0);
+      if (Number.isFinite(duration) && duration > 0) {
+        metadataDurationCacheSec.set(sessionId, duration);
+        updateTapePlayback(state.judgeOpen.sessions || []);
+      }
+      metadataDurationPending.delete(sessionId);
+      cleanupMetadataProbe(audio);
+    };
+    audio.onerror = () => {
+      metadataDurationPending.delete(sessionId);
+      cleanupMetadataProbe(audio);
+    };
+  }
+
   function syncOpenFormTypeSegmented() {
     if (!els.judgeOpenFormTypeSegmented) return;
     const buttons = els.judgeOpenFormTypeSegmented.querySelectorAll("[data-form]");
@@ -211,18 +260,21 @@ export function createJudgeOpenSession({
       .map((session) => ({
         id: session.id,
         url: session.masterAudioUrl,
-        durationSec: Number(session.durationSec || 0),
+        durationSec: getSessionDurationSec(session),
       }));
   }
 
   function updateTapePlayback(sessions) {
     if (!els.judgeOpenTapePlayback) return;
     els.judgeOpenTapePlayback.preload = "metadata";
+    sessions.forEach((session) => {
+      probeSessionDurationIfNeeded(session);
+    });
     const playlist = buildTapePlaylist(sessions);
     state.judgeOpen.tapePlaylist = playlist;
     const totalDuration = sessions.reduce(
       (sum, item) => {
-        const value = Number(item.durationSec);
+        const value = getSessionDurationSec(item);
         return sum + (Number.isFinite(value) && value > 0 ? value : 0);
       },
       0

@@ -90,9 +90,9 @@ export function createJudgeOpenCore({
       } else if (!readiness.linkedEnsemble) {
         els.judgeOpenReadinessHint.textContent = "Select an existing school and ensemble.";
       } else if (!readiness.hasAudio) {
-        els.judgeOpenReadinessHint.textContent = "Record at least one segment.";
+        els.judgeOpenReadinessHint.textContent = "Record audio.";
       } else if (!readiness.hasTranscript) {
-        els.judgeOpenReadinessHint.textContent = "Transcribe audio or enter transcript text.";
+        els.judgeOpenReadinessHint.textContent = "Transcript is generated automatically after recording.";
       } else if (!readiness.captionsComplete) {
         els.judgeOpenReadinessHint.textContent = `${readiness.missingCaptionCount} caption grade(s) still missing.`;
       } else if (!readiness.editable) {
@@ -148,7 +148,7 @@ export function createJudgeOpenCore({
         : "Stage";
       const segments = Number(packet.segmentCount || packet.audioSessionCount || 0);
       const mode = packet.mode === "official" ? "Official" : "Practice";
-      els.judgeOpenSummaryMeta.textContent = `${mode} ${formLabel} adjudication - ${segments} segment${segments === 1 ? "" : "s"}`;
+      els.judgeOpenSummaryMeta.textContent = `${mode} ${formLabel} adjudication - ${segments} recording part${segments === 1 ? "" : "s"}`;
     }
     if (els.judgeOpenSummaryHint) {
       if (!state.judgeOpen.currentPacketId) {
@@ -262,15 +262,30 @@ export function createJudgeOpenCore({
       if (aTime && bTime) return aTime - bTime;
       return 0;
     });
+    const hasSegmentFailures = ordered.some((session) => {
+      const transcriptStatus = String(session.transcriptStatus || "").toLowerCase();
+      return Boolean(session.needsUpload) || transcriptStatus === "failed";
+    });
     if (els.judgeOpenSegmentsDetails) {
       const hint = els.judgeOpenSegmentsDetails.querySelector(".readiness-hint");
-      if (hint) hint.textContent = `${ordered.length} segments`;
+      if (hint) {
+        hint.textContent = hasSegmentFailures
+          ? "Troubleshooting tools shown"
+          : "Auto-managed";
+      }
+      els.judgeOpenSegmentsDetails.style.display = hasSegmentFailures ? "block" : "none";
+      if (!hasSegmentFailures) {
+        els.judgeOpenSegmentsDetails.open = false;
+      }
     }
     if (els.judgeOpenSegmentsSummary) {
-      els.judgeOpenSegmentsSummary.textContent = `Segments (${ordered.length})`;
+      els.judgeOpenSegmentsSummary.textContent = `Recording Parts (${ordered.length})`;
     }
     const orderedSessionIds = new Set(ordered.map((session) => session.id));
     if (!orderedSessionIds.has(state.judgeOpen.loadedSegmentAudioSessionId)) {
+      state.judgeOpen.loadedSegmentAudioSessionId = null;
+    }
+    if (!hasSegmentFailures) {
       state.judgeOpen.loadedSegmentAudioSessionId = null;
     }
     ordered.forEach((session, index) => {
@@ -280,7 +295,7 @@ export function createJudgeOpenCore({
       const meta = document.createElement("div");
       meta.className = "stack";
       const title = document.createElement("strong");
-      title.textContent = `Segment ${index + 1}`;
+      title.textContent = `Part ${index + 1}`;
       const hint = document.createElement("div");
       hint.className = "note";
       const duration = formatDuration(Number(session.durationSec || 0));
@@ -354,6 +369,7 @@ export function createJudgeOpenCore({
       ) {
         const audio = document.createElement("audio");
         audio.controls = true;
+        audio.preload = "metadata";
         audio.src = session.masterAudioUrl;
         audio.className = "audio";
         item.appendChild(audio);
@@ -369,7 +385,8 @@ export function createJudgeOpenCore({
     const editable = readiness.editable;
     const canSubmit = readiness.canSubmit;
     if (els.judgeOpenSubmitBtn) {
-      els.judgeOpenSubmitBtn.disabled = !canSubmit;
+      const submitLoading = els.judgeOpenSubmitBtn.dataset.loading === "true";
+      els.judgeOpenSubmitBtn.disabled = !canSubmit || submitLoading;
     }
     if (els.judgeOpenTranscriptInput) {
       els.judgeOpenTranscriptInput.disabled = !editable;
@@ -441,6 +458,8 @@ export function createJudgeOpenCore({
     } else if (pendingUploads > 0) {
       const plural = pendingUploads === 1 ? "" : "s";
       els.judgeOpenRecordingStatus.textContent = `Uploading ${pendingUploads} chunk${plural}...`;
+    } else if (state.judgeOpen.autoTranscriptStatusText) {
+      els.judgeOpenRecordingStatus.textContent = state.judgeOpen.autoTranscriptStatusText;
     } else {
       els.judgeOpenRecordingStatus.textContent = "Ready to record.";
     }

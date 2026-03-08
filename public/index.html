@@ -611,10 +611,10 @@
                   </div>
                 </div>
                 <div class="empty" id="judgeOpenTapeEmpty">No adjudication audio yet.</div>
-                <audio id="judgeOpenTapePlayback" controls class="audio"></audio>
+                <audio id="judgeOpenTapePlayback" controls preload="metadata" class="audio"></audio>
                 <details class="accordion-card readiness-details" id="judgeOpenSegmentsDetails">
                   <summary>
-                    <span id="judgeOpenSegmentsSummary">Segments (0)</span>
+                    <span id="judgeOpenSegmentsSummary">Recording Parts (0)</span>
                     <span class="muted readiness-hint"></span>
                   </summary>
                   <ul id="judgeOpenSegmentsList" class="list list--compact"></ul>
@@ -629,7 +629,7 @@
                 <textarea id="judgeOpenTranscriptInput" rows="6" aria-label="Transcript"></textarea>
                 <div class="row">
                     <button type="button" id="judgeOpenTranscribeBtn" class="ghost btn--secondary">
-                    Transcribe Audio
+                    Refresh Transcript
                     </button>
                 </div>
               </details>

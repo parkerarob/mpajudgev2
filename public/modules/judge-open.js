@@ -29,6 +29,10 @@ import {
 } from "../state.js";
 
 const OPEN_RECORDING_TIMESLICE_MS = 10000;
+const OPEN_RECORDING_MAX_SEGMENT_MS = 6 * 60 * 1000;
+const OPEN_AUTO_TRANSCRIBE_SETTLE_MS = 5000;
+const OPEN_AUTO_TRANSCRIBE_MAX_RETRIES = 2;
+const OPEN_AUTO_TRANSCRIBE_RETRY_BASE_MS = 3000;
 const OPEN_PREFS_KEY = "judgeOpenPrefs";
 const OPEN_ENSEMBLE_INDEX_CACHE_TTL_MS = 60 * 1000;
 const OPEN_AUDIO_CONSTRAINTS = {
@@ -46,6 +50,11 @@ let openEnsembleIndexCache = {
   inFlight: null,
 };
 
+let judgeOpenAutoTranscriptionHooks = {
+  onTranscriptUpdated: null,
+  onStatus: null,
+};
+
 function isOpenDebugEnabled() {
   try {
     return window.localStorage?.getItem("mpa.judgeOpenDebug") === "1";
@@ -57,6 +66,95 @@ function isOpenDebugEnabled() {
 function debugOpenLog(...args) {
   if (!isOpenDebugEnabled()) return;
   console.log("[judge-open]", ...args);
+}
+
+function setAutoTranscriptStatus(text = "") {
+  state.judgeOpen.autoTranscriptStatusText = String(text || "");
+  judgeOpenAutoTranscriptionHooks.onStatus?.(state.judgeOpen.autoTranscriptStatusText);
+}
+
+function clearAutoTranscriptionRetryTimer(sessionId) {
+  const timerId = state.judgeOpen.autoTranscribeRetryTimers[sessionId];
+  if (timerId != null) {
+    window.clearTimeout(timerId);
+    delete state.judgeOpen.autoTranscribeRetryTimers[sessionId];
+  }
+}
+
+function clearAutoTranscriptionRuntimeState() {
+  Object.keys(state.judgeOpen.autoTranscribeRetryTimers || {}).forEach((sessionId) => {
+    clearAutoTranscriptionRetryTimer(sessionId);
+  });
+  state.judgeOpen.autoTranscribeInFlight = {};
+  state.judgeOpen.autoTranscribeRetryCount = {};
+  state.judgeOpen.autoTranscribePendingSince = {};
+  state.judgeOpen.autoStopTranscribeInFlight = false;
+  setAutoTranscriptStatus("");
+}
+
+function sessionStartedAtMs(session) {
+  if (session?.startedAt?.toMillis) return session.startedAt.toMillis();
+  if (session?.createdAt?.toMillis) return session.createdAt.toMillis();
+  return 0;
+}
+
+function isSessionReadyForAutoTranscription(session) {
+  if (!session?.id) return false;
+  if (String(session.status || "") !== "completed") return false;
+  if (!session.masterAudioUrl) return false;
+  if (session.needsUpload) return false;
+  const transcriptStatus = String(session.transcriptStatus || "").toLowerCase();
+  if (transcriptStatus === "complete" || transcriptStatus === "running") return false;
+  return true;
+}
+
+function buildStitchedTranscriptFromSessions(sessions = []) {
+  const ordered = [...sessions].sort((a, b) => sessionStartedAtMs(a) - sessionStartedAtMs(b));
+  const parts = ordered
+    .map((session) => String(session.transcript || "").trim())
+    .filter(Boolean);
+  return parts.join(" ").trim();
+}
+
+function patchLocalSessionState(sessionId, patch = {}) {
+  const sessions = Array.isArray(state.judgeOpen.sessions) ? state.judgeOpen.sessions : [];
+  const index = sessions.findIndex((session) => session?.id === sessionId);
+  if (index < 0) return;
+  state.judgeOpen.sessions[index] = {
+    ...sessions[index],
+    ...patch,
+  };
+}
+
+async function syncOpenTranscriptFromSessionState() {
+  const transcript = buildStitchedTranscriptFromSessions(state.judgeOpen.sessions || []);
+  state.judgeOpen.transcriptText = transcript;
+  judgeOpenAutoTranscriptionHooks.onTranscriptUpdated?.(transcript, { source: "auto-segment" });
+  if (!state.judgeOpen.currentPacketId) return;
+  const sessions = state.judgeOpen.sessions || [];
+  const completedSessions = sessions.filter((session) => String(session.status || "") === "completed");
+  const completeCount = completedSessions.filter(
+    (session) => String(session.transcriptStatus || "").toLowerCase() === "complete"
+  ).length;
+  const failedCount = completedSessions.filter(
+    (session) => String(session.transcriptStatus || "").toLowerCase() === "failed"
+  ).length;
+  const hasCompleted = completedSessions.length > 0;
+  const transcriptStatus = !hasCompleted
+    ? "idle"
+    : failedCount > 0 && completeCount === 0
+      ? "failed"
+      : failedCount > 0
+        ? "partial"
+        : completeCount >= completedSessions.length
+          ? "complete"
+          : "running";
+  await updateOpenPacketDraft({
+    [FIELDS.packets.transcriptFull]: transcript,
+    [FIELDS.packets.transcript]: transcript,
+    [FIELDS.packets.transcriptStatus]: transcriptStatus,
+    [FIELDS.packets.transcriptError]: failedCount > 0 ? "One or more recording parts failed." : "",
+  });
 }
 
 function getSessionSigValue(session, key) {
@@ -194,6 +292,9 @@ export function resetJudgeOpenState() {
   state.judgeOpen.recordingChunks = [];
   state.judgeOpen.pendingUploads = 0;
   state.judgeOpen.activeSessionId = null;
+  state.judgeOpen.recordingKeepAlive = false;
+  state.judgeOpen.recordingAutoRolloverReason = "";
+  clearOpenRolloverTimer();
   state.judgeOpen.transcriptText = "";
   state.judgeOpen.captions = {};
   state.judgeOpen.retryUploads = {};
@@ -228,6 +329,7 @@ export function resetJudgeOpenState() {
   state.judgeOpen.openPacketsRafId = null;
   state.judgeOpen.openPacketsLastSig = "";
   state.judgeOpen.draftDirty = false;
+  clearAutoTranscriptionRuntimeState();
 }
 
 export function markJudgeOpenDirty() {
@@ -241,6 +343,85 @@ export function clearJudgeOpenDirty() {
 
 export function hasJudgeOpenUnsavedChanges() {
   return state.judgeOpen.draftDirty;
+}
+
+export function setJudgeOpenAutoTranscriptionHooks(hooks = {}) {
+  judgeOpenAutoTranscriptionHooks = {
+    ...judgeOpenAutoTranscriptionHooks,
+    ...hooks,
+  };
+}
+
+async function runAutoTranscriptionForSession(sessionId) {
+  if (!state.judgeOpen.currentPacketId || !sessionId) return;
+  if (state.judgeOpen.currentPacket?.locked) return;
+  if (state.judgeOpen.autoTranscribeInFlight[sessionId]) return;
+  state.judgeOpen.autoTranscribeInFlight[sessionId] = true;
+  clearAutoTranscriptionRetryTimer(sessionId);
+  try {
+    patchLocalSessionState(sessionId, { transcriptStatus: "running", transcriptError: "" });
+    setAutoTranscriptStatus("Transcription processing automatically...");
+    const result = await transcribeOpenSegment({ sessionId });
+    if (!result?.ok) {
+      throw result?.error || new Error(result?.message || "Segment transcription failed.");
+    }
+    patchLocalSessionState(sessionId, {
+      transcript: String(result.transcript || ""),
+      transcriptStatus: "complete",
+      transcriptError: "",
+    });
+    state.judgeOpen.autoTranscribeRetryCount[sessionId] = 0;
+    delete state.judgeOpen.autoTranscribePendingSince[sessionId];
+    await syncOpenTranscriptFromSessionState();
+    setAutoTranscriptStatus("Transcript updated.");
+  } catch (error) {
+    const retries = Number(state.judgeOpen.autoTranscribeRetryCount[sessionId] || 0);
+    if (retries < OPEN_AUTO_TRANSCRIBE_MAX_RETRIES) {
+      const nextRetries = retries + 1;
+      state.judgeOpen.autoTranscribeRetryCount[sessionId] = nextRetries;
+      const waitMs = OPEN_AUTO_TRANSCRIBE_RETRY_BASE_MS * 2 ** (nextRetries - 1);
+      setAutoTranscriptStatus("Transcription retrying...");
+      state.judgeOpen.autoTranscribeRetryTimers[sessionId] = window.setTimeout(() => {
+        delete state.judgeOpen.autoTranscribeRetryTimers[sessionId];
+        void runAutoTranscriptionForSession(sessionId);
+      }, waitMs);
+    } else {
+      patchLocalSessionState(sessionId, {
+        transcriptStatus: "failed",
+        transcriptError: String(error?.message || "Transcription failed."),
+      });
+      await syncOpenTranscriptFromSessionState();
+      setAutoTranscriptStatus("Some recording parts could not be transcribed yet.");
+    }
+  } finally {
+    delete state.judgeOpen.autoTranscribeInFlight[sessionId];
+  }
+}
+
+function queueEligibleSessionAutoTranscription(sessions = []) {
+  if (!state.judgeOpen.currentPacketId) return;
+  if (state.judgeOpen.currentPacket?.locked) return;
+  if (state.judgeOpen.autoStopTranscribeInFlight) return;
+  const now = Date.now();
+  sessions.forEach((session) => {
+    if (!isSessionReadyForAutoTranscription(session)) return;
+    const sessionId = session.id;
+    if (!sessionId) return;
+    if (state.judgeOpen.autoTranscribeInFlight[sessionId]) return;
+    if (state.judgeOpen.autoTranscribeRetryTimers[sessionId] != null) return;
+    const pendingSince = Number(state.judgeOpen.autoTranscribePendingSince[sessionId] || 0);
+    if (!pendingSince) {
+      state.judgeOpen.autoTranscribePendingSince[sessionId] = now;
+      state.judgeOpen.autoTranscribeRetryTimers[sessionId] = window.setTimeout(() => {
+        delete state.judgeOpen.autoTranscribeRetryTimers[sessionId];
+        void runAutoTranscriptionForSession(sessionId);
+      }, OPEN_AUTO_TRANSCRIBE_SETTLE_MS);
+      return;
+    }
+    if (now - pendingSince >= OPEN_AUTO_TRANSCRIBE_SETTLE_MS) {
+      void runAutoTranscriptionForSession(sessionId);
+    }
+  });
 }
 
 export async function watchOpenPackets(callback) {
@@ -276,6 +457,7 @@ export function watchOpenSessions(packetId, callback) {
   state.judgeOpen.openSessionsRenderCount = 0;
   if (!packetId) {
     state.judgeOpen.sessions = [];
+    clearAutoTranscriptionRuntimeState();
     flushOpenSessionsRender(callback);
     return;
   }
@@ -291,6 +473,7 @@ export function watchOpenSessions(packetId, callback) {
     state.judgeOpen.openSessionsSnapshotCount += 1;
     state.judgeOpen.openSessionsPendingRender = state.judgeOpen.sessions;
     scheduleOpenSessionsRender(callback);
+    queueEligibleSessionAutoTranscription(state.judgeOpen.sessions);
   });
 }
 
@@ -306,6 +489,7 @@ export async function selectOpenPacket(packetId, { onSessions } = {}) {
     ...packetData,
     mode: packetData.mode === "official" ? "official" : "practice",
   };
+  clearAutoTranscriptionRuntimeState();
   state.judgeOpen.formType = packetData.formType || "stage";
   state.judgeOpen.transcriptText =
     packetData.transcriptFull || packetData.transcript || "";
@@ -566,10 +750,18 @@ function ensureRetryState(sessionId) {
   return state.judgeOpen.retryUploads[sessionId];
 }
 
+function clearOpenRolloverTimer() {
+  if (state.judgeOpen.recordingRolloverTimerId != null) {
+    window.clearTimeout(state.judgeOpen.recordingRolloverTimerId);
+    state.judgeOpen.recordingRolloverTimerId = null;
+  }
+}
+
 export async function startOpenRecording({
   onStatus,
   onSessions,
   getPacketMeta,
+  continuation = false,
 } = {}) {
   if (!state.judgeOpen.mode) {
     return { ok: false, message: "Choose Practice or Official before recording." };
@@ -580,6 +772,10 @@ export async function startOpenRecording({
   if (state.judgeOpen.mediaRecorder?.state === "recording") {
     return { ok: false, message: "Recording already in progress." };
   }
+  if (!continuation) {
+    state.judgeOpen.recordingKeepAlive = true;
+  }
+  state.judgeOpen.recordingAutoRolloverReason = "";
   const meta = getPacketMeta?.() || {};
   if (!state.judgeOpen.currentPacketId) {
     const created = await createOpenPacket({ ...meta, onSessions });
@@ -623,6 +819,16 @@ export async function startOpenRecording({
   state.judgeOpen.mediaRecorder = recorder;
   let chunkIndex = 0;
 
+  clearOpenRolloverTimer();
+  state.judgeOpen.recordingRolloverTimerId = window.setTimeout(() => {
+    const activeRecorder = state.judgeOpen.mediaRecorder;
+    if (!state.judgeOpen.recordingKeepAlive) return;
+    if (!activeRecorder || activeRecorder !== recorder) return;
+    if (activeRecorder.state !== "recording") return;
+    state.judgeOpen.recordingAutoRolloverReason = "max-segment";
+    activeRecorder.stop();
+  }, OPEN_RECORDING_MAX_SEGMENT_MS);
+
   recorder.addEventListener("dataavailable", async (event) => {
     if (!event.data || event.data.size === 0) return;
     const chunk = event.data;
@@ -656,6 +862,11 @@ export async function startOpenRecording({
   });
 
   recorder.addEventListener("stop", async () => {
+    clearOpenRolloverTimer();
+    const shouldAutoContinue =
+      state.judgeOpen.recordingKeepAlive &&
+      state.judgeOpen.recordingAutoRolloverReason === "max-segment";
+    state.judgeOpen.recordingAutoRolloverReason = "";
     const blob = new Blob(state.judgeOpen.recordingChunks, {
       type: recorder.mimeType || "audio/webm",
     });
@@ -723,6 +934,24 @@ export async function startOpenRecording({
     state.judgeOpen.micTrackSettings = null;
     stream.getTracks().forEach((track) => track.stop());
     onStatus?.();
+    if (shouldAutoContinue) {
+      try {
+        const next = await startOpenRecording({
+          onStatus,
+          onSessions,
+          getPacketMeta,
+          continuation: true,
+        });
+        if (!next?.ok) {
+          state.judgeOpen.recordingKeepAlive = false;
+        }
+      } catch (error) {
+        console.error("Failed to auto-rollover open recording segment", error);
+        state.judgeOpen.recordingKeepAlive = false;
+      } finally {
+        onStatus?.();
+      }
+    }
   });
 
   recorder.start(OPEN_RECORDING_TIMESLICE_MS);
@@ -733,6 +962,9 @@ export async function startOpenRecording({
 export function stopOpenRecording() {
   const recorder = state.judgeOpen.mediaRecorder;
   if (!recorder || recorder.state !== "recording") return { ok: false };
+  state.judgeOpen.recordingKeepAlive = false;
+  state.judgeOpen.recordingAutoRolloverReason = "";
+  clearOpenRolloverTimer();
   recorder.stop();
   return { ok: true };
 }
@@ -817,6 +1049,31 @@ export async function transcribeOpenTape() {
       [FIELDS.packets.transcriptError]: message,
     });
     return { ok: false, message, error };
+  }
+}
+
+export async function finalizeOpenTapeAutoTranscription() {
+  if (!state.judgeOpen.currentPacketId) {
+    return { ok: false, message: "Create an adjudication first." };
+  }
+  if (state.judgeOpen.autoStopTranscribeInFlight) {
+    return { ok: false, message: "Transcription already running." };
+  }
+  state.judgeOpen.autoStopTranscribeInFlight = true;
+  setAutoTranscriptStatus("Finalizing transcript...");
+  try {
+    const result = await transcribeOpenTape();
+    if (!result?.ok) {
+      setAutoTranscriptStatus("Final transcript check failed.");
+      return result;
+    }
+    judgeOpenAutoTranscriptionHooks.onTranscriptUpdated?.(result.transcript || "", {
+      source: "auto-stop",
+    });
+    setAutoTranscriptStatus("Transcript ready.");
+    return result;
+  } finally {
+    state.judgeOpen.autoStopTranscribeInFlight = false;
   }
 }
 

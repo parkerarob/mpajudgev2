@@ -24,6 +24,7 @@ export function createJudgeOpenHandlerBinder({
   draftCaptionsFromTranscript,
   applyOpenCaptionDraft,
   transcribeOpenTape,
+  finalizeOpenTapeAutoTranscription,
   startOpenRecording,
   updateOpenRecordingStatus,
   stopOpenRecording,
@@ -41,6 +42,24 @@ export function createJudgeOpenHandlerBinder({
     textareaEl.style.height = `${Math.max(textareaEl.scrollHeight, 128)}px`;
   };
 
+  async function waitForOpenRecordingSettle({
+    timeoutMs = 30000,
+    pollMs = 250,
+  } = {}) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const recorder = state.judgeOpen.mediaRecorder;
+      const pendingUploads = Number(state.judgeOpen.pendingUploads || 0);
+      if (!recorder && pendingUploads === 0) {
+        return true;
+      }
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, pollMs);
+      });
+    }
+    return false;
+  }
+
   return function bindJudgeOpenHandlers() {
     if (judgeOpenHandlersBound) return;
     judgeOpenHandlersBound = true;
@@ -55,16 +74,22 @@ export function createJudgeOpenHandlerBinder({
 
     if (els.judgeOpenChoosePracticeBtn) {
       els.judgeOpenChoosePracticeBtn.addEventListener("click", async () => {
-        await chooseJudgeOpenMode("practice");
-        setOpenPacketHint(
-          "Practice mode active. Practice adjudications never affect official event results."
-        );
+        els.judgeOpenChoosePracticeBtn.dataset.loadingLabel = "Starting Practice...";
+        await withLoading(els.judgeOpenChoosePracticeBtn, async () => {
+          await chooseJudgeOpenMode("practice");
+          setOpenPacketHint(
+            "Practice mode active. Practice adjudications never affect official event results."
+          );
+        });
       });
     }
     if (els.judgeOpenChooseOfficialBtn) {
       els.judgeOpenChooseOfficialBtn.addEventListener("click", async () => {
-        await chooseJudgeOpenMode("official");
-        setOpenPacketHint("Official mode active. Submissions will count toward event packet release.");
+        els.judgeOpenChooseOfficialBtn.dataset.loadingLabel = "Starting Official...";
+        await withLoading(els.judgeOpenChooseOfficialBtn, async () => {
+          await chooseJudgeOpenMode("official");
+          setOpenPacketHint("Official mode active. Submissions will count toward event packet release.");
+        });
       });
     }
     if (els.judgeOpenBackToLandingBtn) {
@@ -403,13 +428,14 @@ export function createJudgeOpenHandlerBinder({
     }
 
     if (els.judgeOpenTranscribeBtn) {
+      els.judgeOpenTranscribeBtn.textContent = "Refresh Transcript";
       els.judgeOpenTranscribeBtn.addEventListener("click", async () => {
         if (els.judgeOpenTranscribeBtn.disabled) return;
-        els.judgeOpenTranscribeBtn.dataset.loadingLabel = "Transcribing...";
+        els.judgeOpenTranscribeBtn.dataset.loadingLabel = "Refreshing...";
         els.judgeOpenTranscribeBtn.dataset.spinner = "true";
         await withLoading(els.judgeOpenTranscribeBtn, async () => {
           if (els.judgeOpenRecordingStatus) {
-            els.judgeOpenRecordingStatus.textContent = "Transcribing audio...";
+            els.judgeOpenRecordingStatus.textContent = "Refreshing transcript...";
           }
           const result = await transcribeOpenTape();
           if (!result?.ok) {
@@ -424,7 +450,7 @@ export function createJudgeOpenHandlerBinder({
           }
           state.judgeOpen.transcriptText = result.transcript || "";
           updateOpenSubmitState();
-          setOpenPacketHint("Transcript ready.");
+          setOpenPacketHint("Transcript refreshed.");
           if (els.judgeOpenRecordingStatus) {
             els.judgeOpenRecordingStatus.textContent = "Transcript ready.";
           }
@@ -471,7 +497,27 @@ export function createJudgeOpenHandlerBinder({
             if (els.judgeOpenRecordingStatus) {
               els.judgeOpenRecordingStatus.textContent = "No active recording.";
             }
+            return;
           }
+          const settled = await waitForOpenRecordingSettle();
+          if (!settled) {
+            setOpenPacketHint("Recording stopped. Transcript finalization is still catching up.");
+            return;
+          }
+          if (els.judgeOpenRecordingStatus) {
+            els.judgeOpenRecordingStatus.textContent = "Finalizing transcript...";
+          }
+          const finalResult = await finalizeOpenTapeAutoTranscription();
+          if (!finalResult?.ok) {
+            setOpenPacketHint(finalResult?.message || "Final transcript check failed.");
+            return;
+          }
+          if (els.judgeOpenTranscriptInput) {
+            els.judgeOpenTranscriptInput.value = finalResult.transcript || "";
+          }
+          state.judgeOpen.transcriptText = finalResult.transcript || "";
+          updateOpenSubmitState();
+          setOpenPacketHint("Transcript ready.");
         });
         updateOpenRecordingStatus();
       });

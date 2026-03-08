@@ -126,12 +126,14 @@ import {
   markJudgeOpenDirty,
   resetJudgeOpenState,
   retryOpenSessionUploads,
+  setJudgeOpenAutoTranscriptionHooks,
   selectOpenPacket,
   saveOpenPrefs,
   saveOpenPrefsToServer,
   startOpenRecording,
   stopOpenRecording,
   submitOpenPacket,
+  finalizeOpenTapeAutoTranscription,
   transcribeOpenSegment,
   transcribeOpenTape,
   updateOpenPacketDraft,
@@ -736,10 +738,17 @@ export function setSavingState(button, isSaving, savingLabel = "Saving...") {
     button.dataset.originalLabel = button.textContent;
     button.textContent = savingLabel;
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    ensureButtonSpinner(button);
+    button.classList.add("is-loading");
+    beginLoadingAction();
   } else {
     const original = button.dataset.originalLabel;
     button.textContent = original || button.textContent;
     button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.classList.remove("is-loading");
+    endLoadingAction();
     delete button.dataset.originalLabel;
   }
 }
@@ -763,6 +772,21 @@ export function ensureButtonSpinner(button) {
   return spinner;
 }
 
+let activeLoadingActionCount = 0;
+
+function beginLoadingAction() {
+  activeLoadingActionCount += 1;
+  if (activeLoadingActionCount <= 0) activeLoadingActionCount = 1;
+  document.body.classList.add("app-busy");
+}
+
+function endLoadingAction() {
+  activeLoadingActionCount = Math.max(0, activeLoadingActionCount - 1);
+  if (activeLoadingActionCount === 0) {
+    document.body.classList.remove("app-busy");
+  }
+}
+
 export async function withLoading(buttonElement, asyncFn) {
   if (!buttonElement) {
     return asyncFn();
@@ -779,10 +803,10 @@ export async function withLoading(buttonElement, asyncFn) {
   } else {
     buttonElement.textContent = loadingLabel;
   }
-  if (buttonElement.dataset.spinner === "true") {
-    ensureButtonSpinner(buttonElement);
-    buttonElement.classList.add("is-loading");
-  }
+  buttonElement.setAttribute("aria-busy", "true");
+  ensureButtonSpinner(buttonElement);
+  buttonElement.classList.add("is-loading");
+  beginLoadingAction();
   try {
     await asyncFn();
   } catch (error) {
@@ -795,6 +819,8 @@ export async function withLoading(buttonElement, asyncFn) {
       buttonElement.textContent = originalLabel;
     }
     buttonElement.classList.remove("is-loading");
+    buttonElement.removeAttribute("aria-busy");
+    endLoadingAction();
     delete buttonElement.dataset.loading;
     delete buttonElement.dataset.originalLabel;
   }
@@ -1926,6 +1952,7 @@ function getAdminHandlerBinder() {
     getSchoolNameById,
     unassignDirectorSchool,
     renderAdminSchoolEnsembleManage,
+    withLoading,
   });
   return adminHandlerBinder;
 }
@@ -2077,6 +2104,7 @@ function getJudgeOpenHandlerBinder() {
     draftCaptionsFromTranscript,
     applyOpenCaptionDraft,
     transcribeOpenTape,
+    finalizeOpenTapeAutoTranscription,
     startOpenRecording,
     updateOpenRecordingStatus,
     stopOpenRecording,
@@ -2107,6 +2135,18 @@ function getJudgeOpenCore() {
     hasLinkedOpenEnsemble,
     startOpenLevelMeter,
     stopOpenLevelMeter,
+  });
+  setJudgeOpenAutoTranscriptionHooks({
+    onTranscriptUpdated: (transcript) => {
+      state.judgeOpen.transcriptText = transcript || "";
+      if (els.judgeOpenTranscriptInput) {
+        els.judgeOpenTranscriptInput.value = transcript || "";
+      }
+      updateOpenSubmitState();
+    },
+    onStatus: () => {
+      updateOpenRecordingStatus();
+    },
   });
   return judgeOpenCore;
 }
@@ -2271,6 +2311,7 @@ function getDirectorPacketRenderers() {
     CAPTION_TEMPLATES,
     renderSubmissionCard,
     fetchDirectorPacketAssets,
+    withLoading,
   });
   return directorPacketRenderers;
 }
@@ -5106,6 +5147,7 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
 
   const audio = document.createElement("audio");
   audio.controls = true;
+  audio.preload = "metadata";
   audio.className = "audio";
   if (submission.audioUrl) {
     audio.src = submission.audioUrl;

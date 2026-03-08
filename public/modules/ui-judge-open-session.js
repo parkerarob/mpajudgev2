@@ -217,6 +217,7 @@ export function createJudgeOpenSession({
 
   function updateTapePlayback(sessions) {
     if (!els.judgeOpenTapePlayback) return;
+    els.judgeOpenTapePlayback.preload = "metadata";
     const playlist = buildTapePlaylist(sessions);
     state.judgeOpen.tapePlaylist = playlist;
     const totalDuration = sessions.reduce(

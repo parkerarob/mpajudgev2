@@ -26,6 +26,12 @@ import {
   deleteAllUnreleasedPackets,
   deleteOpenPacket,
   deleteScheduledPacket,
+  attachManualAudioToScheduledPacket,
+  attachManualAudioToOpenPacket,
+  createAudioOnlyResultFromFile,
+  releaseAudioOnlyResult,
+  unreleaseAudioOnlyResult,
+  repairManualAudioOverrides,
   deleteScheduleEntry,
   deleteSchool,
   assignDirectorSchool,
@@ -102,6 +108,7 @@ import {
   uploadDirectorProfileCard,
   uploadSignedSignatureForm,
   fetchDirectorPacketAssets,
+  fetchDirectorAudioResultAsset,
   upsertRegistrationForEnsemble,
   watchDirectorEnsembles,
   watchDirectorPackets,
@@ -1986,6 +1993,12 @@ function getAdminRenderers() {
     releaseOpenPacket,
     unreleaseOpenPacket,
     deleteOpenPacket,
+    attachManualAudioToScheduledPacket,
+    attachManualAudioToOpenPacket,
+    createAudioOnlyResultFromFile,
+    releaseAudioOnlyResult,
+    unreleaseAudioOnlyResult,
+    repairManualAudioOverrides,
     deleteAllUnreleasedPackets,
     renderSubmissionCard,
     loadAdminPacketView,
@@ -2311,6 +2324,7 @@ function getDirectorPacketRenderers() {
     CAPTION_TEMPLATES,
     renderSubmissionCard,
     fetchDirectorPacketAssets,
+    fetchDirectorAudioResultAsset,
     withLoading,
   });
   return directorPacketRenderers;
@@ -5152,6 +5166,7 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
   if (submission.audioUrl) {
     audio.src = submission.audioUrl;
   }
+  const supplementalAudioUrl = String(submission.supplementalAudioUrl || "").trim();
 
   const captionSummary = renderPacketCaptionSummary(
     submission.captions || {},
@@ -5165,6 +5180,18 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
   card.appendChild(header);
   card.appendChild(judgeInfo);
   card.appendChild(audio);
+  if (supplementalAudioUrl) {
+    const supplementalLabel = document.createElement("div");
+    supplementalLabel.className = "note";
+    supplementalLabel.textContent = "Supplemental Audio";
+    const supplementalAudio = document.createElement("audio");
+    supplementalAudio.controls = true;
+    supplementalAudio.preload = "metadata";
+    supplementalAudio.className = "audio";
+    supplementalAudio.src = supplementalAudioUrl;
+    card.appendChild(supplementalLabel);
+    card.appendChild(supplementalAudio);
+  }
   card.appendChild(captionSummary);
   if (showTranscript) {
     const transcript = document.createElement("details");

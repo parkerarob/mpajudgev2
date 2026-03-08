@@ -25,6 +25,12 @@ export function createAdminRenderers({
   releaseOpenPacket,
   unreleaseOpenPacket,
   deleteOpenPacket,
+  attachManualAudioToScheduledPacket,
+  attachManualAudioToOpenPacket,
+  createAudioOnlyResultFromFile,
+  releaseAudioOnlyResult,
+  unreleaseAudioOnlyResult,
+  repairManualAudioOverrides,
   deleteAllUnreleasedPackets,
   renderSubmissionCard,
   loadAdminPacketView,
@@ -69,6 +75,61 @@ export function createAdminRenderers({
   function normalizeOpenPacketStatus(value) {
     const raw = String(value || "").trim();
     return raw || "draft";
+  }
+
+  function getManualAudioStatusMap() {
+    if (!(state.admin.manualAudioUploadStatus instanceof Map)) {
+      state.admin.manualAudioUploadStatus = new Map();
+    }
+    return state.admin.manualAudioUploadStatus;
+  }
+
+  function setManualAudioStatus(key, text, tone = "info") {
+    getManualAudioStatusMap().set(String(key || ""), {
+      text: String(text || ""),
+      tone: tone === "error" ? "error" : "info",
+      at: Date.now(),
+    });
+  }
+
+  function readManualAudioStatus(key) {
+    const item = getManualAudioStatusMap().get(String(key || ""));
+    if (!item || !item.text) return "";
+    const atLabel = item.at ? new Date(item.at).toLocaleTimeString() : "";
+    return atLabel ? `${item.text} (${atLabel})` : item.text;
+  }
+
+  function normalizeJudgePosition(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return ["stage1", "stage2", "stage3", "sight"].includes(normalized) ? normalized : "";
+  }
+
+  function promptJudgePosition(initial = "stage1") {
+    const answer = window.prompt(
+      "Assign audio to judge position (stage1, stage2, stage3, sight):",
+      initial
+    );
+    const value = normalizeJudgePosition(answer);
+    if (!value) return "";
+    return value;
+  }
+
+  async function pickAudioFile() {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "audio/*,.wav,.mp3,.m4a,.aac,.webm,.ogg";
+      input.style.display = "none";
+      input.addEventListener("change", () => {
+        const file = input.files?.[0] || null;
+        resolve(file);
+      });
+      document.body.appendChild(input);
+      input.click();
+      window.setTimeout(() => {
+        if (input.parentNode) input.parentNode.removeChild(input);
+      }, 0);
+    });
   }
 
   function setAdminStepChip(el, { label, done = false, active = false } = {}) {
@@ -149,6 +210,7 @@ export function createAdminRenderers({
       judgeTitle: "",
       judgeAffiliation: "",
       audioUrl: packet.latestAudioUrl || "",
+      supplementalAudioUrl: packet.supplementalLatestAudioUrl || "",
       transcript: String(packet.transcriptFull || packet.transcript || "").trim(),
       captions: packet.captions && typeof packet.captions === "object" ? packet.captions : {},
       formType: packet.formType || "stage",
@@ -484,6 +546,32 @@ export function createAdminRenderers({
           }
         });
         cleanupRow.appendChild(cleanupBtn);
+        const repairBtn = document.createElement("button");
+        repairBtn.type = "button";
+        repairBtn.className = "ghost";
+        repairBtn.textContent = "Repair Audio Links";
+        repairBtn.addEventListener("click", async () => {
+          const runDry = window.confirm(
+            "Run a DRY RUN first?\nOK = Dry run only (safe preview)\nCancel = Apply fixes now"
+          );
+          repairBtn.disabled = true;
+          try {
+            const result = await repairManualAudioOverrides({ dryRun: runDry });
+            await renderAdminPacketsBySchedule();
+            alertUser(
+              `${runDry ? "Dry run complete" : "Audio repair complete"}.\n` +
+              `Submissions updated: ${result.submissionsUpdated || 0}\n` +
+              `Open packets updated: ${result.packetsUpdated || 0}\n` +
+              `Skipped (no canonical tape found): ${result.skippedNoCanonical || 0}`
+            );
+          } catch (error) {
+            console.error("repairManualAudioOverrides failed", error);
+            alertUser(error?.message || "Unable to repair audio links.");
+          } finally {
+            repairBtn.disabled = false;
+          }
+        });
+        cleanupRow.appendChild(repairBtn);
         els.adminPacketsList.appendChild(cleanupRow);
       };
       appendBulkCleanupPanel();
@@ -571,6 +659,21 @@ export function createAdminRenderers({
       let reviewedCount = 0;
       let releaseReadyCount = 0;
       let releasedCount = 0;
+      const audioResultsByEnsemble = new Map();
+      const audioResultRows = await getDocs(
+        query(
+          collection(db, COLLECTIONS.audioResults),
+          where("eventId", "==", eventId),
+          where("schoolId", "==", state.admin.packetsSchoolId)
+        )
+      );
+      audioResultRows.docs.forEach((docSnap) => {
+        const data = { id: docSnap.id, ...docSnap.data() };
+        const key = String(data.ensembleId || "");
+        if (!key) return;
+        if (!audioResultsByEnsemble.has(key)) audioResultsByEnsemble.set(key, []);
+        audioResultsByEnsemble.get(key).push(data);
+      });
 
       for (const entry of filtered) {
         const ensembleId = entry.ensembleId || "";
@@ -693,8 +796,157 @@ export function createAdminRenderers({
           }
         });
         actions.appendChild(viewBtn);
+
+        const attachAudioBtn = document.createElement("button");
+        attachAudioBtn.type = "button";
+        attachAudioBtn.className = "ghost";
+        attachAudioBtn.textContent = "Attach Audio";
+        attachAudioBtn.addEventListener("click", async () => {
+          const scheduledStatusKey = `scheduled:${eventId}:${ensembleId}`;
+          const judgePosition = promptJudgePosition("stage1");
+          if (!judgePosition) {
+            alertUser("Choose stage1, stage2, stage3, or sight.");
+            return;
+          }
+          const file = await pickAudioFile();
+          if (!file) return;
+          setManualAudioStatus(
+            scheduledStatusKey,
+            `Uploading ${file.name} to ${judgePosition}...`
+          );
+          await renderAdminPacketsBySchedule();
+          attachAudioBtn.disabled = true;
+          try {
+            await attachManualAudioToScheduledPacket({
+              eventId,
+              ensembleId,
+              judgePosition,
+              file,
+            });
+            setManualAudioStatus(
+              scheduledStatusKey,
+              `Upload complete. Attached to ${judgePosition}.`
+            );
+            await renderAdminPacketsBySchedule();
+          } catch (error) {
+            console.error("Attach scheduled packet audio failed", error);
+            setManualAudioStatus(
+              scheduledStatusKey,
+              `Upload failed: ${error?.message || "Unable to attach audio."}`,
+              "error"
+            );
+            await renderAdminPacketsBySchedule();
+          } finally {
+            attachAudioBtn.disabled = false;
+          }
+        });
+        actions.appendChild(attachAudioBtn);
+
+        const audioOnlyBtn = document.createElement("button");
+        audioOnlyBtn.type = "button";
+        audioOnlyBtn.className = "ghost";
+        audioOnlyBtn.textContent = "Upload Audio-Only";
+        audioOnlyBtn.addEventListener("click", async () => {
+          const scheduledStatusKey = `scheduled:${eventId}:${ensembleId}`;
+          const file = await pickAudioFile();
+          if (!file) return;
+          const judgePosition = normalizeJudgePosition(
+            window.prompt("Optional judge position (stage1, stage2, stage3, sight):", "")
+          );
+          setManualAudioStatus(scheduledStatusKey, `Uploading audio-only file ${file.name}...`);
+          await renderAdminPacketsBySchedule();
+          audioOnlyBtn.disabled = true;
+          try {
+            const created = await createAudioOnlyResultFromFile({
+              eventId,
+              schoolId: entry.schoolId,
+              ensembleId,
+              ensembleName,
+              judgePosition,
+              mode: "official",
+              file,
+            });
+            const shouldRelease = window.confirm("Release this audio-only result to directors now?");
+            if (shouldRelease && created?.audioResultId) {
+              setManualAudioStatus(scheduledStatusKey, "Upload complete. Releasing audio-only result...");
+              await renderAdminPacketsBySchedule();
+              await releaseAudioOnlyResult({ audioResultId: created.audioResultId });
+            }
+            setManualAudioStatus(
+              scheduledStatusKey,
+              shouldRelease ?
+                "Audio-only upload complete and released." :
+                "Audio-only upload complete (draft, not released)."
+            );
+            await renderAdminPacketsBySchedule();
+          } catch (error) {
+            console.error("Upload audio-only result failed", error);
+            setManualAudioStatus(
+              scheduledStatusKey,
+              `Audio-only upload failed: ${error?.message || "Unable to upload audio-only result."}`,
+              "error"
+            );
+            await renderAdminPacketsBySchedule();
+          } finally {
+            audioOnlyBtn.disabled = false;
+          }
+        });
+        actions.appendChild(audioOnlyBtn);
         li.appendChild(actions);
+        const scheduledStatus = readManualAudioStatus(`scheduled:${eventId}:${ensembleId}`);
+        if (scheduledStatus) {
+          const statusRow = document.createElement("div");
+          statusRow.className = "note";
+          statusRow.textContent = `Audio Upload Status: ${scheduledStatus}`;
+          li.appendChild(statusRow);
+        }
         li.appendChild(panel);
+
+        const audioOnlyRows = audioResultsByEnsemble.get(ensembleId) || [];
+        if (audioOnlyRows.length) {
+          const audioOnlyWrap = document.createElement("div");
+          audioOnlyWrap.className = "stack";
+          const audioOnlyTitle = document.createElement("div");
+          audioOnlyTitle.className = "note";
+          audioOnlyTitle.textContent = `Audio-only results: ${audioOnlyRows.length}`;
+          audioOnlyWrap.appendChild(audioOnlyTitle);
+          audioOnlyRows.forEach((item) => {
+            const rowMeta = document.createElement("div");
+            rowMeta.className = "row row--between";
+            const left = document.createElement("span");
+            const status = String(item.status || "draft");
+            const label = item.judgePosition ? ` (${item.judgePosition})` : "";
+            left.textContent = `Audio-only${label} - ${status}`;
+            const controls = document.createElement("div");
+            controls.className = "row";
+            const toggleBtn = document.createElement("button");
+            toggleBtn.type = "button";
+            toggleBtn.className = "ghost";
+            const shouldUnrelease = status === "released";
+            toggleBtn.textContent = shouldUnrelease ? "Unrelease" : "Release";
+            toggleBtn.addEventListener("click", async () => {
+              toggleBtn.disabled = true;
+              try {
+                if (shouldUnrelease) {
+                  await unreleaseAudioOnlyResult({ audioResultId: item.id });
+                } else {
+                  await releaseAudioOnlyResult({ audioResultId: item.id });
+                }
+                await renderAdminPacketsBySchedule();
+              } catch (error) {
+                console.error("Toggle audio-only release failed", error);
+                alertUser(error?.message || "Unable to update audio-only release.");
+              } finally {
+                toggleBtn.disabled = false;
+              }
+            });
+            controls.appendChild(toggleBtn);
+            rowMeta.appendChild(left);
+            rowMeta.appendChild(controls);
+            audioOnlyWrap.appendChild(rowMeta);
+          });
+          li.appendChild(audioOnlyWrap);
+        }
         els.adminPacketsList.appendChild(li);
       }
 
@@ -865,6 +1117,35 @@ export function createAdminRenderers({
           });
           actions.appendChild(viewBtn);
 
+          const attachOpenAudioBtn = document.createElement("button");
+          attachOpenAudioBtn.type = "button";
+          attachOpenAudioBtn.className = "ghost";
+          attachOpenAudioBtn.textContent = "Attach Audio";
+          attachOpenAudioBtn.addEventListener("click", async () => {
+            const openStatusKey = `open:${packet.id}`;
+            const file = await pickAudioFile();
+            if (!file) return;
+            setManualAudioStatus(openStatusKey, `Uploading ${file.name}...`);
+            await renderAdminPacketsBySchedule();
+            attachOpenAudioBtn.disabled = true;
+            try {
+              await attachManualAudioToOpenPacket({ packetId: packet.id, file });
+              setManualAudioStatus(openStatusKey, "Upload complete. Audio attached to open sheet.");
+              await renderAdminPacketsBySchedule();
+            } catch (error) {
+              console.error("Attach open packet audio failed", error);
+              setManualAudioStatus(
+                openStatusKey,
+                `Upload failed: ${error?.message || "Unable to attach open sheet audio."}`,
+                "error"
+              );
+              await renderAdminPacketsBySchedule();
+            } finally {
+              attachOpenAudioBtn.disabled = false;
+            }
+          });
+          actions.appendChild(attachOpenAudioBtn);
+
           const deleteBtn = document.createElement("button");
           deleteBtn.type = "button";
           deleteBtn.className = "ghost";
@@ -894,6 +1175,13 @@ export function createAdminRenderers({
           });
           actions.appendChild(deleteBtn);
           row.appendChild(actions);
+          const openStatusText = readManualAudioStatus(`open:${packet.id}`);
+          if (openStatusText) {
+            const statusRow = document.createElement("div");
+            statusRow.className = "note";
+            statusRow.textContent = `Audio Upload Status: ${openStatusText}`;
+            row.appendChild(statusRow);
+          }
           row.appendChild(detail);
           openList.appendChild(row);
         });

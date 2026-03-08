@@ -337,10 +337,8 @@ export function createDirectorHandlerBinder({
       els.directorAttachBtn.addEventListener("click", async () => {
         const schoolId = els.directorAttachSelect?.value || "";
         if (!schoolId) return;
-        const originalLabel = els.directorAttachBtn.textContent || "Confirm School";
-        els.directorAttachBtn.disabled = true;
-        els.directorAttachBtn.textContent = "Attaching...";
-        try {
+        els.directorAttachBtn.dataset.loadingLabel = "Attaching...";
+        await withLoading(els.directorAttachBtn, async () => {
           const result = await attachDirectorSchool(schoolId);
           if (result?.ok) {
             const selectedSchool = state.admin.schoolsList.find((school) => school.id === schoolId);
@@ -352,10 +350,7 @@ export function createDirectorHandlerBinder({
             return;
           }
           alertUser(result?.reason || result?.error?.message || "Unable to attach school.");
-        } finally {
-          els.directorAttachBtn.disabled = false;
-          els.directorAttachBtn.textContent = originalLabel;
-        }
+        });
       });
     }
 

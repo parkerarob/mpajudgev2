@@ -8,6 +8,7 @@ export function createDirectorPacketRenderers({
   CAPTION_TEMPLATES,
   renderSubmissionCard,
   fetchDirectorPacketAssets,
+  withLoading,
 } = {}) {
   function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) {
     const captionSummary = document.createElement("div");
@@ -169,9 +170,8 @@ export function createDirectorPacketRenderers({
     };
 
     loadBtn.addEventListener("click", async () => {
-      loadBtn.disabled = true;
-      loadBtn.textContent = "Loading...";
-      try {
+      loadBtn.dataset.loadingLabel = "Loading...";
+      await withLoading(loadBtn, async () => {
         const result = await fetchDirectorPacketAssets({ eventId, ensembleId });
         if (!result?.ok) {
           hint.textContent = result?.message || "Unable to load packet files.";
@@ -181,9 +181,7 @@ export function createDirectorPacketRenderers({
         renderAssets(result);
         hint.textContent = "Official packet files loaded.";
         loadBtn.textContent = "Refresh Files";
-      } finally {
-        loadBtn.disabled = false;
-      }
+      });
     });
 
     const cached = state.director.packetAssetsCache.get(key);
@@ -216,6 +214,16 @@ export function createDirectorPacketRenderers({
         ensembleRow.appendChild(
           document.createTextNode(` ${group.ensembleName || group.ensembleId || "Unknown ensemble"}`)
         );
+        const modeRow = document.createElement("div");
+        modeRow.className = "note";
+        const groupMode = String(group.mode || "practice").toLowerCase();
+        const modeLabel =
+          groupMode === "official"
+            ? "Official adjudication"
+            : groupMode === "mixed"
+              ? "Mixed adjudication modes (includes practice)"
+              : "Practice adjudication (non-official)";
+        modeRow.textContent = `Mode: ${modeLabel}`;
         const schoolRow = document.createElement("div");
         schoolRow.className = "note";
         schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
@@ -232,6 +240,7 @@ export function createDirectorPacketRenderers({
         overallRow.className = "note";
         overallRow.textContent = `Overall: ${group.overall?.label || "N/A"}`;
         header.appendChild(ensembleRow);
+        header.appendChild(modeRow);
         header.appendChild(schoolRow);
         header.appendChild(eventRow);
         header.appendChild(directorRow);
@@ -266,6 +275,13 @@ export function createDirectorPacketRenderers({
         const ensembleLabel = document.createElement("strong");
         ensembleLabel.textContent = "Open Packet";
         ensembleRow.appendChild(ensembleLabel);
+        const modeRow = document.createElement("div");
+        modeRow.className = "note";
+        const mode = String(group.mode || "practice").toLowerCase();
+        modeRow.textContent =
+          mode === "official" ?
+            "Mode: Official adjudication" :
+            "Mode: Practice adjudication (non-official)";
         const schoolRow = document.createElement("div");
         schoolRow.className = "note";
         schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
@@ -282,6 +298,7 @@ export function createDirectorPacketRenderers({
           (group.judgePosition ? group.judgePosition : "Unassigned")
         }`;
         header.appendChild(ensembleRow);
+        header.appendChild(modeRow);
         header.appendChild(schoolRow);
         header.appendChild(ensembleNameRow);
         header.appendChild(slotRow);
@@ -343,6 +360,7 @@ export function createDirectorPacketRenderers({
           audioBadge.textContent = "Audio";
           const audio = document.createElement("audio");
           audio.controls = true;
+          audio.preload = "metadata";
           audio.src = group.latestAudioUrl;
           audio.className = "audio";
           audioCard.appendChild(audioBadge);

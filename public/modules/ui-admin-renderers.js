@@ -513,6 +513,15 @@ export function createAdminRenderers({
 
       const schools = [];
       const seenSchoolIds = new Set();
+      (state.admin.schoolsList || []).forEach((school) => {
+        const schoolId = String(school.id || "").trim();
+        if (!schoolId || seenSchoolIds.has(schoolId)) return;
+        seenSchoolIds.add(schoolId);
+        schools.push({
+          schoolId,
+          schoolName: String(school.name || schoolId),
+        });
+      });
       ordered.forEach((entry) => {
         const schoolId = String(entry.schoolId || "").trim();
         if (!schoolId || seenSchoolIds.has(schoolId)) return;
@@ -554,15 +563,11 @@ export function createAdminRenderers({
       }
       const filtered = ordered.filter((entry) => (entry.schoolId || "") === state.admin.packetsSchoolId);
       if (!filtered.length) {
-        els.adminPacketsHint.textContent = "No scheduled ensembles found for this school.";
-        renderAdminPacketsWorkflowGuidance({
-          hasActiveEvent: true,
-          hasSchoolSelected: true,
-          totalCount: 0,
-        });
-        return;
+        els.adminPacketsHint.textContent =
+          "No scheduled ensembles found for this school. Loading Open Judge sheets...";
+      } else {
+        els.adminPacketsHint.textContent = "Loading packet status for selected school...";
       }
-      els.adminPacketsHint.textContent = "Loading packet status for selected school...";
       let reviewedCount = 0;
       let releaseReadyCount = 0;
       let releasedCount = 0;
@@ -705,7 +710,7 @@ export function createAdminRenderers({
         .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
         .filter((packet) => {
           const packetEventId = String(packet.assignmentEventId || packet.officialEventId || "").trim();
-          return packetEventId === eventId;
+          return packetEventId === eventId || !packetEventId;
         })
         .sort((a, b) => {
           const aMs = a.updatedAt?.toMillis ? a.updatedAt.toMillis() : 0;
@@ -720,7 +725,8 @@ export function createAdminRenderers({
       openSection.appendChild(openTitle);
       const openHint = document.createElement("p");
       openHint.className = "hint";
-      openHint.textContent = "Individual Open Judge tapes for this school.";
+      openHint.textContent =
+        "Individual Open Judge tapes for this school (active event + unscheduled open sheets).";
       openSection.appendChild(openHint);
 
       if (!openPackets.length) {
@@ -741,6 +747,13 @@ export function createAdminRenderers({
           top.appendChild(title);
           const badges = document.createElement("div");
           badges.className = "row";
+          const modeBadge = document.createElement("span");
+          modeBadge.className = "badge";
+          modeBadge.textContent =
+            String(packet.mode || "practice").toLowerCase() === "official"
+              ? "OFFICIAL"
+              : "PRACTICE";
+          badges.appendChild(modeBadge);
           const statusBadge = document.createElement("span");
           statusBadge.className = "badge";
           statusBadge.textContent = `Open: ${packet.status || "draft"}`;
@@ -819,7 +832,7 @@ export function createAdminRenderers({
               const releaseBtn = document.createElement("button");
               releaseBtn.type = "button";
               const shouldUnrelease = status === "released";
-              releaseBtn.textContent = shouldUnrelease ? "Unrelease Open Sheet" : "Release Open Sheet";
+              releaseBtn.textContent = shouldUnrelease ? "Unrelease from Director" : "Release to Director";
               releaseBtn.addEventListener("click", async () => {
                 releaseBtn.disabled = true;
                 try {

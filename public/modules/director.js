@@ -1407,6 +1407,7 @@ export function watchDirectorPackets(callback) {
     const packetSig = merged.packets
       .map((item) => [
         item.id || "",
+        item.mode || "practice",
         item.status || "",
         item.locked ? 1 : 0,
         item.judgePosition || "",
@@ -1519,6 +1520,7 @@ async function buildDirectorPacketGroups(merged) {
       standaloneOpenGroups.push({
         type: "open",
         packetId: packet.id,
+        mode: packet.mode || "practice",
         schoolId: packet.schoolId || "",
         schoolName: packet.schoolName || "",
         ensembleId: packet.ensembleId || "",
@@ -1544,6 +1546,7 @@ async function buildDirectorPacketGroups(merged) {
     if (!openPacketSets.has(key)) {
       openPacketSets.set(key, {
         type: "open-assembled",
+        mode: packet.mode || "practice",
         eventId: assignmentEventId,
         ensembleId: packet.ensembleId || "",
         ensembleName: packet.ensembleName || packet.ensembleId || "",
@@ -1555,8 +1558,12 @@ async function buildDirectorPacketGroups(merged) {
       });
     }
     const group = openPacketSets.get(key);
+    if ((group.mode || "practice") !== (packet.mode || "practice")) {
+      group.mode = "mixed";
+    }
     const syntheticSubmission = {
       id: packet.id,
+      mode: packet.mode || "practice",
       status: packet.status || "released",
       locked: Boolean(packet.locked),
       judgePosition,

@@ -784,6 +784,13 @@ button:disabled {
   cursor: not-allowed;
 }
 
+body.app-busy,
+body.app-busy button:not(:disabled),
+body.app-busy a,
+body.app-busy [role="button"] {
+  cursor: progress;
+}
+
 .btn--primary {
   background: var(--accent);
 }
@@ -821,6 +828,11 @@ button:disabled {
 
 button.is-loading .button-spinner {
   display: inline-block;
+}
+
+button.is-loading {
+  pointer-events: none;
+  animation: pulse 1s ease-in-out infinite;
 }
 
 .list {

@@ -577,6 +577,7 @@ async function transcribePacketSegmentInternal({packetRef, packet, sessionId, ap
 
   const bucket = admin.storage().bucket();
   let transcript = "";
+  let lastTranscriptionError = null;
 
   if (objectPath) {
     const file = bucket.file(objectPath);
@@ -587,7 +588,17 @@ async function transcribePacketSegmentInternal({packetRef, packet, sessionId, ap
       if (size <= MAX_AUDIO_BYTES) {
         const [buffer] = await file.download();
         const contentType = metadata.contentType || "audio/webm";
-        transcript = await transcribeAudioBuffer(buffer, contentType, apiKey);
+        try {
+          transcript = await transcribeAudioBuffer(buffer, contentType, apiKey);
+        } catch (error) {
+          lastTranscriptionError = error;
+          logger.warn("master audio transcription failed; falling back to chunks", {
+            packetId: packetRef.id,
+            sessionId,
+            objectPath,
+            error: error?.message || String(error),
+          });
+        }
       }
     }
   }
@@ -600,7 +611,7 @@ async function transcribePacketSegmentInternal({packetRef, packet, sessionId, ap
     }
     const sorted = files
         .map((file) => {
-          const match = file.name.match(/chunk_(\\d+)\\.webm$/);
+          const match = file.name.match(/chunk_(\d+)\.webm$/);
           return {
             file,
             index: match ? Number(match[1]) : Number.MAX_SAFE_INTEGER,
@@ -613,11 +624,31 @@ async function transcribePacketSegmentInternal({packetRef, packet, sessionId, ap
       const [buffer] = await item.file.download();
       const [metadata] = await item.file.getMetadata();
       const contentType = metadata.contentType || "audio/webm";
-      const text = await transcribeAudioBuffer(buffer, contentType, apiKey);
-      if (text) parts.push(text);
+      try {
+        const text = await transcribeAudioBuffer(buffer, contentType, apiKey);
+        if (text) parts.push(text);
+      } catch (error) {
+        lastTranscriptionError = error;
+        logger.warn("chunk transcription failed; skipping chunk", {
+          packetId: packetRef.id,
+          sessionId,
+          chunkPath: item.file.name,
+          error: error?.message || String(error),
+        });
+      }
       if (parts.join(" ").length >= MAX_TRANSCRIPT_CHARS) break;
     }
     transcript = parts.join(" ").trim();
+  }
+
+  if (!transcript) {
+    if (lastTranscriptionError) {
+      throw new HttpsError(
+          "failed-precondition",
+          "No transcribable audio found for this segment.",
+      );
+    }
+    throw new HttpsError("not-found", "Audio file not found.");
   }
 
   transcript = transcript.slice(0, MAX_TRANSCRIPT_CHARS);
@@ -2362,13 +2393,6 @@ exports.releaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =
     if (!packetSnap.exists) throw new HttpsError("not-found", "Packet not found.");
     const packet = packetSnap.data() || {};
     priorStatus = packet.status || null;
-    const mode = normalizeAdjudicationMode(packet.mode);
-    if (mode !== ADJUDICATION_MODES.official) {
-      throw new HttpsError(
-          "failed-precondition",
-          "Only official adjudications can be released.",
-      );
-    }
     if (packet.locked !== true) {
       throw new HttpsError("failed-precondition", "Open packet must be locked before release.");
     }

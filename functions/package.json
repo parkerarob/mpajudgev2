@@ -12,7 +12,7 @@
     "seed:mpa": "node scripts/seed-mpa-repertoire.js"
   },
   "engines": {
-    "node": "24"
+    "node": "22"
   },
   "main": "index.js",
   "dependencies": {

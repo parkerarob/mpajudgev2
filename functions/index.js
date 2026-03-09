@@ -51,6 +51,13 @@ const READINESS_STEP_ORDER = [
 ];
 const READINESS_STEP_KEYS = new Set(READINESS_STEP_ORDER);
 const MAX_READINESS_NOTE_LENGTH = 280;
+const APP_CHECK_ENFORCEMENT_MODE = String(
+    process.env.APP_CHECK_ENFORCEMENT_MODE || "deferred",
+).trim().toLowerCase();
+const ENFORCE_APP_CHECK = APP_CHECK_ENFORCEMENT_MODE === "enforced";
+const ALLOW_STORAGE_TOKEN_FALLBACK = String(
+    process.env.ALLOW_STORAGE_TOKEN_FALLBACK || "0",
+).trim() === "1";
 const GRADE_VALUES = {
   A: 1,
   B: 2,
@@ -58,14 +65,9 @@ const GRADE_VALUES = {
   D: 4,
   F: 5,
 };
-// Temporary reliability mode for event operations:
-// reCAPTCHA v3 App Check token exchange can fail/throttle in some browsers.
-// Keep strict App Check on OpenAI-cost endpoints, but relax it for core packet workflow.
-const APPCHECK_SENSITIVE_OPTIONS = {enforceAppCheck: false};
+const APPCHECK_SENSITIVE_OPTIONS = {enforceAppCheck: ENFORCE_APP_CHECK};
 const APPCHECK_SENSITIVE_SECRET_OPTIONS = {
-  // Temporary reliability mode for event operations (same rationale as above).
-  // Keep secret handling, but do not hard-require App Check while token exchange is failing.
-  enforceAppCheck: false,
+  enforceAppCheck: ENFORCE_APP_CHECK,
   secrets: [OPENAI_API_KEY],
 };
 
@@ -103,28 +105,23 @@ async function signStorageReadPath(path, {expiresAtMs = Date.now() + DIRECTOR_PA
       });
       if (url) return url;
     } catch (signedErr) {
-      logger.warn("signStorageReadPath signed URL unavailable; falling back to token URL", {
+      logger.warn("signStorageReadPath signed URL unavailable", {
         path: value,
+        allowTokenFallback: ALLOW_STORAGE_TOKEN_FALLBACK,
         error: signedErr?.message || String(signedErr),
       });
     }
+    if (!ALLOW_STORAGE_TOKEN_FALLBACK) return "";
     const [metadata] = await file.getMetadata();
     const existingTokenRaw =
       metadata?.metadata?.firebaseStorageDownloadTokens ||
       metadata?.firebaseStorageDownloadTokens ||
       "";
-    let token = String(existingTokenRaw || "")
+    const token = String(existingTokenRaw || "")
         .split(",")
         .map((item) => item.trim())
         .find(Boolean);
-    if (!token) {
-      token = crypto.randomUUID();
-      const nextMetadata = {
-        ...(metadata?.metadata || {}),
-        firebaseStorageDownloadTokens: token,
-      };
-      await file.setMetadata({metadata: nextMetadata});
-    }
+    if (!token) return "";
     return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(value)}?alt=media&token=${token}`;
   } catch (error) {
     logger.error("signStorageReadPath failed", {

@@ -32,6 +32,7 @@ const firebaseConfig = {
 
 const APP_CHECK_SITE_KEY = "6LfYOHQsAAAAAGXP0HnxPl4muUCMWsUVfNOZ9q8B";
 const APP_CHECK_FLAG_KEY = "mpa.enableAppCheck";
+const APP_CHECK_ROLLOUT_MODE = "deferred"; // "deferred" | "enforced"
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
@@ -64,7 +65,9 @@ const appCheckFlag = (() => {
   }
 })();
 
-const shouldEnableAppCheck = useEmulators || appCheckFlag === "1";
+const manualAppCheckOverride = appCheckFlag === "1";
+const shouldEnableAppCheck =
+  useEmulators || APP_CHECK_ROLLOUT_MODE === "enforced" || manualAppCheckOverride;
 
 if (shouldEnableAppCheck) {
   initializeAppCheck(app, {
@@ -73,7 +76,7 @@ if (shouldEnableAppCheck) {
   });
 } else {
   console.warn(
-    `[firebase] App Check disabled. Set localStorage.${APP_CHECK_FLAG_KEY} = "1" to re-enable.`
+    `[firebase] App Check deferred. Set localStorage.${APP_CHECK_FLAG_KEY} = "1" for manual testing.`
   );
 }
 

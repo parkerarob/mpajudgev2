@@ -65,7 +65,9 @@ service firebase.storage {
           && submissionDoc(submissionId).status == "released");
 
       allow write: if isAdmin()
-        || (isJudge() && request.auth.uid == judgeUid);
+        || (isJudge()
+          && request.auth.uid == judgeUid
+          && submissionDoc(submissionId).judgeUid == judgeUid);
     }
 
     match /packet_audio/{judgeUid}/{packetId}/{sessionId}/{fileName} {
@@ -74,7 +76,9 @@ service firebase.storage {
         || (isDirectorForSchool(packetDoc(packetId).schoolId)
           && packetDoc(packetId).status == "released");
       allow write: if isAdmin()
-        || (isJudge() && request.auth.uid == judgeUid);
+        || (isJudge()
+          && request.auth.uid == judgeUid
+          && packetDoc(packetId).createdByJudgeUid == judgeUid);
     }
 
     match /director_cards/{uid}/{fileName} {

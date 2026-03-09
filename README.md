@@ -74,6 +74,12 @@ Combined baseline verification:
 npm run verify:baseline
 ```
 
+Security/emulator suite:
+
+```bash
+npm run test:security
+```
+
 Notes:
 - E2E suites require env vars: `MPA_BASE_URL`, `MPA_ADMIN_EMAIL`, `MPA_ADMIN_PASSWORD`, `MPA_DIRECTOR_EMAIL`, `MPA_DIRECTOR_PASSWORD`.
 - Smoke E2E also requires judge credentials: `MPA_JUDGE_EMAIL`, `MPA_JUDGE_PASSWORD`.
@@ -116,3 +122,17 @@ firebase deploy
 - Readiness actions share a common in-flight lock to prevent overlapping preflight/walkthrough/cleanup mutations.
 - `Admin > Readiness` also shows readiness history (latest preflight and runbook step updates with timestamps and actor UIDs) for operational auditability.
 - Use event mode (`Live` vs `Rehearsal`) at event creation time; the active mode is shown globally in the event banner after sign-in.
+
+## App Check Rollout Status
+
+- Client App Check rollout is currently `deferred` by default.
+- Manual local override for troubleshooting: set `localStorage["mpa.enableAppCheck"] = "1"`.
+- Functions App Check enforcement is controlled by `APP_CHECK_ENFORCEMENT_MODE`:
+  - `deferred` (default): does not enforce App Check on callables currently using sensitive options.
+  - `enforced`: requires App Check on those callables.
+
+## Signed URL Fallback Guardrail
+
+- `signStorageReadPath` prefers short-lived signed URLs.
+- If URL signing fails, token URL fallback is disabled by default (fail closed).
+- Emergency override only: set `ALLOW_STORAGE_TOKEN_FALLBACK=1` to allow use of existing token URLs.

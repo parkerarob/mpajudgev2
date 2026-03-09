@@ -12,6 +12,7 @@ export function createAdminRenderers({
   fetchScheduleEntries,
   getSchoolNameById,
   normalizeEnsembleDisplayName,
+  toDateOrNull,
   toLocalDatetimeValue,
   deriveAutoScheduleDayBreaks,
   mergeScheduleDayBreaks,
@@ -32,6 +33,7 @@ export function createAdminRenderers({
   unreleaseAudioOnlyResult,
   repairManualAudioOverrides,
   deleteAllUnreleasedPackets,
+  cleanupTestArtifacts,
   renderSubmissionCard,
   loadAdminPacketView,
   confirmUser,
@@ -274,12 +276,8 @@ export function createAdminRenderers({
         if (!anchorScheduleEntryId || !(anchorPerformanceAt instanceof Date)) return;
         const allScheduleEntries = await fetchScheduleEntries(eventId);
         const sorted = [...(allScheduleEntries || [])].sort((a, b) => {
-          const aTime = a.performanceAt?.toDate
-            ? a.performanceAt.toDate().getTime()
-            : new Date(a.performanceAt || 0).getTime();
-          const bTime = b.performanceAt?.toDate
-            ? b.performanceAt.toDate().getTime()
-            : new Date(b.performanceAt || 0).getTime();
+          const aTime = toDateOrNull(a.performanceAt)?.getTime() || 0;
+          const bTime = toDateOrNull(b.performanceAt)?.getTime() || 0;
           return aTime - bTime;
         });
         const anchorIndex = sorted.findIndex((row) => row.id === anchorScheduleEntryId);
@@ -324,13 +322,8 @@ export function createAdminRenderers({
           ensembleId,
         });
         const scheduleEntry = scheduleByEnsemble.get(ensembleId);
-        const perfValue = scheduleEntry?.performanceAt
-          ? toLocalDatetimeValue(
-              scheduleEntry.performanceAt.toDate
-                ? scheduleEntry.performanceAt.toDate()
-                : new Date(scheduleEntry.performanceAt)
-            )
-          : "";
+        const performanceAt = toDateOrNull(scheduleEntry?.performanceAt);
+        const perfValue = performanceAt ? toLocalDatetimeValue(performanceAt) : "";
         const entryData = entryDataByEnsemble.get(ensembleId) || null;
 
         const li = document.createElement("li");
@@ -546,6 +539,66 @@ export function createAdminRenderers({
           }
         });
         cleanupRow.appendChild(cleanupBtn);
+        const cleanupTestBtn = document.createElement("button");
+        cleanupTestBtn.type = "button";
+        cleanupTestBtn.className = "ghost danger";
+        cleanupTestBtn.textContent = "Delete Test Data";
+        cleanupTestBtn.addEventListener("click", async () => {
+          cleanupTestBtn.disabled = true;
+          try {
+            const preview = await cleanupTestArtifacts({ dryRun: true });
+            const eventCount = Number(preview.eventCandidates?.length || 0);
+            const schoolCount = Number(preview.schoolCandidates?.length || 0);
+            const suggestedEventCount = Number(preview.suggestedEventMatches?.length || 0);
+            const suggestedSchoolCount = Number(preview.suggestedSchoolMatches?.length || 0);
+            const packetCount = Number(preview.packetCandidates || 0);
+            const submissionCount = Number(preview.submissionCandidates || 0);
+            if (!eventCount && !schoolCount && !packetCount && !submissionCount) {
+              if (suggestedEventCount || suggestedSchoolCount) {
+                alertUser(
+                  `No explicitly tagged test artifacts found.\n` +
+                  `Suggested matches (not deleted in strict mode): events ${suggestedEventCount}, schools ${suggestedSchoolCount}.\n` +
+                  `Tag records with isTestArtifact=true to enable safe cleanup.`
+                );
+              } else {
+                alertUser("No test artifacts matched the cleanup rules.");
+              }
+              return;
+            }
+            const confirmed = confirmUser(
+              `Test cleanup preview:\n` +
+              `Events: ${eventCount}\n` +
+              `Schools: ${schoolCount}\n` +
+              `Open packets: ${packetCount}\n` +
+              `Scheduled submissions: ${submissionCount}\n` +
+              `Strict mode: ${preview.strictMode === true ? "on" : "off"}\n` +
+              `Active event skipped: ${Number(preview.activeEventSkipped?.length || 0)}\n\n` +
+              "Proceed with permanent deletion?"
+            );
+            if (!confirmed) return;
+            const phrase = window.prompt("Type DELETE TEST DATA to confirm.");
+            if (phrase !== "DELETE TEST DATA") {
+              alertUser("Test cleanup cancelled: confirmation phrase did not match.");
+              return;
+            }
+            const result = await cleanupTestArtifacts({ dryRun: false });
+            await renderAdminPacketsBySchedule();
+            alertUser(
+              `Test cleanup complete.\n` +
+              `Deleted events: ${result.deletedEvents || 0}\n` +
+              `Deleted schools: ${result.deletedSchools || 0}\n` +
+              `Deleted open packets: ${result.deletedOpenPackets || 0}\n` +
+              `Deleted scheduled submissions: ${result.deletedSubmissions || 0}\n` +
+              `Deleted audio-only rows: ${result.deletedAudioResults || 0}`
+            );
+          } catch (error) {
+            console.error("cleanupTestArtifacts failed", error);
+            alertUser(error?.message || "Unable to cleanup test artifacts.");
+          } finally {
+            cleanupTestBtn.disabled = false;
+          }
+        });
+        cleanupRow.appendChild(cleanupTestBtn);
         const repairBtn = document.createElement("button");
         repairBtn.type = "button";
         repairBtn.className = "ghost";
@@ -584,8 +637,8 @@ export function createAdminRenderers({
       if (state.admin.currentView !== "packets" || (state.event.active?.id || "") !== eventId) return;
 
       const ordered = [...(scheduleEntries || [])].sort((a, b) => {
-        const aMs = a.performanceAt?.toDate ? a.performanceAt.toDate().getTime() : 0;
-        const bMs = b.performanceAt?.toDate ? b.performanceAt.toDate().getTime() : 0;
+        const aMs = toDateOrNull(a.performanceAt)?.getTime() || 0;
+        const bMs = toDateOrNull(b.performanceAt)?.getTime() || 0;
         return aMs - bMs;
       });
       if (!ordered.length) {
@@ -656,6 +709,20 @@ export function createAdminRenderers({
       } else {
         els.adminPacketsHint.textContent = "Loading packet status for selected school...";
       }
+      const packetDataByEntryId = new Map();
+      if (filtered.length) {
+        const packetPayloads = await Promise.all(
+          filtered.map(async (entry) => {
+            const packetData = await getPacketData({ eventId, entry });
+            return { entryId: entry.id, packetData };
+          })
+        );
+        if (state.admin.currentView !== "packets" || (state.event.active?.id || "") !== eventId) return;
+        packetPayloads.forEach(({ entryId, packetData }) => {
+          if (!entryId) return;
+          packetDataByEntryId.set(entryId, packetData);
+        });
+      }
       let reviewedCount = 0;
       let releaseReadyCount = 0;
       let releasedCount = 0;
@@ -685,8 +752,7 @@ export function createAdminRenderers({
           ensembleId,
         });
         const performLabel = formatPerformanceAt(entry.performanceAt);
-        const packetData = await getPacketData({ eventId, entry });
-        if (state.admin.currentView !== "packets" || (state.event.active?.id || "") !== eventId) return;
+        const packetData = packetDataByEntryId.get(entry.id) || null;
         const summary = packetData?.summary || null;
         reviewedCount += 1;
         if (summary?.requiredComplete) releaseReadyCount += 1;

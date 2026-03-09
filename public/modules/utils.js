@@ -147,10 +147,35 @@ export function mapOverallLabelFromTotal(total) {
   return "N/A";
 }
 
+export function toDateLike(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (value?.toDate) {
+    const parsed = value.toDate();
+    return parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed : null;
+  }
+  if (value?.toMillis) {
+    const parsed = new Date(value.toMillis());
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  if (typeof value === "object") {
+    const secondsCandidate = value.seconds ?? value._seconds;
+    const nanosCandidate = value.nanoseconds ?? value._nanoseconds ?? 0;
+    if (Number.isFinite(Number(secondsCandidate))) {
+      const ms = (Number(secondsCandidate) * 1000) + Math.floor(Number(nanosCandidate) / 1e6);
+      const parsed = new Date(ms);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export function formatPerformanceAt(value) {
-  if (!value) return "";
-  const date = value.toDate ? value.toDate() : new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
+  const date = toDateLike(value);
+  if (!date) return "";
   return date.toLocaleString([], {
     year: "numeric",
     month: "short",

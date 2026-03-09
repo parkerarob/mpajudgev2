@@ -24,6 +24,7 @@ import {
   deleteEvent,
   deleteEnsemble,
   deleteAllUnreleasedPackets,
+  cleanupTestArtifacts,
   deleteOpenPacket,
   deleteScheduledPacket,
   attachManualAudioToScheduledPacket,
@@ -1273,11 +1274,126 @@ export function refreshSchoolDropdowns() {
   renderSchoolOptions(els.directorAssignSchoolSelect, "Select a school");
 }
 
+const modalReturnFocusMap = new WeakMap();
+const MODAL_FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function getFocusableElements(root) {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll(MODAL_FOCUSABLE_SELECTOR)).filter((el) => {
+    if (!(el instanceof HTMLElement)) return false;
+    if (el.hidden) return false;
+    if (el.getAttribute("aria-hidden") === "true") return false;
+    return true;
+  });
+}
+
+function getTopOpenModal() {
+  const openModals = Array.from(document.querySelectorAll(".modal.is-open"));
+  return openModals.length ? openModals[openModals.length - 1] : null;
+}
+
+function applyBodyModalLock() {
+  const shouldLock = state.app.modalOpenCount > 0;
+  if (shouldLock) {
+    if (!document.body.classList.contains("modal-open")) {
+      state.app.modalScrollY = window.scrollY || window.pageYOffset || 0;
+      document.body.style.top = `-${state.app.modalScrollY}px`;
+      document.body.classList.add("modal-open");
+    }
+    if (!state.app.modalKeyHandler) {
+      state.app.modalKeyHandler = (event) => {
+        const topModal = getTopOpenModal();
+        if (!topModal) return;
+        const dismissible = topModal.dataset.dismissible !== "false";
+        if (event.key === "Escape") {
+          if (!dismissible) return;
+          event.preventDefault();
+          if (topModal === els.authModal) {
+            closeAuthModal();
+          } else if (topModal === els.directorProfileModal) {
+            closeDirectorProfileModal();
+          } else if (topModal === els.userProfileModal) {
+            closeUserProfileModal();
+          } else if (topModal === els.liveEventCheckinModal) {
+            closeLiveEventCheckinModal();
+          }
+          return;
+        }
+        if (event.key !== "Tab") return;
+        const panel = topModal.querySelector(".modal-panel") || topModal;
+        const focusable = getFocusableElements(panel);
+        if (!focusable.length) {
+          event.preventDefault();
+          if (panel instanceof HTMLElement) panel.focus();
+          return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      };
+      document.addEventListener("keydown", state.app.modalKeyHandler);
+    }
+    return;
+  }
+  document.body.classList.remove("modal-open");
+  document.body.style.top = "";
+  if (state.app.modalScrollY > 0) {
+    window.scrollTo(0, state.app.modalScrollY);
+  }
+  state.app.modalScrollY = 0;
+  if (state.app.modalKeyHandler) {
+    document.removeEventListener("keydown", state.app.modalKeyHandler);
+    state.app.modalKeyHandler = null;
+  }
+}
+
+function openManagedModal(modalEl, { dismissible = true, initialFocus = null } = {}) {
+  if (!modalEl) return;
+  const alreadyOpen = modalEl.classList.contains("is-open");
+  if (!alreadyOpen) {
+    state.app.modalOpenCount += 1;
+    modalReturnFocusMap.set(modalEl, document.activeElement);
+  }
+  modalEl.classList.add("is-open");
+  modalEl.setAttribute("aria-hidden", "false");
+  modalEl.dataset.dismissible = dismissible ? "true" : "false";
+  applyBodyModalLock();
+  window.setTimeout(() => {
+    const target = initialFocus || getFocusableElements(modalEl.querySelector(".modal-panel") || modalEl)[0];
+    if (target && typeof target.focus === "function") target.focus();
+  }, 0);
+}
+
+function closeManagedModal(modalEl, { restoreFocus = true } = {}) {
+  if (!modalEl) return;
+  const wasOpen = modalEl.classList.contains("is-open");
+  modalEl.classList.remove("is-open");
+  modalEl.setAttribute("aria-hidden", "true");
+  if (wasOpen) {
+    state.app.modalOpenCount = Math.max(0, Number(state.app.modalOpenCount || 0) - 1);
+  }
+  applyBodyModalLock();
+  if (!restoreFocus) return;
+  const prior = modalReturnFocusMap.get(modalEl);
+  if (prior && typeof prior.focus === "function" && document.contains(prior)) {
+    prior.focus();
+  }
+  modalReturnFocusMap.delete(modalEl);
+}
+
 export function openAuthModal() {
   if (!els.authModal) return;
-  state.app.lastFocusedElement = document.activeElement;
-  els.authModal.classList.add("is-open");
-  els.authModal.setAttribute("aria-hidden", "false");
+  openManagedModal(els.authModal, {
+    dismissible: true,
+    initialFocus: els.emailInput || null,
+  });
   if (state.auth.currentUser) {
     setAuthView("account");
     if (els.modalAuthActions && els.signOutBtn.parentElement !== els.modalAuthActions) {
@@ -1289,71 +1405,30 @@ export function openAuthModal() {
   } else {
     setAuthView("signIn");
   }
-  window.setTimeout(() => {
-    const target =
-      els.emailInput ||
-      els.authModal.querySelector("input, button, select, textarea, a[href]");
-    if (target) target.focus();
-  }, 0);
-  if (!state.app.authModalKeyHandler) {
-    state.app.authModalKeyHandler = (event) => {
-      if (!els.authModal || !els.authModal.classList.contains("is-open")) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeAuthModal();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(
-        els.authModal.querySelectorAll(
-          'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        )
-      );
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", state.app.authModalKeyHandler);
-  }
 }
 
 export function closeAuthModal() {
   if (!els.authModal) return;
-  els.authModal.classList.remove("is-open");
-  els.authModal.setAttribute("aria-hidden", "true");
+  closeManagedModal(els.authModal, { restoreFocus: true });
   if (state.auth.currentUser && els.headerAuthButtons && els.signOutBtn.parentElement !== els.headerAuthButtons) {
     els.headerAuthButtons.appendChild(els.signOutBtn);
     if (els.directorProfileToggleBtn) {
       els.headerAuthButtons.insertBefore(els.directorProfileToggleBtn, els.signOutBtn);
     }
   }
-  if (state.app.authModalKeyHandler) {
-    document.removeEventListener("keydown", state.app.authModalKeyHandler);
-    state.app.authModalKeyHandler = null;
-  }
-  if (state.app.lastFocusedElement && state.app.lastFocusedElement.focus) {
-    state.app.lastFocusedElement.focus();
-    state.app.lastFocusedElement = null;
-  }
 }
 
 export function showSessionExpiredModal() {
   if (!els.sessionExpiredModal) return;
-  els.sessionExpiredModal.classList.add("is-open");
-  els.sessionExpiredModal.setAttribute("aria-hidden", "false");
+  openManagedModal(els.sessionExpiredModal, {
+    dismissible: false,
+    initialFocus: els.sessionExpiredSignInBtn || null,
+  });
 }
 
 export function hideSessionExpiredModal() {
   if (!els.sessionExpiredModal) return;
-  els.sessionExpiredModal.classList.remove("is-open");
-  els.sessionExpiredModal.setAttribute("aria-hidden", "true");
+  closeManagedModal(els.sessionExpiredModal, { restoreFocus: false });
 }
 
 export function setMainInteractionDisabled(disabled) {
@@ -1504,14 +1579,15 @@ export function openDirectorProfileModal() {
   if (els.directorProfileResetPasswordStatus) {
     els.directorProfileResetPasswordStatus.textContent = "";
   }
-  els.directorProfileModal.classList.add("is-open");
-  els.directorProfileModal.setAttribute("aria-hidden", "false");
+  openManagedModal(els.directorProfileModal, {
+    dismissible: true,
+    initialFocus: els.directorProfileNameInput || null,
+  });
 }
 
 export function closeDirectorProfileModal() {
   if (!els.directorProfileModal) return;
-  els.directorProfileModal.classList.remove("is-open");
-  els.directorProfileModal.setAttribute("aria-hidden", "true");
+  closeManagedModal(els.directorProfileModal, { restoreFocus: true });
 }
 
 export function openUserProfileModal() {
@@ -1526,14 +1602,15 @@ export function openUserProfileModal() {
   if (els.userProfileResetPasswordStatus) {
     els.userProfileResetPasswordStatus.textContent = "";
   }
-  els.userProfileModal.classList.add("is-open");
-  els.userProfileModal.setAttribute("aria-hidden", "false");
+  openManagedModal(els.userProfileModal, {
+    dismissible: true,
+    initialFocus: els.userProfileNameInput || null,
+  });
 }
 
 export function closeUserProfileModal() {
   if (!els.userProfileModal) return;
-  els.userProfileModal.classList.remove("is-open");
-  els.userProfileModal.setAttribute("aria-hidden", "true");
+  closeManagedModal(els.userProfileModal, { restoreFocus: true });
 }
 
 export function updateAuthUI() {
@@ -1980,6 +2057,7 @@ function getAdminRenderers() {
     fetchScheduleEntries,
     getSchoolNameById,
     normalizeEnsembleDisplayName,
+    toDateOrNull,
     toLocalDatetimeValue,
     deriveAutoScheduleDayBreaks,
     mergeScheduleDayBreaks,
@@ -2000,6 +2078,7 @@ function getAdminRenderers() {
     unreleaseAudioOnlyResult,
     repairManualAudioOverrides,
     deleteAllUnreleasedPackets,
+    cleanupTestArtifacts,
     renderSubmissionCard,
     loadAdminPacketView,
     confirmUser,
@@ -2060,6 +2139,8 @@ function getAdminLiveRenderers() {
     buildAdminLogisticsEntryPanel,
     buildAdminLogisticsDiffPanel,
     updateEntryCheckinFields,
+    openModal: openManagedModal,
+    closeModal: closeManagedModal,
   });
   return adminLiveRenderers;
 }
@@ -2599,12 +2680,8 @@ async function renderEventScheduleDirectorDetail(event, eventId, renderVersion) 
     (registeredEntries || []).map((entry) => [entry.ensembleId || entry.id, entry])
   );
   const sortedSchedule = [...(scheduleEntries || [])].sort((a, b) => {
-    const aTime = a.performanceAt?.toDate
-      ? a.performanceAt.toDate().getTime()
-      : new Date(a.performanceAt || 0).getTime();
-    const bTime = b.performanceAt?.toDate
-      ? b.performanceAt.toDate().getTime()
-      : new Date(b.performanceAt || 0).getTime();
+    const aTime = toDateOrNull(a.performanceAt)?.getTime() || 0;
+    const bTime = toDateOrNull(b.performanceAt)?.getTime() || 0;
     return aTime - bTime;
   });
   const autoDayBreaks = deriveAutoScheduleDayBreaks(sortedSchedule);
@@ -4607,8 +4684,8 @@ async function refreshPreEventScheduleTimelineStarts(entries = state.event.roste
   }
 
   const sorted = [...entries].sort((a, b) => {
-    const aTime = a.performanceAt?.toMillis ? a.performanceAt.toMillis() : new Date(a.performanceAt || 0).getTime();
-    const bTime = b.performanceAt?.toMillis ? b.performanceAt.toMillis() : new Date(b.performanceAt || 0).getTime();
+    const aTime = toDateOrNull(a.performanceAt)?.getTime() || 0;
+    const bTime = toDateOrNull(b.performanceAt)?.getTime() || 0;
     return aTime - bTime;
   });
   const autoDayBreaks = deriveAutoScheduleDayBreaks(sorted);

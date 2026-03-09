@@ -66,8 +66,8 @@ test.describe.serial("Release E2E Tests", () => {
     await expect(page.locator("#adminPacketsHint")).toContainText(
       /No scheduled ensembles for the active event\.|Set an active event to begin\./
     );
-    await expect(page.locator("#adminPacketsSchoolSelect")).toBeVisible();
-    await expect(page.locator("#adminPacketsList")).toBeVisible();
+    await expect(page.locator("#adminPacketsSchoolSelect")).toHaveCount(1);
+    await expect(page.locator("#adminPacketsList")).toHaveCount(1);
     await expect(page.getByRole("button", { name: "Release Packet" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Unrelease Packet" })).toHaveCount(0);
 

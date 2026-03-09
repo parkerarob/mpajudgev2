@@ -65,6 +65,12 @@ body {
   line-height: var(--lh-normal);
 }
 
+body.modal-open {
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+}
+
 .ios-app {
   min-height: 100vh;
   background: var(--bg);
@@ -1558,7 +1564,10 @@ button.ghost.is-done {
   display: none;
   align-items: center;
   justify-content: center;
-  z-index: 20;
+  padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 120;
 }
 
 .modal.is-open {
@@ -1574,12 +1583,15 @@ button.ghost.is-done {
 .modal-panel {
   position: relative;
   width: min(520px, 92vw);
+  max-height: calc(100dvh - 32px);
   background: var(--panel);
   border-radius: 8px;
   padding: 16px;
   box-shadow: 0 10px 24px var(--shadow);
   display: grid;
   gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: 1;
   font-family: var(--font-ui);
 }

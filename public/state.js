@@ -11,6 +11,7 @@ export const COLLECTIONS = {
   entries: "entries",
   mpaRepertoire: "mpaRepertoire",
   schoolRegistrations: "schoolRegistrations",
+  audioResults: "audioResults",
 };
 
 export const FIELDS = {
@@ -114,6 +115,18 @@ export const FIELDS = {
     templateVersion: "templateVersion",
     combinedPdfPath: "combinedPdfPath",
     judgeAssets: "judgeAssets",
+    updatedAt: "updatedAt",
+  },
+  audioResults: {
+    eventId: "eventId",
+    schoolId: "schoolId",
+    ensembleId: "ensembleId",
+    status: "status",
+    mode: "mode",
+    audioPath: "audioPath",
+    audioUrl: "audioUrl",
+    durationSec: "durationSec",
+    releasedAt: "releasedAt",
     updatedAt: "updatedAt",
   },
   entries: {
@@ -830,6 +843,7 @@ export const state = {
       sightUid: "",
     },
     judgesList: [],
+    manualAudioUploadStatus: new Map(),
   },
   subscriptions: {
     events: null,
@@ -839,6 +853,7 @@ export const state = {
     assignments: null,
     directorPackets: null,
     directorOpenPackets: null,
+    directorAudioResults: null,
     schools: null,
     directorSchool: null,
     directorSchoolDirectors: null,
@@ -858,8 +873,9 @@ export const state = {
     currentTab: null,
     isOffline: false,
     tabsBound: false,
-    lastFocusedElement: null,
-    authModalKeyHandler: null,
+    modalKeyHandler: null,
+    modalOpenCount: 0,
+    modalScrollY: 0,
     stabilityMode: false,
     features: {
       enableJudgeOpen: true,

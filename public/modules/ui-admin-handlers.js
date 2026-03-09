@@ -589,20 +589,32 @@ export function createAdminHandlerBinder({
 
     if (els.schoolBulkBtn) {
       els.schoolBulkBtn.addEventListener("click", async () => {
-        const raw = els.schoolBulkInput?.value || "";
-        const lines = raw
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .map((line) => {
-            const [schoolId, ...nameParts] = line.split(",");
-            return { schoolId: (schoolId || "").trim(), name: nameParts.join(",").trim() };
-          });
-        const result = await bulkImportSchools(lines);
-        scheduleAdminPreflightRefresh?.();
-        if (els.schoolResult) {
-          els.schoolResult.textContent = `Imported ${result.count} schools.`;
-        }
+        els.schoolBulkBtn.dataset.loadingLabel = "Importing...";
+        await withLoading(els.schoolBulkBtn, async () => {
+          try {
+            const raw = els.schoolBulkInput?.value || "";
+            const lines = raw
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line) => {
+                const [schoolId, ...nameParts] = line.split(",");
+                return { schoolId: (schoolId || "").trim(), name: nameParts.join(",").trim() };
+              });
+            const result = await bulkImportSchools(lines);
+            scheduleAdminPreflightRefresh?.();
+            if (els.schoolResult) {
+              els.schoolResult.textContent = `Imported ${result.count} schools.`;
+            }
+          } catch (error) {
+            console.error("bulkImportSchools failed", error);
+            const message = error?.message || "Unable to import schools.";
+            if (els.schoolResult) {
+              els.schoolResult.textContent = message;
+            }
+            alertUser(message);
+          }
+        });
       });
     }
 
@@ -618,26 +630,41 @@ export function createAdminHandlerBinder({
         const role = els.provisionRoleSelect?.value || "judge";
         const schoolId = role === "director" ? (els.provisionSchoolSelect?.value || null) : null;
         const tempPassword = els.provisionTempPasswordInput?.value.trim() || "";
-        if (!email || !name) {
-          alertUser("Email and name are required.");
+        if (!email) {
+          alertUser("Email is required.");
           return;
         }
-        const result = await provisionUser({
-          email,
-          displayName: name,
-          role,
-          schoolId,
-          tempPassword: tempPassword || null,
+        const submitBtn = els.provisionForm.querySelector("button[type='submit']");
+        if (submitBtn) submitBtn.dataset.loadingLabel = "Provisioning...";
+        await withLoading(submitBtn, async () => {
+          try {
+            const result = await provisionUser({
+              email,
+              displayName: name || null,
+              role,
+              schoolId,
+              tempPassword: tempPassword || null,
+            });
+            if (els.provisionResult) {
+              const password = result?.generatedPassword || tempPassword || "";
+              els.provisionResult.textContent = password
+                ? `Provisioned. Temp password: ${password}`
+                : "Provisioned.";
+            }
+            if (els.provisionForm) els.provisionForm.reset();
+            syncProvisionSchoolField();
+            renderAdminUsersDirectory?.();
+            renderDirectorAssignmentsDirectory();
+            scheduleAdminPreflightRefresh?.();
+          } catch (error) {
+            console.error("provisionUser failed", error);
+            const message = error?.message || "Unable to provision user.";
+            if (els.provisionResult) {
+              els.provisionResult.textContent = message;
+            }
+            alertUser(message);
+          }
         });
-        if (els.provisionResult) {
-          const password = result?.generatedPassword || tempPassword || "";
-          els.provisionResult.textContent = password
-            ? `Provisioned. Temp password: ${password}`
-            : "Provisioned.";
-        }
-        renderAdminUsersDirectory?.();
-        renderDirectorAssignmentsDirectory();
-        scheduleAdminPreflightRefresh?.();
       });
     }
 

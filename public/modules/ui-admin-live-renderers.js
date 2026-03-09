@@ -19,6 +19,8 @@ export function createAdminLiveRenderers({
   buildAdminLogisticsEntryPanel,
   buildAdminLogisticsDiffPanel,
   updateEntryCheckinFields,
+  openModal,
+  closeModal,
 } = {}) {
   function setAdminStepChip(el, { label, done = false, active = false } = {}) {
     if (!el) return;
@@ -75,8 +77,12 @@ export function createAdminLiveRenderers({
 
   function closeLiveEventCheckinModal() {
     if (!els.liveEventCheckinModal) return;
-    els.liveEventCheckinModal.classList.remove("is-open");
-    els.liveEventCheckinModal.setAttribute("aria-hidden", "true");
+    if (typeof closeModal === "function") {
+      closeModal(els.liveEventCheckinModal, {restoreFocus: true});
+    } else {
+      els.liveEventCheckinModal.classList.remove("is-open");
+      els.liveEventCheckinModal.setAttribute("aria-hidden", "true");
+    }
     if (els.liveEventCheckinBody) els.liveEventCheckinBody.innerHTML = "";
   }
 
@@ -312,8 +318,15 @@ export function createAdminLiveRenderers({
       els.liveEventCheckinTitle.textContent = `${row.schoolName} ${row.ensembleName}`;
     }
     renderLiveEventCheckinModalBody(row);
-    els.liveEventCheckinModal.classList.add("is-open");
-    els.liveEventCheckinModal.setAttribute("aria-hidden", "false");
+    if (typeof openModal === "function") {
+      openModal(els.liveEventCheckinModal, {
+        dismissible: true,
+        initialFocus: els.liveEventCheckinClose || null,
+      });
+    } else {
+      els.liveEventCheckinModal.classList.add("is-open");
+      els.liveEventCheckinModal.setAttribute("aria-hidden", "false");
+    }
   }
 
   async function renderLiveEventCheckinQueue() {

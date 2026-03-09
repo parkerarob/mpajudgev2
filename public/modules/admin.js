@@ -1,4 +1,5 @@
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
+import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
 import {
   addDoc,
   collection,
@@ -19,10 +20,44 @@ import {
   writeBatch,
 } from "./firestore.js";
 import { COLLECTIONS, FIELDS, state } from "../state.js";
-import { db, functions } from "../firebase.js";
+import { db, functions, storage } from "../firebase.js";
 import { computePacketSummary } from "./judge-shared.js";
 import { getDirectorNameForSchool } from "./director.js";
 import { getSchoolNameById, normalizeEnsembleNameForSchool } from "./utils.js";
+
+function sanitizeAudioFileName(name = "") {
+  return String(name || "")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(-120) || "manual_audio.wav";
+}
+
+async function readAudioDurationSec(file) {
+  if (!file) return 0;
+  return new Promise((resolve) => {
+    const audio = document.createElement("audio");
+    const objectUrl = URL.createObjectURL(file);
+    const finish = (value) => {
+      URL.revokeObjectURL(objectUrl);
+      audio.removeAttribute("src");
+      resolve(value);
+    };
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => {
+      const duration = Number(audio.duration || 0);
+      finish(Number.isFinite(duration) && duration > 0 ? duration : 0);
+    };
+    audio.onerror = () => finish(0);
+    audio.src = objectUrl;
+  });
+}
+
+async function uploadManualAudioBlob(path, file) {
+  const storageRef = ref(storage, path);
+  await uploadBytes(storageRef, file, { contentType: file.type || "audio/wav" });
+  const url = await getDownloadURL(storageRef);
+  const durationSec = await readAudioDurationSec(file);
+  return { url, durationSec };
+}
 
 
 export async function createEvent({
@@ -543,6 +578,107 @@ export async function deleteAllUnreleasedPackets() {
   const deleteFn = httpsCallable(functions, "deleteAllUnreleasedPackets");
   const response = await deleteFn({});
   return response.data || {};
+}
+
+export async function cleanupTestArtifacts({ dryRun = true } = {}) {
+  const fn = httpsCallable(functions, "cleanupTestArtifacts");
+  const response = await fn({ dryRun: dryRun !== false });
+  return response?.data || {};
+}
+
+export async function attachManualAudioToScheduledPacket({
+  eventId,
+  ensembleId,
+  judgePosition,
+  file,
+} = {}) {
+  if (!eventId || !ensembleId || !judgePosition || !file) {
+    return { ok: false, message: "eventId, ensembleId, judgePosition, and file are required." };
+  }
+  const uid = state.auth.currentUser?.uid || "admin";
+  const submissionId = `${eventId}_${ensembleId}_${judgePosition}`;
+  const fileName = `${Date.now()}_${sanitizeAudioFileName(file.name || "manual_audio.wav")}`;
+  const path = `audio/${uid}/${submissionId}/${fileName}`;
+  const upload = await uploadManualAudioBlob(path, file);
+  const fn = httpsCallable(functions, "attachManualPacketAudio");
+  const response = await fn({
+    targetType: "scheduled",
+    eventId,
+    ensembleId,
+    judgePosition,
+    audioPath: path,
+    audioUrl: upload.url,
+    durationSec: upload.durationSec,
+  });
+  return { ok: true, ...(response?.data || {}), audioUrl: upload.url };
+}
+
+export async function attachManualAudioToOpenPacket({ packetId, file } = {}) {
+  if (!packetId || !file) {
+    return { ok: false, message: "packetId and file are required." };
+  }
+  const uid = state.auth.currentUser?.uid || "admin";
+  const fileName = `${Date.now()}_${sanitizeAudioFileName(file.name || "manual_audio.wav")}`;
+  const path = `packet_audio/${uid}/${packetId}/manual/${fileName}`;
+  const upload = await uploadManualAudioBlob(path, file);
+  const fn = httpsCallable(functions, "attachManualPacketAudio");
+  const response = await fn({
+    targetType: "open",
+    packetId,
+    audioPath: path,
+    audioUrl: upload.url,
+    durationSec: upload.durationSec,
+  });
+  return { ok: true, ...(response?.data || {}), audioUrl: upload.url };
+}
+
+export async function createAudioOnlyResultFromFile({
+  eventId,
+  schoolId,
+  ensembleId,
+  ensembleName,
+  judgePosition = "",
+  mode = "official",
+  file,
+} = {}) {
+  if (!eventId || !schoolId || !ensembleId || !file) {
+    return { ok: false, message: "eventId, schoolId, ensembleId, and file are required." };
+  }
+  const fileName = `${Date.now()}_${sanitizeAudioFileName(file.name || "audio_only.wav")}`;
+  const tempId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const path = `audio_results/${eventId}/${ensembleId}/${tempId}/${fileName}`;
+  const upload = await uploadManualAudioBlob(path, file);
+  const fn = httpsCallable(functions, "createAudioOnlyResult");
+  const response = await fn({
+    eventId,
+    schoolId,
+    ensembleId,
+    ensembleName: ensembleName || ensembleId,
+    judgePosition,
+    mode: mode === "practice" ? "practice" : "official",
+    audioPath: path,
+    audioUrl: upload.url,
+    durationSec: upload.durationSec,
+  });
+  return { ok: true, ...(response?.data || {}), audioUrl: upload.url };
+}
+
+export async function releaseAudioOnlyResult({ audioResultId } = {}) {
+  const fn = httpsCallable(functions, "releaseAudioOnlyResult");
+  const response = await fn({ audioResultId });
+  return response?.data || {};
+}
+
+export async function unreleaseAudioOnlyResult({ audioResultId } = {}) {
+  const fn = httpsCallable(functions, "unreleaseAudioOnlyResult");
+  const response = await fn({ audioResultId });
+  return response?.data || {};
+}
+
+export async function repairManualAudioOverrides({ dryRun = true } = {}) {
+  const fn = httpsCallable(functions, "repairManualAudioOverrides");
+  const response = await fn({ dryRun: dryRun !== false });
+  return response?.data || {};
 }
 
 export async function deleteSchool({ schoolId }) {

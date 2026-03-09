@@ -1,4 +1,4 @@
-import { normalizeEnsembleNameForSchool } from "./utils.js";
+import { normalizeEnsembleNameForSchool, toDateLike } from "./utils.js";
 
 export function escapeHtml(s) {
   if (s == null) return "";
@@ -111,13 +111,7 @@ export function getEntryLunchRequestCount(entry = {}) {
 }
 
 export function toDateOrNull(value) {
-  if (!value) return null;
-  if (value?.toDate) {
-    const d = value.toDate();
-    return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
-  }
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
+  return toDateLike(value);
 }
 
 export function isDirectorNafmeValid(profile = {}) {

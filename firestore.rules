@@ -277,6 +277,13 @@ service cloud.firestore {
       }
     }
 
+    match /audioResults/{audioResultId} {
+      allow read: if isAdmin()
+        || (isDirectorForSchool(resource.data.schoolId)
+          && resource.data.status == "released");
+      allow create, update, delete: if isAdmin();
+    }
+
     match /rateLimits/{docId} {
       allow read, write: if false;
     }

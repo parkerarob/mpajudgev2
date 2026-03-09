@@ -1355,9 +1355,22 @@ export async function fetchDirectorPacketAssets({ eventId, ensembleId } = {}) {
   }
 }
 
+export async function fetchDirectorAudioResultAsset({ audioResultId } = {}) {
+  if (!audioResultId) return { ok: false, reason: "missing-id" };
+  const fetchFn = httpsCallable(functions, "getDirectorAudioResultAsset");
+  try {
+    const response = await fetchFn({ audioResultId });
+    return { ok: true, ...(response?.data || {}) };
+  } catch (error) {
+    console.error("fetchDirectorAudioResultAsset failed", error);
+    return { ok: false, message: error?.message || "Unable to load audio file." };
+  }
+}
+
 export function watchDirectorPackets(callback) {
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
+  if (state.subscriptions.directorAudioResults) state.subscriptions.directorAudioResults();
   state.director.packetGradeCache.clear();
   if (state.director.packetAssetsCache?.clear) {
     state.director.packetAssetsCache.clear();
@@ -1386,7 +1399,13 @@ export function watchDirectorPackets(callback) {
     where(FIELDS.packets.status, "==", STATUSES.released)
   );
 
-  const merged = { submissions: [], packets: [] };
+  const audioResultsQuery = query(
+    collection(db, COLLECTIONS.audioResults),
+    where(FIELDS.audioResults.schoolId, "==", directorSchoolId),
+    where(FIELDS.audioResults.status, "==", STATUSES.released)
+  );
+
+  const merged = { submissions: [], packets: [], audioResults: [] };
   let buildVersion = 0;
   let lastSignature = "";
   let lastGroups = [];
@@ -1421,7 +1440,18 @@ export function watchDirectorPackets(callback) {
       ].join(":"))
       .sort()
       .join("|");
-    return `s:${submissionSig}||p:${packetSig}`;
+    const audioSig = merged.audioResults
+      .map((item) => [
+        item.id || "",
+        item.status || "",
+        item.eventId || "",
+        item.ensembleId || "",
+        item.updatedAt?.seconds || 0,
+        item.updatedAt?.nanoseconds || 0,
+      ].join(":"))
+      .sort()
+      .join("|");
+    return `s:${submissionSig}||p:${packetSig}||a:${audioSig}`;
   };
 
   const emitMergedGroups = async () => {
@@ -1467,6 +1497,22 @@ export function watchDirectorPackets(callback) {
     },
     (error) => {
       console.error("watchDirectorPackets open packets failed", error);
+      if (watchVersion !== state.director.packetWatchVersion) return;
+      callback?.({ groups: [], hint: "Unable to load released packets right now." });
+    }
+  );
+
+  state.subscriptions.directorAudioResults = onSnapshot(
+    audioResultsQuery,
+    async (snapshot) => {
+      merged.audioResults = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
+      await emitMergedGroups();
+    },
+    (error) => {
+      console.error("watchDirectorPackets audio-only results failed", error);
       if (watchVersion !== state.director.packetWatchVersion) return;
       callback?.({ groups: [], hint: "Unable to load released packets right now." });
     }
@@ -1535,6 +1581,7 @@ async function buildDirectorPacketGroups(merged) {
         computedFinalRatingLabel: packet.computedFinalRatingLabel || "N/A",
         computedFinalRatingJudge: packet.computedFinalRatingJudge ?? null,
         latestAudioUrl: packet.latestAudioUrl || "",
+        supplementalLatestAudioUrl: packet.supplementalLatestAudioUrl || "",
         judgePosition,
         assignmentEventId,
         releasedAt: packet.releasedAt || null,
@@ -1575,6 +1622,7 @@ async function buildDirectorPacketGroups(merged) {
       computedFinalRatingJudge: packet.computedFinalRatingJudge ?? null,
       computedFinalRatingLabel: packet.computedFinalRatingLabel || "N/A",
       audioUrl: packet.latestAudioUrl || "",
+      supplementalAudioUrl: packet.supplementalLatestAudioUrl || "",
       transcript: "",
       transcriptFull: "",
     };
@@ -1608,8 +1656,22 @@ async function buildDirectorPacketGroups(merged) {
       };
     })
   );
+  const audioOnlyGroups = (merged.audioResults || []).map((item) => ({
+    type: "audio-only",
+    id: item.id,
+    eventId: item.eventId || "",
+    schoolId: item.schoolId || "",
+    schoolName: item.schoolName || item.schoolId || "",
+    ensembleId: item.ensembleId || "",
+    ensembleName: item.ensembleName || item.ensembleId || "",
+    mode: item.mode || "official",
+    judgePosition: item.judgePosition || "",
+    durationSec: Number(item.durationSec || 0),
+    status: item.status || "released",
+    releasedAt: item.releasedAt || null,
+  }));
 
-  return [...standaloneOpenGroups, ...assembledOpenGroups, ...scheduledGroups];
+  return [...standaloneOpenGroups, ...assembledOpenGroups, ...audioOnlyGroups, ...scheduledGroups];
 }
 
 export function watchDirectorSchool(callback) {

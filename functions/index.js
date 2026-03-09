@@ -86,6 +86,55 @@ function buildDirectorPacketExportId(eventId, ensembleId) {
   return `${eventId}_${ensembleId}`;
 }
 
+async function signStorageReadPath(path, {expiresAtMs = Date.now() + DIRECTOR_PACKET_EXPORT_TTL_MS} = {}) {
+  const value = String(path || "").trim();
+  if (!value) return "";
+  if (value.startsWith("http://") || value.startsWith("https://")) return value;
+  const bucket = admin.storage().bucket();
+  try {
+    const file = bucket.file(value);
+    const [exists] = await file.exists();
+    if (!exists) return "";
+    try {
+      const [url] = await file.getSignedUrl({
+        version: "v4",
+        action: "read",
+        expires: expiresAtMs,
+      });
+      if (url) return url;
+    } catch (signedErr) {
+      logger.warn("signStorageReadPath signed URL unavailable; falling back to token URL", {
+        path: value,
+        error: signedErr?.message || String(signedErr),
+      });
+    }
+    const [metadata] = await file.getMetadata();
+    const existingTokenRaw =
+      metadata?.metadata?.firebaseStorageDownloadTokens ||
+      metadata?.firebaseStorageDownloadTokens ||
+      "";
+    let token = String(existingTokenRaw || "")
+        .split(",")
+        .map((item) => item.trim())
+        .find(Boolean);
+    if (!token) {
+      token = crypto.randomUUID();
+      const nextMetadata = {
+        ...(metadata?.metadata || {}),
+        firebaseStorageDownloadTokens: token,
+      };
+      await file.setMetadata({metadata: nextMetadata});
+    }
+    return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(value)}?alt=media&token=${token}`;
+  } catch (error) {
+    logger.error("signStorageReadPath failed", {
+      path: value,
+      error: error?.message || String(error),
+    });
+    return "";
+  }
+}
+
 function createSilentWavBuffer({
   durationSec = 1,
   sampleRate = 8000,
@@ -3071,6 +3120,292 @@ exports.setReadinessWalkthrough = onCall(async (request) => {
   };
 });
 
+function isTestArtifactText(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  const patterns = [
+    /\btest\b/,
+    /\bsmoke\b/,
+    /\be2e\b/,
+    /\brelease e2e\b/,
+    /\bdemo\b/,
+    /\bsandbox\b/,
+    /\bqa\b/,
+  ];
+  return patterns.some((pattern) => pattern.test(normalized));
+}
+
+function hasExplicitTestArtifactFlag(data = {}) {
+  if (!data || typeof data !== "object") return false;
+  if (data.isTestArtifact === true || data.testArtifact === true) return true;
+  const tags = Array.isArray(data.tags) ? data.tags : [];
+  return tags.some((tag) => {
+    const normalized = String(tag || "").trim().toLowerCase();
+    return normalized === "test-artifact" || normalized === "test";
+  });
+}
+
+function isLikelyTestArtifact({
+  id,
+  name,
+} = {}) {
+  return isTestArtifactText(id) || isTestArtifactText(name);
+}
+
+exports.cleanupTestArtifacts = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const dryRun = data.dryRun !== false;
+  const db = admin.firestore();
+  const bucket = admin.storage().bucket();
+
+  const summary = {
+    ok: true,
+    dryRun,
+    strictMode: true,
+    includeActiveEvent: data.includeActiveEvent === true,
+    eventCandidates: [],
+    schoolCandidates: [],
+    suggestedEventMatches: [],
+    suggestedSchoolMatches: [],
+    activeEventSkipped: [],
+    packetCandidates: 0,
+    submissionCandidates: 0,
+    audioResultCandidates: 0,
+    packetExportCandidates: 0,
+    deletedEvents: 0,
+    deletedSchools: 0,
+    deletedOpenPackets: 0,
+    deletedOpenPacketSessions: 0,
+    deletedOpenPacketAuditDocs: 0,
+    deletedSubmissions: 0,
+    deletedAudioResults: 0,
+    deletedPacketExports: 0,
+    deletedScheduleRows: 0,
+    deletedEntryRows: 0,
+    usersUnassignedFromDeletedSchools: 0,
+  };
+
+  const [eventsSnap, schoolsSnap] = await Promise.all([
+    db.collection(COLLECTIONS.events).get(),
+    db.collection(COLLECTIONS.schools).get(),
+  ]);
+
+  const includeActiveEvent = summary.includeActiveEvent;
+  const activeEventIds = new Set(
+      eventsSnap.docs
+          .filter((docSnap) => docSnap.data()?.[FIELDS.events.isActive] === true)
+          .map((docSnap) => docSnap.id),
+  );
+
+  const suggestedEventDocs = eventsSnap.docs.filter((docSnap) => {
+    const event = docSnap.data() || {};
+    return isLikelyTestArtifact({
+      id: docSnap.id,
+      name: event.name,
+    });
+  });
+  const suggestedSchoolDocs = schoolsSnap.docs.filter((docSnap) => {
+    const school = docSnap.data() || {};
+    return isLikelyTestArtifact({
+      id: docSnap.id,
+      name: school.name,
+    });
+  });
+
+  const eventDocs = eventsSnap.docs.filter((docSnap) => {
+    const event = docSnap.data() || {};
+    if (!hasExplicitTestArtifactFlag(event)) return false;
+    if (!includeActiveEvent && activeEventIds.has(docSnap.id)) {
+      summary.activeEventSkipped.push(docSnap.id);
+      return false;
+    }
+    return true;
+  });
+  const schoolDocs = schoolsSnap.docs.filter((docSnap) => {
+    const school = docSnap.data() || {};
+    return hasExplicitTestArtifactFlag(school);
+  });
+
+  summary.eventCandidates = eventDocs.map((docSnap) => ({
+    id: docSnap.id,
+    name: String(docSnap.data()?.name || ""),
+  }));
+  summary.schoolCandidates = schoolDocs.map((docSnap) => ({
+    id: docSnap.id,
+    name: String(docSnap.data()?.name || ""),
+  }));
+  summary.suggestedEventMatches = suggestedEventDocs.map((docSnap) => ({
+    id: docSnap.id,
+    name: String(docSnap.data()?.name || ""),
+  }));
+  summary.suggestedSchoolMatches = suggestedSchoolDocs.map((docSnap) => ({
+    id: docSnap.id,
+    name: String(docSnap.data()?.name || ""),
+  }));
+
+  const eventIds = new Set(eventDocs.map((docSnap) => docSnap.id));
+  const schoolIds = new Set(schoolDocs.map((docSnap) => docSnap.id));
+  if (!eventIds.size && !schoolIds.size) {
+    return summary;
+  }
+
+  const packetDocsById = new Map();
+  const addPacketDocs = async (queryRef) => {
+    const snap = await queryRef.get();
+    snap.docs.forEach((docSnap) => packetDocsById.set(docSnap.id, docSnap));
+  };
+  for (const eventId of eventIds) {
+    await addPacketDocs(
+        db.collection(COLLECTIONS.packets).where(FIELDS.packets.assignmentEventId, "==", eventId),
+    );
+    await addPacketDocs(
+        db.collection(COLLECTIONS.packets).where(FIELDS.packets.officialEventId, "==", eventId),
+    );
+    await addPacketDocs(
+        db.collection(COLLECTIONS.packets).where(FIELDS.packets.eventId, "==", eventId),
+    );
+  }
+  for (const schoolId of schoolIds) {
+    await addPacketDocs(
+        db.collection(COLLECTIONS.packets).where(FIELDS.packets.schoolId, "==", schoolId),
+    );
+  }
+  summary.packetCandidates = packetDocsById.size;
+
+  const submissionsById = new Map();
+  const addSubmissions = async (queryRef) => {
+    const snap = await queryRef.get();
+    snap.docs.forEach((docSnap) => submissionsById.set(docSnap.id, docSnap));
+  };
+  for (const eventId of eventIds) {
+    await addSubmissions(
+        db.collection(COLLECTIONS.submissions).where(FIELDS.submissions.eventId, "==", eventId),
+    );
+  }
+  for (const schoolId of schoolIds) {
+    await addSubmissions(
+        db.collection(COLLECTIONS.submissions).where(FIELDS.submissions.schoolId, "==", schoolId),
+    );
+  }
+  summary.submissionCandidates = submissionsById.size;
+
+  const audioResultsById = new Map();
+  const addAudioResults = async (queryRef) => {
+    const snap = await queryRef.get();
+    snap.docs.forEach((docSnap) => audioResultsById.set(docSnap.id, docSnap));
+  };
+  for (const eventId of eventIds) {
+    await addAudioResults(
+        db.collection(COLLECTIONS.audioResults).where(FIELDS.audioResults.eventId, "==", eventId),
+    );
+  }
+  for (const schoolId of schoolIds) {
+    await addAudioResults(
+        db.collection(COLLECTIONS.audioResults).where(FIELDS.audioResults.schoolId, "==", schoolId),
+    );
+  }
+  summary.audioResultCandidates = audioResultsById.size;
+
+  const packetExportsById = new Map();
+  const addPacketExports = async (queryRef) => {
+    const snap = await queryRef.get();
+    snap.docs.forEach((docSnap) => packetExportsById.set(docSnap.id, docSnap));
+  };
+  for (const eventId of eventIds) {
+    await addPacketExports(
+        db.collection(COLLECTIONS.packetExports).where(FIELDS.packetExports.eventId, "==", eventId),
+    );
+  }
+  for (const schoolId of schoolIds) {
+    await addPacketExports(
+        db.collection(COLLECTIONS.packetExports).where(FIELDS.packetExports.schoolId, "==", schoolId),
+    );
+  }
+  summary.packetExportCandidates = packetExportsById.size;
+
+  if (dryRun) {
+    return summary;
+  }
+
+  for (const packetDoc of packetDocsById.values()) {
+    const packet = packetDoc.data() || {};
+    const deletionResult = await deleteOpenPacketDocument({
+      db,
+      bucket,
+      packetRef: packetDoc.ref,
+      packet,
+      packetId: packetDoc.id,
+    });
+    summary.deletedOpenPackets += 1;
+    summary.deletedOpenPacketSessions += deletionResult.deletedSessionCount;
+    summary.deletedOpenPacketAuditDocs += deletionResult.deletedAuditCount;
+  }
+
+  summary.deletedSubmissions = await deleteDocsInBatches(db, Array.from(submissionsById.values()));
+  summary.deletedAudioResults = await deleteDocsInBatches(db, Array.from(audioResultsById.values()));
+  summary.deletedPacketExports = await deleteDocsInBatches(db, Array.from(packetExportsById.values()));
+
+  const remainingEventDocs = eventsSnap.docs.filter((docSnap) => !eventIds.has(docSnap.id));
+  for (const eventDoc of remainingEventDocs) {
+    const eventId = eventDoc.id;
+    for (const schoolId of schoolIds) {
+      const [scheduleSnap, entriesSnap] = await Promise.all([
+        db.collection(COLLECTIONS.events)
+            .doc(eventId)
+            .collection(COLLECTIONS.schedule)
+            .where(FIELDS.schedule.schoolId, "==", schoolId)
+            .get(),
+        db.collection(COLLECTIONS.events)
+            .doc(eventId)
+            .collection(COLLECTIONS.entries)
+            .where(FIELDS.entries.schoolId, "==", schoolId)
+            .get(),
+      ]);
+      summary.deletedScheduleRows += await deleteDocsInBatches(db, scheduleSnap.docs);
+      summary.deletedEntryRows += await deleteDocsInBatches(db, entriesSnap.docs);
+    }
+  }
+
+  for (const schoolId of schoolIds) {
+    const usersSnap = await db
+        .collection(COLLECTIONS.users)
+        .where(FIELDS.users.schoolId, "==", schoolId)
+        .get();
+    if (!usersSnap.empty) {
+      const batch = db.batch();
+      usersSnap.docs.forEach((docSnap) => {
+        batch.set(docSnap.ref, {
+          [FIELDS.users.schoolId]: null,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+      });
+      await batch.commit();
+      summary.usersUnassignedFromDeletedSchools += usersSnap.size;
+    }
+  }
+
+  for (const eventDoc of eventDocs) {
+    if (typeof db.recursiveDelete === "function") {
+      await db.recursiveDelete(eventDoc.ref);
+    } else {
+      await eventDoc.ref.delete();
+    }
+    summary.deletedEvents += 1;
+  }
+
+  for (const schoolDoc of schoolDocs) {
+    if (typeof db.recursiveDelete === "function") {
+      await db.recursiveDelete(schoolDoc.ref);
+    } else {
+      await schoolDoc.ref.delete();
+    }
+    summary.deletedSchools += 1;
+  }
+
+  return summary;
+});
+
 exports.cleanupRehearsalArtifacts = onCall(async (request) => {
   await assertAdmin(request);
   const data = request.data || {};
@@ -3788,57 +4123,7 @@ exports.getDirectorPacketAssets = onCall(async (request) => {
       judges: {},
     };
   }
-  const bucket = admin.storage().bucket();
-  const expires = Date.now() + DIRECTOR_PACKET_EXPORT_TTL_MS;
-  const signed = async (path) => {
-    const value = String(path || "").trim();
-    if (!value) return "";
-    if (value.startsWith("http://") || value.startsWith("https://")) return value;
-    try {
-      const file = bucket.file(value);
-      const [exists] = await file.exists();
-      if (!exists) return "";
-      try {
-        const [url] = await file.getSignedUrl({
-          version: "v4",
-          action: "read",
-          expires,
-        });
-        if (url) return url;
-      } catch (signedErr) {
-        logger.warn("getDirectorPacketAssets signed URL unavailable; falling back to token URL", {
-          path: value,
-          error: signedErr?.message || String(signedErr),
-        });
-      }
-
-      // Fallback to Firebase token URL if signed URLs are unavailable in this project IAM setup.
-      const [metadata] = await file.getMetadata();
-      const existingTokenRaw =
-        metadata?.metadata?.firebaseStorageDownloadTokens ||
-        metadata?.firebaseStorageDownloadTokens ||
-        "";
-      let token = String(existingTokenRaw || "")
-          .split(",")
-          .map((item) => item.trim())
-          .find(Boolean);
-      if (!token) {
-        token = crypto.randomUUID();
-        const nextMetadata = {
-          ...(metadata?.metadata || {}),
-          firebaseStorageDownloadTokens: token,
-        };
-        await file.setMetadata({metadata: nextMetadata});
-      }
-      return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(value)}?alt=media&token=${token}`;
-    } catch (error) {
-      logger.error("getDirectorPacketAssets signed URL failed", {
-        path: value,
-        error: error?.message || String(error),
-      });
-      return "";
-    }
-  };
+  const expiresAtMs = Date.now() + DIRECTOR_PACKET_EXPORT_TTL_MS;
   const judgeAssets = exportData.judgeAssets && typeof exportData.judgeAssets === "object" ?
     exportData.judgeAssets :
     {};
@@ -3848,12 +4133,17 @@ exports.getDirectorPacketAssets = onCall(async (request) => {
     const item = judgeAssets[key] || {};
     signedJudges[key] = {
       ...item,
-      pdfUrl: item.pdfPath ? await signed(item.pdfPath) : "",
-      audioUrl: item.audioPath ? await signed(item.audioPath) : (item.audioUrl || ""),
+      pdfUrl: item.pdfPath ? await signStorageReadPath(item.pdfPath, {expiresAtMs}) : "",
+      audioUrl: item.audioPath ?
+        await signStorageReadPath(item.audioPath, {expiresAtMs}) :
+        (item.audioUrl || ""),
+      supplementalAudioUrl: item.supplementalAudioPath ?
+        await signStorageReadPath(item.supplementalAudioPath, {expiresAtMs}) :
+        (item.supplementalAudioUrl || ""),
     };
   }
   const combinedPath = String(exportData.combinedPdfPath || "");
-  const combinedUrl = combinedPath ? await signed(combinedPath) : "";
+  const combinedUrl = combinedPath ? await signStorageReadPath(combinedPath, {expiresAtMs}) : "";
   return {
     status: "ready",
     templateVersion: exportData.templateVersion || "",
@@ -3862,6 +4152,350 @@ exports.getDirectorPacketAssets = onCall(async (request) => {
     combined: combinedPath ? {path: combinedPath, url: combinedUrl} : null,
     judges: signedJudges,
   };
+});
+
+exports.attachManualPacketAudio = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const targetType = String(data.targetType || "").trim().toLowerCase();
+  const audioPath = String(data.audioPath || "").trim();
+  const audioUrl = String(data.audioUrl || "").trim();
+  const durationSec = Number(data.durationSec || 0);
+  if (!audioPath || !audioUrl) {
+    throw new HttpsError("invalid-argument", "audioPath and audioUrl are required.");
+  }
+  const db = admin.firestore();
+
+  if (targetType === "scheduled") {
+    const eventId = String(data.eventId || "").trim();
+    const ensembleId = String(data.ensembleId || "").trim();
+    const judgePosition = String(data.judgePosition || "").trim();
+    if (!eventId || !ensembleId || !judgePosition) {
+      throw new HttpsError(
+          "invalid-argument",
+          "eventId, ensembleId, and judgePosition are required for scheduled packets.",
+      );
+    }
+    if (!Object.values(JUDGE_POSITIONS).includes(judgePosition)) {
+      throw new HttpsError("invalid-argument", "Invalid judgePosition.");
+    }
+    const submissionId = `${eventId}_${ensembleId}_${judgePosition}`;
+    const submissionRef = db.collection(COLLECTIONS.submissions).doc(submissionId);
+    const submissionSnap = await submissionRef.get();
+    if (!submissionSnap.exists) {
+      throw new HttpsError("not-found", "Submission not found for that packet position.");
+    }
+    await submissionRef.set({
+      supplementalAudioUrl: audioUrl,
+      supplementalAudioPath: audioPath,
+      supplementalAudioDurationSec: Number.isFinite(durationSec) ? durationSec : 0,
+      [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    const exportRef = db
+        .collection(COLLECTIONS.packetExports)
+        .doc(buildDirectorPacketExportId(eventId, ensembleId));
+    const exportSnap = await exportRef.get();
+    if (exportSnap.exists) {
+      const exportData = exportSnap.data() || {};
+      const judgeAssets = exportData.judgeAssets && typeof exportData.judgeAssets === "object" ?
+        {...exportData.judgeAssets} :
+        {};
+      const currentAsset = judgeAssets[judgePosition] && typeof judgeAssets[judgePosition] === "object" ?
+        judgeAssets[judgePosition] :
+        {};
+      judgeAssets[judgePosition] = {
+        ...currentAsset,
+        supplementalAudioPath: audioPath,
+        supplementalAudioUrl: "",
+      };
+      await exportRef.set({
+        [FIELDS.packetExports.judgeAssets]: judgeAssets,
+        [FIELDS.packetExports.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+
+    return {ok: true, targetType, submissionId};
+  }
+
+  if (targetType === "open") {
+    const packetId = String(data.packetId || "").trim();
+    if (!packetId) {
+      throw new HttpsError("invalid-argument", "packetId is required for open packets.");
+    }
+    const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+    const packetSnap = await packetRef.get();
+    if (!packetSnap.exists) {
+      throw new HttpsError("not-found", "Packet not found.");
+    }
+    await packetRef.set({
+      supplementalLatestAudioPath: audioPath,
+      supplementalLatestAudioUrl: audioUrl,
+      supplementalLatestAudioDurationSec: Number.isFinite(durationSec) ? durationSec : 0,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    return {ok: true, targetType, packetId};
+  }
+
+  throw new HttpsError("invalid-argument", "targetType must be scheduled or open.");
+});
+
+exports.createAudioOnlyResult = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const schoolId = String(data.schoolId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const ensembleName = String(data.ensembleName || "").trim();
+  const mode = String(data.mode || "official").trim().toLowerCase() === "practice" ?
+    "practice" :
+    "official";
+  const judgePosition = String(data.judgePosition || "").trim();
+  const audioPath = String(data.audioPath || "").trim();
+  const audioUrl = String(data.audioUrl || "").trim();
+  const durationSec = Number(data.durationSec || 0);
+  if (!eventId || !schoolId || !ensembleId || !audioPath || !audioUrl) {
+    throw new HttpsError(
+        "invalid-argument",
+        "eventId, schoolId, ensembleId, audioPath, and audioUrl are required.",
+    );
+  }
+  const db = admin.firestore();
+  const schoolSnap = await db.collection(COLLECTIONS.schools).doc(schoolId).get();
+  if (!schoolSnap.exists) {
+    throw new HttpsError("not-found", "School not found.");
+  }
+  const audioRef = db.collection(COLLECTIONS.audioResults).doc();
+  await audioRef.set({
+    eventId,
+    schoolId,
+    ensembleId,
+    ensembleName: ensembleName || ensembleId,
+    mode,
+    judgePosition: judgePosition || "",
+    status: "draft",
+    audioPath,
+    audioUrl,
+    durationSec: Number.isFinite(durationSec) ? durationSec : 0,
+    uploadedBy: request.auth.uid,
+    uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+    releasedAt: null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true, audioResultId: audioRef.id};
+});
+
+exports.releaseAudioOnlyResult = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const audioResultId = String(data.audioResultId || "").trim();
+  if (!audioResultId) {
+    throw new HttpsError("invalid-argument", "audioResultId required.");
+  }
+  const ref = admin.firestore().collection(COLLECTIONS.audioResults).doc(audioResultId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "Audio result not found.");
+  }
+  await ref.set({
+    status: "released",
+    releasedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true, audioResultId, status: "released"};
+});
+
+exports.unreleaseAudioOnlyResult = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const audioResultId = String(data.audioResultId || "").trim();
+  if (!audioResultId) {
+    throw new HttpsError("invalid-argument", "audioResultId required.");
+  }
+  const ref = admin.firestore().collection(COLLECTIONS.audioResults).doc(audioResultId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "Audio result not found.");
+  }
+  await ref.set({
+    status: "draft",
+    releasedAt: null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return {ok: true, audioResultId, status: "draft"};
+});
+
+exports.getDirectorAudioResultAsset = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const audioResultId = String(data.audioResultId || "").trim();
+  if (!audioResultId) {
+    throw new HttpsError("invalid-argument", "audioResultId required.");
+  }
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const user = userSnap.exists ? (userSnap.data() || {}) : {};
+  const isAdmin = isAdminProfile(user);
+  const role = String(user.role || "");
+  const resultRef = db.collection(COLLECTIONS.audioResults).doc(audioResultId);
+  const resultSnap = await resultRef.get();
+  if (!resultSnap.exists) {
+    throw new HttpsError("not-found", "Audio result not found.");
+  }
+  const result = resultSnap.data() || {};
+  if (!isAdmin) {
+    if (role !== "director") {
+      throw new HttpsError("permission-denied", "Not authorized.");
+    }
+    if (String(user.schoolId || "") !== String(result.schoolId || "")) {
+      throw new HttpsError("permission-denied", "Not authorized for this school.");
+    }
+    if (String(result.status || "") !== "released") {
+      throw new HttpsError("permission-denied", "Audio result is not released.");
+    }
+  }
+  const expiresAtMs = Date.now() + DIRECTOR_PACKET_EXPORT_TTL_MS;
+  const url = await signStorageReadPath(result.audioPath, {expiresAtMs});
+  return {
+    ok: true,
+    audioResultId,
+    audioUrl: url || String(result.audioUrl || ""),
+    status: String(result.status || "draft"),
+    eventId: String(result.eventId || ""),
+    schoolId: String(result.schoolId || ""),
+    ensembleId: String(result.ensembleId || ""),
+    ensembleName: String(result.ensembleName || ""),
+    mode: String(result.mode || "official"),
+    judgePosition: String(result.judgePosition || ""),
+    durationSec: Number(result.durationSec || 0),
+  };
+});
+
+exports.repairManualAudioOverrides = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const dryRun = data.dryRun !== false;
+  const db = admin.firestore();
+  const bucket = admin.storage().bucket();
+  const summary = {
+    dryRun,
+    submissionsScanned: 0,
+    submissionsUpdated: 0,
+    packetsScanned: 0,
+    packetsUpdated: 0,
+    skippedNoCanonical: 0,
+    samples: [],
+  };
+
+  const submissionsSnap = await db.collection(COLLECTIONS.submissions).get();
+  for (const docSnap of submissionsSnap.docs) {
+    summary.submissionsScanned += 1;
+    const submissionId = docSnap.id;
+    const submission = docSnap.data() || {};
+    const currentPath = String(
+        submission.audioPath || getStoragePathFromUrl(submission.audioUrl) || "",
+    ).trim();
+    if (!currentPath) continue;
+    const isManualOverride = !currentPath.endsWith("/recording.webm");
+    if (!isManualOverride) continue;
+    const judgeUid = String(submission.judgeUid || "").trim();
+    if (!judgeUid) {
+      summary.skippedNoCanonical += 1;
+      continue;
+    }
+    const canonicalPath = `audio/${judgeUid}/${submissionId}/recording.webm`;
+    const canonicalFile = bucket.file(canonicalPath);
+    const [exists] = await canonicalFile.exists();
+    if (!exists) {
+      summary.skippedNoCanonical += 1;
+      continue;
+    }
+    const canonicalUrl = await signStorageReadPath(canonicalPath);
+    if (!canonicalUrl) {
+      summary.skippedNoCanonical += 1;
+      continue;
+    }
+    const patch = {
+      supplementalAudioPath: currentPath,
+      supplementalAudioUrl: String(submission.audioUrl || ""),
+      supplementalAudioDurationSec: Number(submission.audioDurationSec || 0),
+      [FIELDS.submissions.audioUrl]: canonicalUrl,
+      audioPath: canonicalPath,
+      [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    summary.samples.push({type: "submission", id: submissionId});
+    if (!dryRun) {
+      await docSnap.ref.set(patch, {merge: true});
+    }
+    summary.submissionsUpdated += 1;
+  }
+
+  const packetsSnap = await db.collection(COLLECTIONS.packets).get();
+  for (const docSnap of packetsSnap.docs) {
+    summary.packetsScanned += 1;
+    const packetId = docSnap.id;
+    const packet = docSnap.data() || {};
+    const currentPath = String(
+        packet.latestAudioPath || getStoragePathFromUrl(packet.latestAudioUrl) || "",
+    ).trim();
+    if (!currentPath || !currentPath.includes("/manual/")) continue;
+    const sessionsSnap = await docSnap.ref.collection("sessions").orderBy("startedAt", "asc").get();
+    if (sessionsSnap.empty) {
+      summary.skippedNoCanonical += 1;
+      continue;
+    }
+    let canonicalPath = "";
+    let canonicalUrl = "";
+    let totalDurationSec = 0;
+    sessionsSnap.docs.forEach((sessionDoc) => {
+      const session = sessionDoc.data() || {};
+      const duration = Number(session.durationSec || 0);
+      if (Number.isFinite(duration) && duration > 0) {
+        totalDurationSec += duration;
+      }
+      if (canonicalPath) return;
+      const path = String(
+          session.masterAudioPath || getStoragePathFromUrl(session.masterAudioUrl) || "",
+      ).trim();
+      if (path) canonicalPath = path;
+    });
+    if (!canonicalPath) {
+      summary.skippedNoCanonical += 1;
+      continue;
+    }
+    const canonicalFile = bucket.file(canonicalPath);
+    const [exists] = await canonicalFile.exists();
+    if (!exists) {
+      summary.skippedNoCanonical += 1;
+      continue;
+    }
+    canonicalUrl = await signStorageReadPath(canonicalPath);
+    if (!canonicalUrl) {
+      summary.skippedNoCanonical += 1;
+      continue;
+    }
+    const patch = {
+      supplementalLatestAudioPath: currentPath,
+      supplementalLatestAudioUrl: String(packet.latestAudioUrl || ""),
+      supplementalLatestAudioDurationSec: Number(packet.tapeDurationSec || 0),
+      [FIELDS.packets.latestAudioPath]: canonicalPath,
+      [FIELDS.packets.latestAudioUrl]: canonicalUrl,
+      [FIELDS.packets.tapeDurationSec]: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    summary.samples.push({type: "packet", id: packetId});
+    if (!dryRun) {
+      await docSnap.ref.set(patch, {merge: true});
+    }
+    summary.packetsUpdated += 1;
+  }
+
+  if (summary.samples.length > 25) {
+    summary.samples = summary.samples.slice(0, 25);
+  }
+  return summary;
 });
 
 exports.releaseMockPacketForAshleyTesting = onCall(async (request) => {

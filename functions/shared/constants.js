@@ -7,6 +7,7 @@ const COLLECTIONS = {
   submissions: "submissions",
   packetExports: "packetExports",
   packets: "packets",
+  audioResults: "audioResults",
   ensembles: "ensembles",
   entries: "entries",
 };
@@ -106,6 +107,18 @@ const FIELDS = {
     templateVersion: "templateVersion",
     combinedPdfPath: "combinedPdfPath",
     judgeAssets: "judgeAssets",
+    updatedAt: "updatedAt",
+  },
+  audioResults: {
+    eventId: "eventId",
+    schoolId: "schoolId",
+    ensembleId: "ensembleId",
+    status: "status",
+    mode: "mode",
+    audioPath: "audioPath",
+    audioUrl: "audioUrl",
+    durationSec: "durationSec",
+    releasedAt: "releasedAt",
     updatedAt: "updatedAt",
   },
   entries: {

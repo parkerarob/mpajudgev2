@@ -8,6 +8,7 @@ export function createDirectorPacketRenderers({
   CAPTION_TEMPLATES,
   renderSubmissionCard,
   fetchDirectorPacketAssets,
+  fetchDirectorAudioResultAsset,
   withLoading,
 } = {}) {
   function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) {
@@ -158,7 +159,16 @@ export function createDirectorPacketRenderers({
           audioLink.textContent = "Open Audio";
           fileActions.appendChild(audioLink);
         }
-        if (!item.pdfUrl && !item.audioUrl) {
+        if (item.supplementalAudioUrl) {
+          const supplementalAudioLink = document.createElement("a");
+          supplementalAudioLink.className = "ghost";
+          supplementalAudioLink.href = item.supplementalAudioUrl;
+          supplementalAudioLink.target = "_blank";
+          supplementalAudioLink.rel = "noopener";
+          supplementalAudioLink.textContent = "Open Supplemental Audio";
+          fileActions.appendChild(supplementalAudioLink);
+        }
+        if (!item.pdfUrl && !item.audioUrl && !item.supplementalAudioUrl) {
           const unavailable = document.createElement("div");
           unavailable.className = "note";
           unavailable.textContent = "Files are not available yet for this judge.";
@@ -367,9 +377,88 @@ export function createDirectorPacketRenderers({
           audioCard.appendChild(audio);
           grid.appendChild(audioCard);
         }
+        if (group.supplementalLatestAudioUrl) {
+          const supplementalCard = document.createElement("div");
+          supplementalCard.className = "packet-card";
+          const supplementalBadge = document.createElement("div");
+          supplementalBadge.className = "badge";
+          supplementalBadge.textContent = "Supplemental Audio";
+          const supplementalAudio = document.createElement("audio");
+          supplementalAudio.controls = true;
+          supplementalAudio.preload = "metadata";
+          supplementalAudio.src = group.supplementalLatestAudioUrl;
+          supplementalAudio.className = "audio";
+          supplementalCard.appendChild(supplementalBadge);
+          supplementalCard.appendChild(supplementalAudio);
+          grid.appendChild(supplementalCard);
+        }
 
         wrapper.appendChild(header);
         wrapper.appendChild(grid);
+        els.directorPackets.appendChild(wrapper);
+        continue;
+      }
+
+      if (group.type === "audio-only") {
+        const header = document.createElement("div");
+        header.className = "packet-header";
+        const titleRow = document.createElement("div");
+        const label = document.createElement("strong");
+        label.textContent = "Audio-Only Result";
+        titleRow.appendChild(label);
+        const ensembleRow = document.createElement("div");
+        ensembleRow.className = "note";
+        ensembleRow.textContent = `Ensemble: ${group.ensembleName || group.ensembleId || "Unknown"}`;
+        const schoolRow = document.createElement("div");
+        schoolRow.className = "note";
+        schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
+        const eventRow = document.createElement("div");
+        eventRow.className = "note";
+        eventRow.textContent = `Event: ${group.eventId || "Unassigned"}`;
+        const modeRow = document.createElement("div");
+        modeRow.className = "note";
+        modeRow.textContent = `Mode: ${
+          String(group.mode || "official").toLowerCase() === "practice" ?
+            "Practice adjudication" :
+            "Official adjudication"
+        }`;
+        const slotRow = document.createElement("div");
+        slotRow.className = "note";
+        slotRow.textContent = `Slot: ${
+          JUDGE_POSITION_LABELS[group.judgePosition] ||
+          group.judgePosition ||
+          "Unassigned"
+        }`;
+        header.appendChild(titleRow);
+        header.appendChild(ensembleRow);
+        header.appendChild(schoolRow);
+        header.appendChild(eventRow);
+        header.appendChild(modeRow);
+        header.appendChild(slotRow);
+
+        const card = document.createElement("div");
+        card.className = "packet-card";
+        const actions = document.createElement("div");
+        actions.className = "row";
+        const openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.className = "ghost";
+        openBtn.textContent = "Open Audio";
+        openBtn.dataset.loadingLabel = "Loading...";
+        openBtn.addEventListener("click", async () => {
+          await withLoading(openBtn, async () => {
+            const result = await fetchDirectorAudioResultAsset({ audioResultId: group.id });
+            if (!result?.ok || !result.audioUrl) {
+              openBtn.textContent = "Audio Unavailable";
+              return;
+            }
+            window.open(result.audioUrl, "_blank", "noopener");
+          });
+        });
+        actions.appendChild(openBtn);
+        card.appendChild(actions);
+        wrapper.appendChild(header);
+        wrapper.appendChild(card);
         els.directorPackets.appendChild(wrapper);
         continue;
       }
@@ -409,7 +498,23 @@ export function createDirectorPacketRenderers({
       Object.values(JUDGE_POSITIONS).forEach((position) => {
         const submission = group.submissions[position];
         if (submission && submission.status === STATUSES.released) {
-          grid.appendChild(renderSubmissionCard(submission, position, { showTranscript: false }));
+          const submissionCard = renderSubmissionCard(submission, position, { showTranscript: false });
+          grid.appendChild(submissionCard);
+          if (submission.supplementalAudioUrl) {
+            const supplementalCard = document.createElement("div");
+            supplementalCard.className = "packet-card";
+            const supplementalBadge = document.createElement("div");
+            supplementalBadge.className = "badge";
+            supplementalBadge.textContent = `${JUDGE_POSITION_LABELS[position] || position} Supplemental Audio`;
+            const supplementalAudio = document.createElement("audio");
+            supplementalAudio.controls = true;
+            supplementalAudio.preload = "metadata";
+            supplementalAudio.src = submission.supplementalAudioUrl;
+            supplementalAudio.className = "audio";
+            supplementalCard.appendChild(supplementalBadge);
+            supplementalCard.appendChild(supplementalAudio);
+            grid.appendChild(supplementalCard);
+          }
         }
       });
 

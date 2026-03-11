@@ -11,6 +11,7 @@ export function createJudgeOpenSession({
   updateOpenEmptyState,
   updateOpenSubmitState,
   showOpenDetailView,
+  hideOpenDetailView,
   saveOpenPrefsToServer,
   loadOpenPrefs,
   canUseOpenJudge,
@@ -232,7 +233,7 @@ export function createJudgeOpenSession({
       refreshJudgeOpenDirectorReference({ persistToPacket: false });
       renderOpenCaptionForm();
       updateOpenHeader();
-      showOpenDetailView();
+      hideOpenDetailView();
       updateOpenEmptyState();
       updateOpenSubmitState();
       return;
@@ -255,7 +256,12 @@ export function createJudgeOpenSession({
   }
 
   function buildTapePlaylist(sessions) {
-    return sessions
+    return [...sessions]
+      .sort((a, b) => {
+        const aTime = a?.startedAt?.toMillis ? a.startedAt.toMillis() : 0;
+        const bTime = b?.startedAt?.toMillis ? b.startedAt.toMillis() : 0;
+        return aTime - bTime;
+      })
       .filter((session) => session.masterAudioUrl)
       .map((session) => ({
         id: session.id,
@@ -298,6 +304,14 @@ export function createJudgeOpenSession({
       els.judgeOpenTapePlayback.removeAttribute("src");
       return;
     }
+    const playlistSig = playlist.map((item) => `${item.id}:${item.url}`).join("|");
+    const packetChanged = state.judgeOpen.tapePlaybackPacketId !== state.judgeOpen.currentPacketId;
+    const playlistChanged = state.judgeOpen.tapePlaylistSig !== playlistSig;
+    if (packetChanged || playlistChanged) {
+      state.judgeOpen.tapePlaylistIndex = 0;
+    }
+    state.judgeOpen.tapePlaybackPacketId = state.judgeOpen.currentPacketId || null;
+    state.judgeOpen.tapePlaylistSig = playlistSig;
     const current = state.judgeOpen.tapePlaylistIndex || 0;
     const bounded = current < playlist.length ? current : 0;
     state.judgeOpen.tapePlaylistIndex = bounded;

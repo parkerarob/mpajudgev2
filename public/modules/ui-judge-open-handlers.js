@@ -74,21 +74,23 @@ export function createJudgeOpenHandlerBinder({
 
     if (els.judgeOpenChoosePracticeBtn) {
       els.judgeOpenChoosePracticeBtn.addEventListener("click", async () => {
-        els.judgeOpenChoosePracticeBtn.dataset.loadingLabel = "Starting Practice...";
+        els.judgeOpenChoosePracticeBtn.dataset.loadingLabel = "Opening Practice...";
         await withLoading(els.judgeOpenChoosePracticeBtn, async () => {
           await chooseJudgeOpenMode("practice");
           setOpenPacketHint(
-            "Practice mode active. Practice adjudications never affect official event results."
+            "Practice workspace open. Resume a draft or choose New Adjudication to create another one."
           );
         });
       });
     }
     if (els.judgeOpenChooseOfficialBtn) {
       els.judgeOpenChooseOfficialBtn.addEventListener("click", async () => {
-        els.judgeOpenChooseOfficialBtn.dataset.loadingLabel = "Starting Official...";
+        els.judgeOpenChooseOfficialBtn.dataset.loadingLabel = "Opening Official...";
         await withLoading(els.judgeOpenChooseOfficialBtn, async () => {
           await chooseJudgeOpenMode("official");
-          setOpenPacketHint("Official mode active. Submissions will count toward event packet release.");
+          setOpenPacketHint(
+            "Official workspace open. Resume a draft or choose New Adjudication to create another one."
+          );
         });
       });
     }
@@ -112,6 +114,15 @@ export function createJudgeOpenHandlerBinder({
         const nextIndex = (state.judgeOpen.tapePlaylistIndex || 0) + 1;
         if (nextIndex >= playlist.length) {
           state.judgeOpen.tapePlaylistIndex = 0;
+          const firstUrl = playlist[0]?.url || "";
+          if (firstUrl) {
+            els.judgeOpenTapePlayback.src = firstUrl;
+            try {
+              els.judgeOpenTapePlayback.load();
+            } catch {
+              // no-op
+            }
+          }
           return;
         }
         state.judgeOpen.tapePlaylistIndex = nextIndex;

@@ -2541,6 +2541,10 @@ select:focus-visible {
   padding: 10px 12px;
 }
 
+#judgeOpenCard #judgeOpenSegmentsHelperText {
+  padding: 0 12px 10px;
+}
+
 #judgeOpenCard #judgeOpenSegmentsDetails > .list {
   padding: 0 12px 12px;
 }

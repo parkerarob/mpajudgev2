@@ -508,10 +508,10 @@
         <div class="ios-screen">
           <div class="panel stack" id="judgeOpenModeSelectView">
             <h3>Judge Workspace</h3>
-            <p class="hint">Choose a mode to begin. Practice does not affect official event results.</p>
+            <p class="hint">Open a workspace to resume recent adjudications or create a new one. Practice does not affect official event results.</p>
             <div class="row">
-              <button type="button" class="btn--secondary" id="judgeOpenChoosePracticeBtn">Start Practice Adjudication</button>
-              <button type="button" class="btn-primary" id="judgeOpenChooseOfficialBtn">Start Official Adjudication</button>
+              <button type="button" class="btn--secondary" id="judgeOpenChoosePracticeBtn">Open Practice Workspace</button>
+              <button type="button" class="btn-primary" id="judgeOpenChooseOfficialBtn">Open Official Workspace</button>
             </div>
             <div class="note" id="judgeOpenModeHint"></div>
           </div>
@@ -617,6 +617,7 @@
                     <span id="judgeOpenSegmentsSummary">Recording Parts (0)</span>
                     <span class="muted readiness-hint"></span>
                   </summary>
+                  <div class="note" id="judgeOpenSegmentsHelperText"></div>
                   <ul id="judgeOpenSegmentsList" class="list list--compact"></ul>
                 </details>
               </div>

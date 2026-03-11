@@ -129,8 +129,9 @@ export function createJudgeOpenCore({
   function updateOpenHeader() {
     if (!els.judgeOpenHeaderTitle || !els.judgeOpenHeaderSub) return;
     const packet = state.judgeOpen.currentPacket || {};
-    const school = packet.schoolName || "School";
-    const ensemble = packet.ensembleName || "Ensemble";
+    const selectedExisting = state.judgeOpen.selectedExisting || {};
+    const school = selectedExisting.schoolName || packet.schoolName || "School";
+    const ensemble = selectedExisting.ensembleName || packet.ensembleName || "Ensemble";
     const statusRaw = String(packet.status || "draft");
     const statusLabel = statusRaw ? statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1) : "Draft";
     const title = `${school} - ${ensemble}`;
@@ -266,17 +267,29 @@ export function createJudgeOpenCore({
       const transcriptStatus = String(session.transcriptStatus || "").toLowerCase();
       return Boolean(session.needsUpload) || transcriptStatus === "failed";
     });
+    const hasMultipleSegments = ordered.length > 1;
     if (els.judgeOpenSegmentsDetails) {
       const hint = els.judgeOpenSegmentsDetails.querySelector(".readiness-hint");
       if (hint) {
         hint.textContent = hasSegmentFailures
-          ? "Troubleshooting tools shown"
-          : "Auto-managed";
+          ? "One or more parts need attention"
+          : hasMultipleSegments
+            ? "Shown because this recording was saved in more than one part"
+            : "Single recording";
       }
-      els.judgeOpenSegmentsDetails.style.display = hasSegmentFailures ? "block" : "none";
-      if (!hasSegmentFailures) {
-        els.judgeOpenSegmentsDetails.open = false;
-      }
+      els.judgeOpenSegmentsDetails.style.display =
+        hasMultipleSegments || hasSegmentFailures ? "block" : "none";
+      els.judgeOpenSegmentsDetails.open = hasMultipleSegments || hasSegmentFailures;
+    }
+    if (els.judgeOpenSegmentsHelperText) {
+      els.judgeOpenSegmentsHelperText.textContent =
+        hasSegmentFailures
+          ? "The main audio player above should play the full adjudication in order. These separate recording parts are here in case one of them needs to be retried."
+          : hasMultipleSegments
+            ? "The main audio player above should play the full adjudication in order. These separate recording parts are here if you want to review one section by itself."
+            : "";
+      els.judgeOpenSegmentsHelperText.style.display =
+        hasMultipleSegments || hasSegmentFailures ? "block" : "none";
     }
     if (els.judgeOpenSegmentsSummary) {
       els.judgeOpenSegmentsSummary.textContent = `Recording Parts (${ordered.length})`;
@@ -301,10 +314,28 @@ export function createJudgeOpenCore({
       const duration = formatDuration(Number(session.durationSec || 0));
       const transcriptStatus = session.transcriptStatus || "idle";
       const startedAtLabel = session.startedAt ? formatPerformanceAt(session.startedAt) : "";
-      const startedText = startedAtLabel ? ` - ${startedAtLabel}` : "";
-      hint.textContent = `${status} - ${duration}${startedText} - transcript ${transcriptStatus}${
-        session.needsUpload ? " - needs upload" : ""
-      }`;
+      const detailParts = [`Length ${duration}`];
+      if (startedAtLabel) {
+        detailParts.push(startedAtLabel);
+      }
+      if (status === "completed") {
+        detailParts.push("Saved");
+      } else if (status === "recording") {
+        detailParts.push("Still recording");
+      } else if (status) {
+        detailParts.push(status);
+      }
+      if (transcriptStatus === "complete") {
+        detailParts.push("Transcript ready");
+      } else if (transcriptStatus === "running") {
+        detailParts.push("Transcript in progress");
+      } else if (transcriptStatus === "failed") {
+        detailParts.push("Transcript needs retry");
+      }
+      if (session.needsUpload) {
+        detailParts.push("Upload needs retry");
+      }
+      hint.textContent = detailParts.join(" • ");
       meta.appendChild(title);
       meta.appendChild(hint);
       item.appendChild(meta);

@@ -164,7 +164,26 @@ export function createDirectorPacketRenderers({
           fileActions.appendChild(pdfView);
           fileActions.appendChild(pdfDownload);
         }
-        if (audioSegments.length > 1) {
+        if (item.audioUrl) {
+          const audioLink = document.createElement("a");
+          audioLink.className = "ghost";
+          audioLink.href = item.audioUrl;
+          audioLink.target = "_blank";
+          audioLink.rel = "noopener";
+          audioLink.download = "";
+          const durationText = formatDuration(Number(item.audioDurationSec || 0));
+          audioLink.textContent = durationText ? `Open Audio (${durationText})` : "Open Audio";
+          fileActions.appendChild(audioLink);
+
+          const audioDownload = document.createElement("a");
+          audioDownload.className = "ghost";
+          audioDownload.href = item.audioUrl;
+          audioDownload.target = "_blank";
+          audioDownload.rel = "noopener";
+          audioDownload.download = "";
+          audioDownload.textContent = "Download Audio";
+          fileActions.appendChild(audioDownload);
+        } else if (audioSegments.length > 1) {
           audioSegments.forEach((segment, index) => {
             if (!segment?.audioUrl) return;
             const audioLink = document.createElement("a");
@@ -185,15 +204,6 @@ export function createDirectorPacketRenderers({
           audioLink.target = "_blank";
           audioLink.rel = "noopener";
           const durationText = formatDuration(Number(audioSegments[0]?.durationSec || 0));
-          audioLink.textContent = durationText ? `Open Audio (${durationText})` : "Open Audio";
-          fileActions.appendChild(audioLink);
-        } else if (item.audioUrl) {
-          const audioLink = document.createElement("a");
-          audioLink.className = "ghost";
-          audioLink.href = item.audioUrl;
-          audioLink.target = "_blank";
-          audioLink.rel = "noopener";
-          const durationText = formatDuration(Number(item.audioDurationSec || 0));
           audioLink.textContent = durationText ? `Open Audio (${durationText})` : "Open Audio";
           fileActions.appendChild(audioLink);
         }
@@ -404,7 +414,30 @@ export function createDirectorPacketRenderers({
         grid.appendChild(scoringCard);
 
         const openAudioSegments = Array.isArray(group.audioSegments) ? group.audioSegments : [];
-        if (openAudioSegments.length > 1) {
+        if (group.latestAudioUrl) {
+          const audioCard = document.createElement("div");
+          audioCard.className = "packet-card";
+          const audioBadge = document.createElement("div");
+          audioBadge.className = "badge";
+          audioBadge.textContent = "Audio";
+          const durationText = formatDuration(
+            Number(group.audioDurationSec || openAudioSegments[0]?.durationSec || 0)
+          );
+          const audio = document.createElement("audio");
+          audio.controls = true;
+          audio.preload = "metadata";
+          audio.src = group.latestAudioUrl;
+          audio.className = "audio";
+          audioCard.appendChild(audioBadge);
+          if (durationText) {
+            const audioMeta = document.createElement("div");
+            audioMeta.className = "note";
+            audioMeta.textContent = `Duration: ${durationText}`;
+            audioCard.appendChild(audioMeta);
+          }
+          audioCard.appendChild(audio);
+          grid.appendChild(audioCard);
+        } else if (openAudioSegments.length > 1) {
           const audioStackCard = document.createElement("div");
           audioStackCard.className = "packet-card";
           const audioBadge = document.createElement("div");
@@ -424,7 +457,7 @@ export function createDirectorPacketRenderers({
             audioStackCard.appendChild(audio);
           });
           grid.appendChild(audioStackCard);
-        } else if (openAudioSegments.length === 1 || group.latestAudioUrl) {
+        } else if (openAudioSegments.length === 1) {
           const audioCard = document.createElement("div");
           audioCard.className = "packet-card";
           const audioBadge = document.createElement("div");
@@ -436,7 +469,7 @@ export function createDirectorPacketRenderers({
           const audio = document.createElement("audio");
           audio.controls = true;
           audio.preload = "metadata";
-          audio.src = openAudioSegments[0]?.audioUrl || group.latestAudioUrl;
+          audio.src = openAudioSegments[0]?.audioUrl || "";
           audio.className = "audio";
           audioCard.appendChild(audioBadge);
           if (durationText) {

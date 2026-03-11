@@ -2277,6 +2277,7 @@ function getJudgeOpenSession() {
     updateOpenEmptyState,
     updateOpenSubmitState,
     showOpenDetailView,
+    hideOpenDetailView,
     saveOpenPrefsToServer,
     loadOpenPrefs,
     canUseOpenJudge,
@@ -5241,10 +5242,18 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
     : judgeName || judgeEmail || "Unknown judge";
   judgeInfo.textContent = `${judgeLabel}${judgeTitle ? ` - ${judgeTitle}` : ""}${judgeAffiliation ? ` - ${judgeAffiliation}` : ""}`;
 
+  const canonicalAudioUrl = String(
+    submission.canonicalAudioUrl || submission.stitchedAudioUrl || submission.audioUrl || ""
+  ).trim();
+  const canonicalAudioDurationSec = Number(
+    submission.canonicalAudioDurationSec || submission.stitchedAudioDurationSec || submission.audioDurationSec || 0
+  );
   const audioSegments = getSubmissionAudioSegments(submission);
   const supplementalAudioUrl = String(submission.supplementalAudioUrl || "").trim();
   const audioDurationText = formatAudioDuration(
-    audioSegments.length > 1
+    canonicalAudioUrl
+      ? canonicalAudioDurationSec
+      : audioSegments.length > 1
       ? getAudioSegmentsDurationSec(audioSegments)
       : Number(audioSegments[0]?.durationSec || submission.audioDurationSec || 0)
   );
@@ -5267,7 +5276,20 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
 
   card.appendChild(header);
   card.appendChild(judgeInfo);
-  if (audioSegments.length) {
+  if (canonicalAudioUrl) {
+    if (audioDurationText) {
+      const audioMeta = document.createElement("div");
+      audioMeta.className = "note";
+      audioMeta.textContent = `Recorded Audio: ${audioDurationText}`;
+      card.appendChild(audioMeta);
+    }
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.className = "audio";
+    audio.src = canonicalAudioUrl;
+    card.appendChild(audio);
+  } else if (audioSegments.length) {
     if (audioDurationText) {
       const audioMeta = document.createElement("div");
       audioMeta.className = "note";

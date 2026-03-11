@@ -359,6 +359,11 @@ export function resetJudgeOpenState() {
   state.judgeOpen.packetMutationInFlight = false;
   state.judgeOpen.packetMutationToken = 0;
   state.judgeOpen.detailViewIntent = "list";
+  state.judgeOpen.tapePlaylist = [];
+  state.judgeOpen.tapePlaylistIndex = 0;
+  state.judgeOpen.tapePlaybackPacketId = null;
+  state.judgeOpen.tapePlaylistSig = "";
+  state.judgeOpen.tapeDurationSec = 0;
   state.judgeOpen.loadedSegmentAudioSessionId = null;
   state.judgeOpen.openSessionsPendingRender = null;
   if (state.judgeOpen.openSessionsRafId != null) {

@@ -5,6 +5,11 @@ const {defineSecret} = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const crypto = require("crypto");
+const fs = require("fs/promises");
+const os = require("os");
+const path = require("path");
+const {spawn} = require("child_process");
+const ffmpegPath = require("ffmpeg-static");
 const {
   COLLECTIONS,
   FIELDS,
@@ -58,6 +63,11 @@ const ENFORCE_APP_CHECK = APP_CHECK_ENFORCEMENT_MODE === "enforced";
 const ALLOW_STORAGE_TOKEN_FALLBACK = String(
     process.env.ALLOW_STORAGE_TOKEN_FALLBACK || "0",
 ).trim() === "1";
+const CANONICAL_AUDIO_STATUS = {
+  pending: "pending",
+  ready: "ready",
+  failed: "failed",
+};
 const GRADE_VALUES = {
   A: 1,
   B: 2,
@@ -86,6 +96,11 @@ function pdfRgb(red = 0.08, green = 0.08, blue = 0.08) {
 
 function buildDirectorPacketExportId(eventId, ensembleId) {
   return `${eventId}_${ensembleId}`;
+}
+
+function buildStorageTokenUrl(bucketName, objectPath, token) {
+  if (!bucketName || !objectPath || !token) return "";
+  return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(objectPath)}?alt=media&token=${token}`;
 }
 
 async function signStorageReadPath(path, {expiresAtMs = Date.now() + DIRECTOR_PACKET_EXPORT_TTL_MS} = {}) {
@@ -129,6 +144,215 @@ async function signStorageReadPath(path, {expiresAtMs = Date.now() + DIRECTOR_PA
       error: error?.message || String(error),
     });
     return "";
+  }
+}
+
+async function runFfmpeg(args = []) {
+  if (!ffmpegPath) {
+    throw new Error("ffmpeg-static is not available.");
+  }
+  await new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath, args, {stdio: ["ignore", "ignore", "pipe"]});
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk || "");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(stderr.trim() || `ffmpeg exited with code ${code}`));
+    });
+  });
+}
+
+async function saveStorageObjectWithToken({
+  bucket,
+  objectPath,
+  buffer,
+  contentType = "audio/webm",
+  metadata = {},
+} = {}) {
+  const token = crypto.randomUUID();
+  await bucket.file(objectPath).save(buffer, {
+    resumable: false,
+    contentType,
+    metadata: {
+      metadata: {
+        ...metadata,
+        firebaseStorageDownloadTokens: token,
+      },
+    },
+  });
+  return {
+    path: objectPath,
+    url: buildStorageTokenUrl(bucket.name, objectPath, token),
+  };
+}
+
+async function buildCanonicalAudioAssetFromSegments({
+  bucket,
+  audioSegments,
+  targetPath,
+  metadata = {},
+} = {}) {
+  const normalized = normalizeAudioSegments(audioSegments || []);
+  if (!normalized.length) {
+    throw new Error("No audio segments available for canonical audio.");
+  }
+
+  const totalDurationSec = normalized.reduce((sum, segment) => {
+    const value = Number(segment?.durationSec || 0);
+    return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+  }, 0);
+
+  if (normalized.length === 1) {
+    const segment = normalized[0];
+    const objectPath = String(segment.audioPath || getStoragePathFromUrl(segment.audioUrl) || "").trim();
+    if (!objectPath) {
+      throw new Error("Unable to resolve single-segment audio path.");
+    }
+    const [buffer] = await bucket.file(objectPath).download();
+    const saved = await saveStorageObjectWithToken({
+      bucket,
+      objectPath: targetPath,
+      buffer,
+      contentType: "audio/webm",
+      metadata,
+    });
+    return {
+      ...saved,
+      durationSec: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
+      sourceSegments: normalized,
+    };
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mpa-audio-"));
+  try {
+    const concatListPath = path.join(tempDir, "concat.txt");
+    const inputPaths = [];
+    for (let index = 0; index < normalized.length; index += 1) {
+      const segment = normalized[index];
+      const objectPath = String(segment.audioPath || getStoragePathFromUrl(segment.audioUrl) || "").trim();
+      if (!objectPath) {
+        throw new Error(`Unable to resolve audio path for segment ${index + 1}.`);
+      }
+      const localPath = path.join(tempDir, `segment_${String(index).padStart(3, "0")}.webm`);
+      await bucket.file(objectPath).download({destination: localPath});
+      inputPaths.push(localPath);
+    }
+    const concatContents = inputPaths
+        .map((localPath) => `file '${localPath.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`)
+        .join("\n");
+    await fs.writeFile(concatListPath, concatContents, "utf8");
+    const outputPath = path.join(tempDir, "canonical.webm");
+    await runFfmpeg([
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      concatListPath,
+      "-c",
+      "copy",
+      outputPath,
+    ]);
+    const outputBuffer = await fs.readFile(outputPath);
+    const saved = await saveStorageObjectWithToken({
+      bucket,
+      objectPath: targetPath,
+      buffer: outputBuffer,
+      contentType: "audio/webm",
+      metadata,
+    });
+    return {
+      ...saved,
+      durationSec: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
+      sourceSegments: normalized,
+    };
+  } finally {
+    await fs.rm(tempDir, {recursive: true, force: true}).catch(() => {});
+  }
+}
+
+async function ensurePacketCanonicalAudio({
+  packetRef,
+  packet,
+  packetId = "",
+  eventId = "",
+  ensembleId = "",
+  judgePosition = "",
+  force = false,
+} = {}) {
+  if (!packetRef) {
+    throw new Error("packetRef required.");
+  }
+  const currentPacket = packet || {};
+  const existingPath = String(currentPacket.canonicalAudioPath || "").trim();
+  const existingUrl = String(currentPacket.canonicalAudioUrl || "").trim();
+  const existingStatus = String(currentPacket.canonicalAudioStatus || "").trim();
+  const existingDuration = Number(currentPacket.canonicalAudioDurationSec || 0);
+  if (!force && existingStatus === CANONICAL_AUDIO_STATUS.ready && existingPath && existingUrl) {
+    return {
+      path: existingPath,
+      url: existingUrl,
+      durationSec: Number.isFinite(existingDuration) ? existingDuration : Number(currentPacket.tapeDurationSec || 0),
+      sourceSegments: normalizeAudioSegments(currentPacket.audioSegments || []),
+    };
+  }
+
+  await packetRef.set({
+    canonicalAudioStatus: CANONICAL_AUDIO_STATUS.pending,
+    canonicalAudioError: "",
+    canonicalAudioUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+
+  try {
+    const sessionsSnap = await packetRef.collection("sessions").orderBy("startedAt", "asc").get();
+    const audioSegments = buildAudioSegmentsFromSessionSnapshots(sessionsSnap.docs);
+    if (!audioSegments.length) {
+      throw new Error("No uploaded audio segments available.");
+    }
+    const bucket = admin.storage().bucket();
+    const objectPath = eventId && ensembleId && judgePosition ?
+      `canonical_audio/${eventId}/${ensembleId}/${judgePosition}.webm` :
+      `canonical_audio/open/${packetId || packetRef.id}.webm`;
+    const canonical = await buildCanonicalAudioAssetFromSegments({
+      bucket,
+      audioSegments,
+      targetPath: objectPath,
+      metadata: {
+        packetId: packetId || packetRef.id,
+        eventId,
+        ensembleId,
+        judgePosition,
+        assetType: "canonical-audio",
+      },
+    });
+    await packetRef.set({
+      canonicalAudioStatus: CANONICAL_AUDIO_STATUS.ready,
+      canonicalAudioPath: canonical.path,
+      canonicalAudioUrl: canonical.url,
+      canonicalAudioDurationSec: canonical.durationSec,
+      canonicalAudioError: "",
+      [FIELDS.packets.audioSegments]: canonical.sourceSegments,
+      [FIELDS.packets.tapeDurationSec]: canonical.durationSec,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      canonicalAudioUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    return canonical;
+  } catch (error) {
+    await packetRef.set({
+      canonicalAudioStatus: CANONICAL_AUDIO_STATUS.failed,
+      canonicalAudioError: String(error?.message || error),
+      canonicalAudioUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    throw error;
   }
 }
 
@@ -481,13 +705,18 @@ async function generateDirectorPacketExportInternal({
       judgeName: submission.judgeName || "",
       judgeEmail: submission.judgeEmail || "",
       pdfPath: judgePdfPath,
-      audioUrl: String(submission.audioUrl || ""),
+      audioUrl: String(submission.canonicalAudioUrl || submission.audioUrl || ""),
       audioPath: String(
+          submission.canonicalAudioPath ||
           submission.audioPath ||
-          getStoragePathFromUrl(submission.audioUrl) ||
+          getStoragePathFromUrl(submission.canonicalAudioUrl || submission.audioUrl) ||
           "",
       ),
-      audioDurationSec: Number(submission.audioDurationSec || 0),
+      audioDurationSec: Number(
+          submission.canonicalAudioDurationSec ||
+          submission.audioDurationSec ||
+          0,
+      ),
       audioSegments: normalizeAudioSegments(submission.audioSegments || []),
       supplementalAudioDurationSec: Number(submission.supplementalAudioDurationSec || 0),
       supplementalAudioPath: String(submission.supplementalAudioPath || ""),
@@ -1437,6 +1666,9 @@ function isSubmissionReady(submission) {
   if (submission.status !== STATUSES.submitted) return false;
   if (submission.locked !== true) return false;
   if (!submission.audioUrl) return false;
+  if (String(submission.canonicalAudioStatus || CANONICAL_AUDIO_STATUS.ready) !== CANONICAL_AUDIO_STATUS.ready) {
+    return false;
+  }
   if (!submission.captions) return false;
   if (Object.keys(submission.captions).length < 7) return false;
   if (typeof submission.captionScoreTotal !== "number") return false;
@@ -2148,6 +2380,12 @@ exports.createOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
     [FIELDS.packets.segmentCount]: 0,
     [FIELDS.packets.tapeDurationSec]: 0,
     [FIELDS.packets.audioSegments]: [],
+    canonicalAudioStatus: "pending",
+    canonicalAudioPath: "",
+    canonicalAudioUrl: "",
+    canonicalAudioDurationSec: 0,
+    canonicalAudioError: "",
+    canonicalAudioUpdatedAt: null,
     [FIELDS.packets.createdAt]: admin.firestore.FieldValue.serverTimestamp(),
     [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
   };
@@ -2224,6 +2462,44 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
   const captionScoreTotal = calculateCaptionTotal(captions);
   const rating = computeFinalRatingFromTotal(captionScoreTotal);
   let currentStatus = "draft";
+  const packetSnapBeforeSubmit = await packetRef.get();
+  if (!packetSnapBeforeSubmit.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const packetBeforeSubmit = packetSnapBeforeSubmit.data() || {};
+  const packetOwnerBeforeSubmit = packetBeforeSubmit.createdByJudgeUid === request.auth.uid;
+  if (!isAdmin && !packetOwnerBeforeSubmit) {
+    throw new HttpsError("permission-denied", "Not authorized.");
+  }
+  if (!isAdmin && packetBeforeSubmit.locked === true) {
+    throw new HttpsError("failed-precondition", "Packet is locked.");
+  }
+  let canonicalAudio = null;
+  try {
+    canonicalAudio = await ensurePacketCanonicalAudio({
+      packetRef,
+      packet: packetBeforeSubmit,
+      packetId,
+      eventId: String(
+          data.officialEventId ||
+          packetBeforeSubmit.officialEventId ||
+          packetBeforeSubmit.assignmentEventId ||
+          "",
+      ).trim(),
+      ensembleId: String(data.ensembleId || packetBeforeSubmit.ensembleId || "").trim(),
+      judgePosition: String(
+          data.officialJudgePosition ||
+          packetBeforeSubmit.officialJudgePosition ||
+          packetBeforeSubmit.judgePosition ||
+          "",
+      ).trim(),
+    });
+  } catch (error) {
+    throw new HttpsError(
+        "failed-precondition",
+        `Canonical stitched audio is not ready: ${error?.message || "Audio processing failed."}`,
+    );
+  }
   await db.runTransaction(async (tx) => {
     const packetSnap = await tx.get(packetRef);
     if (!packetSnap.exists) {
@@ -2321,7 +2597,6 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
             "Official adjudication requires at least one uploaded audio segment.",
         );
       }
-      const primaryAudio = audioSegments[0] || null;
       const submissionId = `${effectiveOfficialEventId}_${nextEnsembleId}_${effectiveOfficialJudgePosition}`;
       const submissionRef = db.collection(COLLECTIONS.submissions).doc(submissionId);
       const submissionSnap = await tx.get(submissionRef);
@@ -2350,10 +2625,18 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
           (data.formType === FORM_TYPES.sight || data.formType === FORM_TYPES.stage) ?
             data.formType :
             (packet.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage),
-        [FIELDS.submissions.audioUrl]: primaryAudio?.audioUrl || latestAudioUrl,
-        audioPath: primaryAudio?.audioPath || "",
+        [FIELDS.submissions.audioUrl]: canonicalAudio?.url || latestAudioUrl,
+        audioPath: canonicalAudio?.path || "",
         audioSegments,
-        [FIELDS.submissions.audioDurationSec]: Number(packet.tapeDurationSec || 0),
+        [FIELDS.submissions.audioDurationSec]: Number(
+            canonicalAudio?.durationSec || packet.tapeDurationSec || 0,
+        ),
+        canonicalAudioStatus: CANONICAL_AUDIO_STATUS.ready,
+        canonicalAudioPath: canonicalAudio?.path || "",
+        canonicalAudioUrl: canonicalAudio?.url || "",
+        canonicalAudioDurationSec: Number(
+            canonicalAudio?.durationSec || packet.tapeDurationSec || 0,
+        ),
         [FIELDS.submissions.transcript]: String(data.transcriptFull || data.transcript || ""),
         [FIELDS.submissions.captions]: captions,
         [FIELDS.submissions.captionScoreTotal]: captionScoreTotal,
@@ -2428,6 +2711,16 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
       [FIELDS.packets.captionScoreTotal]: captionScoreTotal,
       [FIELDS.packets.computedFinalRatingJudge]: rating.value,
       [FIELDS.packets.computedFinalRatingLabel]: rating.label,
+      canonicalAudioStatus: CANONICAL_AUDIO_STATUS.ready,
+      canonicalAudioPath: canonicalAudio?.path || packet.canonicalAudioPath || "",
+      canonicalAudioUrl: canonicalAudio?.url || packet.canonicalAudioUrl || "",
+      canonicalAudioDurationSec: Number(
+          canonicalAudio?.durationSec || packet.tapeDurationSec || 0,
+      ),
+      canonicalAudioError: "",
+      [FIELDS.packets.tapeDurationSec]: Number(
+          canonicalAudio?.durationSec || packet.tapeDurationSec || 0,
+      ),
       [FIELDS.packets.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
       [FIELDS.packets.releasedAt]: null,
       [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
@@ -2511,6 +2804,21 @@ exports.releaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =
   if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
   const db = admin.firestore();
   const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnapBeforeRelease = await packetRef.get();
+  if (!packetSnapBeforeRelease.exists) throw new HttpsError("not-found", "Packet not found.");
+  try {
+    await ensurePacketCanonicalAudio({
+      packetRef,
+      packet: packetSnapBeforeRelease.data() || {},
+      packetId,
+      force: false,
+    });
+  } catch (error) {
+    throw new HttpsError(
+        "failed-precondition",
+        `Open packet audio is not ready for release: ${error?.message || "Audio processing failed."}`,
+    );
+  }
   let priorStatus = null;
   await db.runTransaction(async (tx) => {
     const packetSnap = await tx.get(packetRef);
@@ -2522,6 +2830,9 @@ exports.releaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =
     }
     if (packet.status !== "locked") {
       throw new HttpsError("failed-precondition", "Only locked packets can be released.");
+    }
+    if (String(packet.canonicalAudioStatus || "") !== CANONICAL_AUDIO_STATUS.ready) {
+      throw new HttpsError("failed-precondition", "Open packet audio is not ready for release.");
     }
     tx.set(packetRef, {
       [FIELDS.packets.status]: "released",

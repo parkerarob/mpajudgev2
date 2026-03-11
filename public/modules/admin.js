@@ -681,6 +681,12 @@ export async function repairManualAudioOverrides({ dryRun = true } = {}) {
   return response?.data || {};
 }
 
+export async function repairOpenSubmissionAudioMetadata({ dryRun = true } = {}) {
+  const fn = httpsCallable(functions, "repairOpenSubmissionAudioMetadata");
+  const response = await fn({ dryRun: dryRun !== false });
+  return response?.data || {};
+}
+
 export async function deleteSchool({ schoolId }) {
   const deleteFn = httpsCallable(functions, "deleteSchool");
   return deleteFn({ schoolId });

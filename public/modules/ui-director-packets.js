@@ -11,6 +11,19 @@ export function createDirectorPacketRenderers({
   fetchDirectorAudioResultAsset,
   withLoading,
 } = {}) {
+  function formatDuration(totalSec) {
+    const seconds = Number(totalSec || 0);
+    if (!Number.isFinite(seconds) || seconds <= 0) return "";
+    const whole = Math.max(0, Math.floor(seconds));
+    const hrs = Math.floor(whole / 3600);
+    const mins = Math.floor((whole % 3600) / 60);
+    const secs = whole % 60;
+    if (hrs > 0) {
+      return `${hrs}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+    }
+    return `${mins}:${String(secs).padStart(2, "0")}`;
+  }
+
   function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) {
     const captionSummary = document.createElement("div");
     captionSummary.className = "caption-grid";
@@ -126,6 +139,7 @@ export function createDirectorPacketRenderers({
       Object.values(JUDGE_POSITIONS).forEach((position) => {
         const item = judgeAssets[position];
         if (!item) return;
+        const audioSegments = Array.isArray(item.audioSegments) ? item.audioSegments : [];
         const row = document.createElement("div");
         row.className = "packet-card";
         const label = document.createElement("div");
@@ -150,13 +164,37 @@ export function createDirectorPacketRenderers({
           fileActions.appendChild(pdfView);
           fileActions.appendChild(pdfDownload);
         }
-        if (item.audioUrl) {
+        if (audioSegments.length > 1) {
+          audioSegments.forEach((segment, index) => {
+            if (!segment?.audioUrl) return;
+            const audioLink = document.createElement("a");
+            audioLink.className = "ghost";
+            audioLink.href = segment.audioUrl;
+            audioLink.target = "_blank";
+            audioLink.rel = "noopener";
+            const durationText = formatDuration(Number(segment?.durationSec || 0));
+            audioLink.textContent = durationText
+              ? `Open Audio Part ${index + 1} (${durationText})`
+              : `Open Audio Part ${index + 1}`;
+            fileActions.appendChild(audioLink);
+          });
+        } else if (audioSegments.length === 1 && audioSegments[0]?.audioUrl) {
+          const audioLink = document.createElement("a");
+          audioLink.className = "ghost";
+          audioLink.href = audioSegments[0].audioUrl;
+          audioLink.target = "_blank";
+          audioLink.rel = "noopener";
+          const durationText = formatDuration(Number(audioSegments[0]?.durationSec || 0));
+          audioLink.textContent = durationText ? `Open Audio (${durationText})` : "Open Audio";
+          fileActions.appendChild(audioLink);
+        } else if (item.audioUrl) {
           const audioLink = document.createElement("a");
           audioLink.className = "ghost";
           audioLink.href = item.audioUrl;
           audioLink.target = "_blank";
           audioLink.rel = "noopener";
-          audioLink.textContent = "Open Audio";
+          const durationText = formatDuration(Number(item.audioDurationSec || 0));
+          audioLink.textContent = durationText ? `Open Audio (${durationText})` : "Open Audio";
           fileActions.appendChild(audioLink);
         }
         if (item.supplementalAudioUrl) {
@@ -165,10 +203,13 @@ export function createDirectorPacketRenderers({
           supplementalAudioLink.href = item.supplementalAudioUrl;
           supplementalAudioLink.target = "_blank";
           supplementalAudioLink.rel = "noopener";
-          supplementalAudioLink.textContent = "Open Supplemental Audio";
+          const durationText = formatDuration(Number(item.supplementalAudioDurationSec || 0));
+          supplementalAudioLink.textContent = durationText
+            ? `Open Supplemental Audio (${durationText})`
+            : "Open Supplemental Audio";
           fileActions.appendChild(supplementalAudioLink);
         }
-        if (!item.pdfUrl && !item.audioUrl && !item.supplementalAudioUrl) {
+        if (!item.pdfUrl && !item.audioUrl && !audioSegments.length && !item.supplementalAudioUrl) {
           const unavailable = document.createElement("div");
           unavailable.className = "note";
           unavailable.textContent = "Files are not available yet for this judge.";
@@ -362,18 +403,48 @@ export function createDirectorPacketRenderers({
         scoringCard.appendChild(scoringFooter);
         grid.appendChild(scoringCard);
 
-        if (group.latestAudioUrl) {
+        const openAudioSegments = Array.isArray(group.audioSegments) ? group.audioSegments : [];
+        if (openAudioSegments.length > 1) {
+          const audioStackCard = document.createElement("div");
+          audioStackCard.className = "packet-card";
+          const audioBadge = document.createElement("div");
+          audioBadge.className = "badge";
+          audioBadge.textContent = `Audio (${openAudioSegments.length} parts)`;
+          audioStackCard.appendChild(audioBadge);
+          openAudioSegments.forEach((segment, index) => {
+            const partLabel = document.createElement("div");
+            partLabel.className = "note";
+            partLabel.textContent = segment.label || `Part ${index + 1}`;
+            const audio = document.createElement("audio");
+            audio.controls = true;
+            audio.preload = "metadata";
+            audio.src = segment.audioUrl || "";
+            audio.className = "audio";
+            audioStackCard.appendChild(partLabel);
+            audioStackCard.appendChild(audio);
+          });
+          grid.appendChild(audioStackCard);
+        } else if (openAudioSegments.length === 1 || group.latestAudioUrl) {
           const audioCard = document.createElement("div");
           audioCard.className = "packet-card";
           const audioBadge = document.createElement("div");
           audioBadge.className = "badge";
           audioBadge.textContent = "Audio";
+          const durationText = formatDuration(
+            Number(openAudioSegments[0]?.durationSec || group.audioDurationSec || 0)
+          );
           const audio = document.createElement("audio");
           audio.controls = true;
           audio.preload = "metadata";
-          audio.src = group.latestAudioUrl;
+          audio.src = openAudioSegments[0]?.audioUrl || group.latestAudioUrl;
           audio.className = "audio";
           audioCard.appendChild(audioBadge);
+          if (durationText) {
+            const audioMeta = document.createElement("div");
+            audioMeta.className = "note";
+            audioMeta.textContent = `Duration: ${durationText}`;
+            audioCard.appendChild(audioMeta);
+          }
           audioCard.appendChild(audio);
           grid.appendChild(audioCard);
         }
@@ -383,12 +454,19 @@ export function createDirectorPacketRenderers({
           const supplementalBadge = document.createElement("div");
           supplementalBadge.className = "badge";
           supplementalBadge.textContent = "Supplemental Audio";
+          const durationText = formatDuration(Number(group.supplementalLatestAudioDurationSec || 0));
           const supplementalAudio = document.createElement("audio");
           supplementalAudio.controls = true;
           supplementalAudio.preload = "metadata";
           supplementalAudio.src = group.supplementalLatestAudioUrl;
           supplementalAudio.className = "audio";
           supplementalCard.appendChild(supplementalBadge);
+          if (durationText) {
+            const supplementalMeta = document.createElement("div");
+            supplementalMeta.className = "note";
+            supplementalMeta.textContent = `Duration: ${durationText}`;
+            supplementalCard.appendChild(supplementalMeta);
+          }
           supplementalCard.appendChild(supplementalAudio);
           grid.appendChild(supplementalCard);
         }
@@ -438,6 +516,13 @@ export function createDirectorPacketRenderers({
 
         const card = document.createElement("div");
         card.className = "packet-card";
+        const durationText = formatDuration(Number(group.durationSec || 0));
+        if (durationText) {
+          const durationMeta = document.createElement("div");
+          durationMeta.className = "note";
+          durationMeta.textContent = `Duration: ${durationText}`;
+          card.appendChild(durationMeta);
+        }
         const actions = document.createElement("div");
         actions.className = "row";
         const openBtn = document.createElement("button");
@@ -506,12 +591,19 @@ export function createDirectorPacketRenderers({
             const supplementalBadge = document.createElement("div");
             supplementalBadge.className = "badge";
             supplementalBadge.textContent = `${JUDGE_POSITION_LABELS[position] || position} Supplemental Audio`;
+            const durationText = formatDuration(Number(submission.supplementalAudioDurationSec || 0));
             const supplementalAudio = document.createElement("audio");
             supplementalAudio.controls = true;
             supplementalAudio.preload = "metadata";
             supplementalAudio.src = submission.supplementalAudioUrl;
             supplementalAudio.className = "audio";
             supplementalCard.appendChild(supplementalBadge);
+            if (durationText) {
+              const supplementalMeta = document.createElement("div");
+              supplementalMeta.className = "note";
+              supplementalMeta.textContent = `Duration: ${durationText}`;
+              supplementalCard.appendChild(supplementalMeta);
+            }
             supplementalCard.appendChild(supplementalAudio);
             grid.appendChild(supplementalCard);
           }

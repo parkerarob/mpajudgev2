@@ -55,6 +55,52 @@ let judgeOpenAutoTranscriptionHooks = {
   onStatus: null,
 };
 
+function normalizePacketAudioSegments(audioSegments = []) {
+  if (!Array.isArray(audioSegments)) return [];
+  return audioSegments
+    .map((segment, index) => {
+      const audioUrl = String(segment?.audioUrl || "").trim();
+      const audioPath = String(segment?.audioPath || "").trim();
+      if (!audioUrl && !audioPath) return null;
+      const durationSec = Number(segment?.durationSec || 0);
+      const sortOrder = Number(segment?.sortOrder ?? index);
+      return {
+        sessionId: String(segment?.sessionId || segment?.id || `segment_${index + 1}`),
+        label: String(segment?.label || `Part ${index + 1}`),
+        audioUrl,
+        audioPath,
+        durationSec: Number.isFinite(durationSec) ? durationSec : 0,
+        sortOrder: Number.isFinite(sortOrder) ? sortOrder : index,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+function upsertPacketAudioSegment(segment) {
+  const normalized = normalizePacketAudioSegments([
+    ...(Array.isArray(state.judgeOpen.currentPacket?.audioSegments)
+      ? state.judgeOpen.currentPacket.audioSegments
+      : []),
+    segment,
+  ]);
+  const deduped = [];
+  const seen = new Set();
+  normalized.forEach((item) => {
+    const key = item.sessionId || item.label;
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(item);
+  });
+  if (state.judgeOpen.currentPacket) {
+    state.judgeOpen.currentPacket = {
+      ...state.judgeOpen.currentPacket,
+      audioSegments: deduped,
+    };
+  }
+  return deduped;
+}
+
 function isOpenDebugEnabled() {
   try {
     return window.localStorage?.getItem("mpa.judgeOpenDebug") === "1";
@@ -891,6 +937,14 @@ export async function startOpenRecording({
     audio.onloadedmetadata = async () => {
       try {
         const durationSec = Number(audio.duration || 0);
+        const audioSegments = upsertPacketAudioSegment({
+          sessionId,
+          label: `Part ${Number((state.judgeOpen.currentPacket?.segmentCount || 0)) + 1}`,
+          audioUrl,
+          audioPath: objectPath,
+          durationSec,
+          sortOrder: Number(state.judgeOpen.currentPacket?.segmentCount || 0),
+        });
         await updateDoc(sessionRef, {
           status: "completed",
           durationSec,
@@ -904,6 +958,7 @@ export async function startOpenRecording({
         await updateDoc(doc(db, COLLECTIONS.packets, packetId), {
           [FIELDS.packets.tapeDurationSec]: increment(durationSec || 0),
           [FIELDS.packets.segmentCount]: increment(1),
+          [FIELDS.packets.audioSegments]: audioSegments,
           [FIELDS.packets.updatedAt]: serverTimestamp(),
         });
       } catch (error) {
@@ -1005,6 +1060,19 @@ export async function retryOpenSessionUploads(sessionId) {
       });
       const audioUrl = await getDownloadURL(storageRef);
       retryState.master = null;
+      const existingIndex = Array.isArray(state.judgeOpen.currentPacket?.audioSegments)
+        ? state.judgeOpen.currentPacket.audioSegments.findIndex((segment) => segment?.sessionId === sessionId)
+        : -1;
+      const audioSegments = upsertPacketAudioSegment({
+        sessionId,
+        label: `Part ${existingIndex >= 0 ? existingIndex + 1 : (state.judgeOpen.currentPacket?.audioSegments?.length || 0) + 1}`,
+        audioUrl,
+        audioPath: objectPath,
+        durationSec: Number(
+          (state.judgeOpen.sessions || []).find((session) => session.id === sessionId)?.durationSec || 0
+        ),
+        sortOrder: existingIndex >= 0 ? existingIndex : (state.judgeOpen.currentPacket?.audioSegments?.length || 0),
+      });
       await updateDoc(sessionRef, {
         masterAudioUrl: audioUrl,
         masterAudioPath: objectPath,
@@ -1014,6 +1082,7 @@ export async function retryOpenSessionUploads(sessionId) {
       await updateDoc(doc(db, COLLECTIONS.packets, packetId), {
         [FIELDS.packets.latestAudioUrl]: audioUrl,
         [FIELDS.packets.latestAudioPath]: objectPath,
+        [FIELDS.packets.audioSegments]: audioSegments,
         [FIELDS.packets.updatedAt]: serverTimestamp(),
       });
     } catch (error) {

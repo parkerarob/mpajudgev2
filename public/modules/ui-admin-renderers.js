@@ -32,6 +32,7 @@ export function createAdminRenderers({
   releaseAudioOnlyResult,
   unreleaseAudioOnlyResult,
   repairManualAudioOverrides,
+  repairOpenSubmissionAudioMetadata,
   deleteAllUnreleasedPackets,
   cleanupTestArtifacts,
   renderSubmissionCard,
@@ -625,6 +626,34 @@ export function createAdminRenderers({
           }
         });
         cleanupRow.appendChild(repairBtn);
+        const repairOpenTapeBtn = document.createElement("button");
+        repairOpenTapeBtn.type = "button";
+        repairOpenTapeBtn.className = "ghost";
+        repairOpenTapeBtn.textContent = "Repair Open Tape Metadata";
+        repairOpenTapeBtn.addEventListener("click", async () => {
+          const runDry = window.confirm(
+            "Run a DRY RUN first?\nOK = Dry run only (safe preview)\nCancel = Apply fixes now"
+          );
+          repairOpenTapeBtn.disabled = true;
+          try {
+            const result = await repairOpenSubmissionAudioMetadata({ dryRun: runDry });
+            await renderAdminPacketsBySchedule();
+            alertUser(
+              `${runDry ? "Dry run complete" : "Open tape metadata repair complete"}.\n` +
+              `Open packets updated: ${result.packetsUpdated || 0}\n` +
+              `Official submissions updated: ${result.submissionsUpdated || 0}\n` +
+              `Packet exports updated: ${result.exportsUpdated || 0}\n` +
+              `Skipped (no sessions): ${result.skippedNoSessions || 0}\n` +
+              `Skipped (no official submission): ${result.skippedNoSubmission || 0}`
+            );
+          } catch (error) {
+            console.error("repairOpenSubmissionAudioMetadata failed", error);
+            alertUser(error?.message || "Unable to repair open tape metadata.");
+          } finally {
+            repairOpenTapeBtn.disabled = false;
+          }
+        });
+        cleanupRow.appendChild(repairOpenTapeBtn);
         els.adminPacketsList.appendChild(cleanupRow);
       };
       appendBulkCleanupPanel();

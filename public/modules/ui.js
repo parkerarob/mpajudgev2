@@ -33,6 +33,7 @@ import {
   releaseAudioOnlyResult,
   unreleaseAudioOnlyResult,
   repairManualAudioOverrides,
+  repairOpenSubmissionAudioMetadata,
   deleteScheduleEntry,
   deleteSchool,
   assignDirectorSchool,
@@ -122,6 +123,9 @@ import {
 import {
   calculateCaptionTotal,
   computeFinalRating,
+  formatAudioDuration,
+  getAudioSegmentsDurationSec,
+  getSubmissionAudioSegments,
 } from "./judge-shared.js";
 import {
   createOpenPacket,
@@ -2077,6 +2081,7 @@ function getAdminRenderers() {
     releaseAudioOnlyResult,
     unreleaseAudioOnlyResult,
     repairManualAudioOverrides,
+    repairOpenSubmissionAudioMetadata,
     deleteAllUnreleasedPackets,
     cleanupTestArtifacts,
     renderSubmissionCard,
@@ -5236,14 +5241,20 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
     : judgeName || judgeEmail || "Unknown judge";
   judgeInfo.textContent = `${judgeLabel}${judgeTitle ? ` - ${judgeTitle}` : ""}${judgeAffiliation ? ` - ${judgeAffiliation}` : ""}`;
 
-  const audio = document.createElement("audio");
-  audio.controls = true;
-  audio.preload = "metadata";
-  audio.className = "audio";
-  if (submission.audioUrl) {
-    audio.src = submission.audioUrl;
-  }
+  const audioSegments = getSubmissionAudioSegments(submission);
   const supplementalAudioUrl = String(submission.supplementalAudioUrl || "").trim();
+  const audioDurationText = formatAudioDuration(
+    audioSegments.length > 1
+      ? getAudioSegmentsDurationSec(audioSegments)
+      : Number(audioSegments[0]?.durationSec || submission.audioDurationSec || 0)
+  );
+  const supplementalAudioDurationText = formatAudioDuration(
+    Number(
+      submission.supplementalAudioDurationSec ||
+      submission.supplementalLatestAudioDurationSec ||
+      0
+    )
+  );
 
   const captionSummary = renderPacketCaptionSummary(
     submission.captions || {},
@@ -5256,11 +5267,62 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
 
   card.appendChild(header);
   card.appendChild(judgeInfo);
-  card.appendChild(audio);
+  if (audioSegments.length) {
+    if (audioDurationText) {
+      const audioMeta = document.createElement("div");
+      audioMeta.className = "note";
+      audioMeta.textContent =
+        audioSegments.length > 1
+          ? `Recorded Audio: ${audioDurationText} total`
+          : `Recorded Audio: ${audioDurationText}`;
+      card.appendChild(audioMeta);
+    }
+    if (audioSegments.length === 1) {
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.className = "audio";
+      audio.src = audioSegments[0].audioUrl;
+      card.appendChild(audio);
+    } else {
+      const audioStack = document.createElement("div");
+      audioStack.className = "stack";
+      const audioLabel = document.createElement("div");
+      audioLabel.className = "note";
+      audioLabel.textContent = `Recorded Audio (${audioSegments.length} parts)`;
+      audioStack.appendChild(audioLabel);
+      audioSegments.forEach((segment) => {
+        const partWrap = document.createElement("div");
+        partWrap.className = "stack";
+        const partLabel = document.createElement("div");
+        partLabel.className = "note";
+        const partDurationText = formatAudioDuration(Number(segment.durationSec || 0));
+        partLabel.textContent = partDurationText
+          ? `${segment.label} - ${partDurationText}`
+          : segment.label;
+        const audio = document.createElement("audio");
+        audio.controls = true;
+        audio.preload = "metadata";
+        audio.className = "audio";
+        audio.src = segment.audioUrl;
+        partWrap.appendChild(partLabel);
+        partWrap.appendChild(audio);
+        audioStack.appendChild(partWrap);
+      });
+      card.appendChild(audioStack);
+    }
+  } else {
+    const audioMissing = document.createElement("div");
+    audioMissing.className = "note";
+    audioMissing.textContent = "Audio unavailable.";
+    card.appendChild(audioMissing);
+  }
   if (supplementalAudioUrl) {
     const supplementalLabel = document.createElement("div");
     supplementalLabel.className = "note";
-    supplementalLabel.textContent = "Supplemental Audio";
+    supplementalLabel.textContent = supplementalAudioDurationText
+      ? `Supplemental Audio - ${supplementalAudioDurationText}`
+      : "Supplemental Audio";
     const supplementalAudio = document.createElement("audio");
     supplementalAudio.controls = true;
     supplementalAudio.preload = "metadata";

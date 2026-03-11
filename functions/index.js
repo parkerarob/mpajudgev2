@@ -1792,6 +1792,135 @@ async function deleteOpenPacketDocument({
   };
 }
 
+function computeOpenPacketTranscriptStateFromSessions(sessionDocs = []) {
+  const completedSessions = sessionDocs
+      .map((docSnap) => ({id: docSnap.id, ...(docSnap.data() || {})}))
+      .filter((session) => String(session.status || "") === "completed");
+  const transcriptFull = completedSessions
+      .map((session) => String(session.transcript || "").trim())
+      .filter(Boolean)
+      .join(" ")
+      .trim()
+      .slice(0, MAX_TRANSCRIPT_CHARS);
+  const completeCount = completedSessions.filter(
+      (session) => String(session.transcriptStatus || "").toLowerCase() === "complete",
+  ).length;
+  const failedCount = completedSessions.filter(
+      (session) => String(session.transcriptStatus || "").toLowerCase() === "failed",
+  ).length;
+  const hasCompleted = completedSessions.length > 0;
+  const transcriptStatus = !hasCompleted ?
+    "idle" :
+    failedCount > 0 && completeCount === 0 ?
+      "failed" :
+      failedCount > 0 ?
+        "partial" :
+        completeCount >= completedSessions.length ?
+          "complete" :
+          "running";
+  return {
+    transcriptFull,
+    transcriptStatus,
+    transcriptError: failedCount > 0 ? "One or more recording parts failed." : "",
+  };
+}
+
+function buildOpenPacketSessionStatePatch({
+  packet = {},
+  sessionDocs = [],
+  deletedSessionId = "",
+} = {}) {
+  const audioSegments = buildAudioSegmentsFromSessionSnapshots(sessionDocs);
+  const primaryAudio = audioSegments[0] || null;
+  const totalDurationSec = audioSegments.reduce((sum, segment) => {
+    const value = Number(segment?.durationSec || 0);
+    return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+  }, 0);
+  const transcriptState = computeOpenPacketTranscriptStateFromSessions(sessionDocs);
+  const remainingSessionIds = new Set(sessionDocs.map((docSnap) => docSnap.id));
+  const activeSessionId = String(packet.activeSessionId || "").trim();
+
+  return {
+    [FIELDS.packets.audioSegments]: audioSegments,
+    [FIELDS.packets.audioSessionCount]: sessionDocs.length,
+    [FIELDS.packets.segmentCount]: sessionDocs.length,
+    [FIELDS.packets.latestAudioUrl]: primaryAudio?.audioUrl || "",
+    [FIELDS.packets.latestAudioPath]: primaryAudio?.audioPath || "",
+    [FIELDS.packets.tapeDurationSec]: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
+    [FIELDS.packets.transcript]: transcriptState.transcriptFull,
+    [FIELDS.packets.transcriptFull]: transcriptState.transcriptFull,
+    [FIELDS.packets.transcriptStatus]: transcriptState.transcriptStatus,
+    [FIELDS.packets.transcriptError]: transcriptState.transcriptError,
+    [FIELDS.packets.activeSessionId]:
+      activeSessionId &&
+      activeSessionId !== deletedSessionId &&
+      remainingSessionIds.has(activeSessionId) ?
+        activeSessionId :
+        null,
+    canonicalAudioStatus: "pending",
+    canonicalAudioPath: "",
+    canonicalAudioUrl: "",
+    canonicalAudioDurationSec: 0,
+    canonicalAudioError: "",
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+async function deleteOpenPacketSessionDocument({
+  bucket,
+  packet,
+  packetId,
+  sessionRef,
+  sessionId,
+  session = {},
+}) {
+  const candidatePaths = new Set();
+  if (session.masterAudioPath) {
+    candidatePaths.add(String(session.masterAudioPath));
+  }
+  const derivedPath = getStoragePathFromUrl(session.masterAudioUrl);
+  if (derivedPath) {
+    candidatePaths.add(derivedPath);
+  }
+  if (packet.createdByJudgeUid) {
+    candidatePaths.add(
+        `packet_audio/${packet.createdByJudgeUid}/${packetId}/${sessionId}/master.webm`,
+    );
+  }
+
+  for (const objectPath of candidatePaths) {
+    if (!objectPath) continue;
+    try {
+      await bucket.file(objectPath).delete({ignoreNotFound: true});
+    } catch (error) {
+      logger.warn("deleteOpenPacketSession master audio delete failed", {
+        packetId,
+        sessionId,
+        objectPath,
+        error: error?.message || String(error),
+      });
+    }
+  }
+
+  if (packet.createdByJudgeUid) {
+    const chunkPrefix =
+      `packet_audio/${packet.createdByJudgeUid}/${packetId}/${sessionId}/chunk_`;
+    try {
+      const [files] = await bucket.getFiles({prefix: chunkPrefix});
+      await Promise.all(files.map((file) => file.delete({ignoreNotFound: true})));
+    } catch (error) {
+      logger.warn("deleteOpenPacketSession chunk delete failed", {
+        packetId,
+        sessionId,
+        chunkPrefix,
+        error: error?.message || String(error),
+      });
+    }
+  }
+
+  await sessionRef.delete();
+}
+
 async function deleteScheduledPacketGroup({
   db,
   eventId,
@@ -3016,6 +3145,98 @@ exports.deleteOpenPacket = onCall(async (request) => {
   });
 
   return {ok: true, packetId};
+});
+
+exports.deleteOpenPacketSession = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const packetId = String(data.packetId || "").trim();
+  const sessionId = String(data.sessionId || "").trim();
+  if (!packetId || !sessionId) {
+    throw new HttpsError("invalid-argument", "packetId and sessionId required.");
+  }
+
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const userRole = userSnap.exists ? userSnap.data().role : null;
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const packet = packetSnap.data() || {};
+  const isAdmin = isAdminProfile(userSnap.data() || {});
+  const isOwner = packet.createdByJudgeUid === request.auth.uid;
+  if (!isAdmin && !isOwner) {
+    throw new HttpsError("permission-denied", "Not authorized to delete this recording.");
+  }
+  if (isReleasedOpenPacketStatus(packet.status)) {
+    throw new HttpsError(
+        "failed-precondition",
+        "This open packet is released. Unrelease it before deleting recordings.",
+    );
+  }
+  if (packet.locked === true) {
+    throw new HttpsError(
+        "failed-precondition",
+        "This open packet is locked. Unlock it before deleting recordings.",
+    );
+  }
+
+  const sessionRef = packetRef.collection("sessions").doc(sessionId);
+  const sessionSnap = await sessionRef.get();
+  if (!sessionSnap.exists) {
+    throw new HttpsError("not-found", "Recording not found.");
+  }
+  const session = sessionSnap.data() || {};
+  if (String(session.status || "") === "recording") {
+    throw new HttpsError(
+        "failed-precondition",
+        "Stop recording before deleting this recording part.",
+    );
+  }
+
+  const bucket = admin.storage().bucket();
+  await deleteOpenPacketSessionDocument({
+    bucket,
+    packet,
+    packetId,
+    sessionRef,
+    sessionId,
+    session,
+  });
+
+  const remainingSessionsSnap = await packetRef.collection("sessions")
+      .orderBy("startedAt", "asc")
+      .get();
+  await packetRef.set(buildOpenPacketSessionStatePatch({
+    packet,
+    sessionDocs: remainingSessionsSnap.docs,
+    deletedSessionId: sessionId,
+  }), {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "delete_session",
+    fromStatus: packet.status || null,
+    toStatus: packet.status || null,
+    actor: {uid: request.auth.uid, role: userRole || "judge"},
+  });
+
+  logger.info("deleteOpenPacketSession", {
+    packetId,
+    sessionId,
+    remainingSessionCount: remainingSessionsSnap.size,
+    actorUid: request.auth.uid,
+    actorRole: userRole || null,
+  });
+
+  return {
+    ok: true,
+    packetId,
+    sessionId,
+    remainingSessionCount: remainingSessionsSnap.size,
+  };
 });
 
 exports.deleteScheduledPacket = onCall(async (request) => {

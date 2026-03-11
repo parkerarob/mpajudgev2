@@ -129,6 +129,7 @@ import {
 } from "./judge-shared.js";
 import {
   createOpenPacket,
+  deleteOpenSession,
   fetchOpenEnsembleIndex,
   fetchOfficialOpenEnsembleIndex,
   getOpenCaptionTemplate,
@@ -2226,6 +2227,8 @@ function getJudgeOpenCore() {
     calculateCaptionTotal,
     computeFinalRating,
     formatPerformanceAt,
+    confirmUser,
+    deleteOpenSession,
     retryOpenSessionUploads,
     transcribeOpenSegment,
     setOpenPacketHint,

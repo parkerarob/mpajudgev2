@@ -1101,6 +1101,43 @@ export async function retryOpenSessionUploads(sessionId) {
   return { ok: true };
 }
 
+export async function deleteOpenSession({ sessionId } = {}) {
+  if (!state.judgeOpen.currentPacketId) {
+    return { ok: false, message: "Create an adjudication first." };
+  }
+  if (!sessionId) {
+    return { ok: false, message: "Select a recording first." };
+  }
+  const deleteFn = httpsCallable(functions, "deleteOpenPacketSession");
+  try {
+    const response = await deleteFn({
+      packetId: state.judgeOpen.currentPacketId,
+      sessionId,
+    });
+    delete state.judgeOpen.retryUploads[sessionId];
+    delete state.judgeOpen.autoTranscribeInFlight[sessionId];
+    delete state.judgeOpen.autoTranscribeRetryCount[sessionId];
+    delete state.judgeOpen.autoTranscribePendingSince[sessionId];
+    if (state.judgeOpen.autoTranscribeRetryTimers[sessionId] != null) {
+      window.clearTimeout(state.judgeOpen.autoTranscribeRetryTimers[sessionId]);
+      delete state.judgeOpen.autoTranscribeRetryTimers[sessionId];
+    }
+    if (state.judgeOpen.loadedSegmentAudioSessionId === sessionId) {
+      state.judgeOpen.loadedSegmentAudioSessionId = null;
+    }
+    if (state.judgeOpen.activeSessionId === sessionId) {
+      state.judgeOpen.activeSessionId = null;
+    }
+    return response.data || { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error?.message || "Unable to delete recording.",
+      error,
+    };
+  }
+}
+
 export async function transcribeOpenTape() {
   if (!state.judgeOpen.currentPacketId) return { ok: false, message: "Create an adjudication first." };
   const packetId = state.judgeOpen.currentPacketId;

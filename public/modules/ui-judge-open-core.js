@@ -6,6 +6,8 @@ export function createJudgeOpenCore({
   calculateCaptionTotal,
   computeFinalRating,
   formatPerformanceAt,
+  confirmUser,
+  deleteOpenSession,
   retryOpenSessionUploads,
   transcribeOpenSegment,
   setOpenPacketHint,
@@ -391,6 +393,34 @@ export function createJudgeOpenCore({
           renderOpenSegments(state.judgeOpen.sessions || []);
         });
         actions.appendChild(loadAudioBtn);
+      }
+      if (session.masterAudioUrl && isOpenPacketEditable(state.judgeOpen.currentPacket || {})) {
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "ghost";
+        deleteBtn.textContent = "Delete";
+        deleteBtn.dataset.loadingLabel = "Deleting...";
+        deleteBtn.dataset.spinner = "true";
+        deleteBtn.addEventListener("click", async () => {
+          if (deleteBtn.dataset.loading === "true") return;
+          if (state.judgeOpen.mediaRecorder?.state === "recording") {
+            setOpenPacketHint("Stop recording before deleting a recording part.");
+            return;
+          }
+          const ok = confirmUser(
+            `Delete Part ${index + 1}? This removes the saved recording for this part.`
+          );
+          if (!ok) return;
+          await runWithLoading(deleteBtn, async () => {
+            setOpenPacketHint(`Deleting Part ${index + 1}...`);
+            const result = await deleteOpenSession({ sessionId: session.id });
+            if (!result?.ok) {
+              setOpenPacketHint(result?.message || "Unable to delete recording.");
+              return;
+            }
+            setOpenPacketHint(`Deleted Part ${index + 1}.`);
+          });
+        });
+        actions.appendChild(deleteBtn);
       }
       item.appendChild(actions);
 

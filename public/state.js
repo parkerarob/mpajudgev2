@@ -598,6 +598,7 @@ export const els = {
   lunchCheeseInput: document.getElementById("lunchCheeseInput"),
   pizzaPickupTimingInput: document.getElementById("pizzaPickupTimingInput"),
   saveLunchBtn: document.getElementById("saveLunchBtn"),
+  directorPrintPizzaInvoiceBtn: document.getElementById("directorPrintPizzaInvoiceBtn"),
   saveLunchStatus: document.getElementById("saveLunchStatus"),
   lunchTotalCost: document.getElementById("lunchTotalCost"),
   directorEntryReadyBtn: document.getElementById("directorEntryReadyBtn"),

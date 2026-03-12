@@ -14,6 +14,7 @@ export function createDirectorHandlerBinder({
   applyDirectorEntryUpdate,
   applyDirectorEntryClear,
   generateSignatureFormPdf,
+  generatePizzaInvoicePdf,
   uploadSignedSignatureForm,
   setDirectorEnsembleFormMode,
   closeDirectorEnsembleForm,
@@ -554,6 +555,11 @@ export function createDirectorHandlerBinder({
           const result = await saveLunchSection();
           applyDirectorSaveResult("lunch", result);
         });
+      });
+    }
+    if (els.directorPrintPizzaInvoiceBtn) {
+      els.directorPrintPizzaInvoiceBtn.addEventListener("click", () => {
+        generatePizzaInvoicePdf();
       });
     }
 

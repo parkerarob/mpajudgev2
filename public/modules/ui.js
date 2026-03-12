@@ -2360,6 +2360,7 @@ function getDirectorHandlerBinder() {
     applyDirectorEntryUpdate,
     applyDirectorEntryClear,
     generateSignatureFormPdf,
+    generatePizzaInvoicePdf,
     uploadSignedSignatureForm,
     setDirectorEnsembleFormMode,
     closeDirectorEnsembleForm,
@@ -4214,6 +4215,183 @@ function generateSignatureFormPdf() {
 
   const safeName = schoolName.replace(/[^a-zA-Z0-9]/g, "_");
   pdf.save(`SignatureForm_${safeName}.pdf`);
+}
+
+function generatePizzaInvoicePdf() {
+  const eventId = state.director.selectedEventId;
+  const event = eventId ? (state.event.list || []).find((item) => item.id === eventId) : null;
+  const schoolName = els.directorSummarySchool?.textContent || "School";
+  const selectedEnsembleId = String(state.director.selectedEnsembleId || "").trim();
+  const ensemble = (state.director.ensemblesCache || []).find((item) => item.id === selectedEnsembleId) || null;
+  const ensembleName = ensemble?.name || selectedEnsembleId || "Ensemble";
+  const lunchOrder = state.director.entryDraft?.lunchOrder || {};
+  const pepperoniQty = Number(lunchOrder.pepperoniQty || 0);
+  const cheeseQty = Number(lunchOrder.cheeseQty || 0);
+  const totalMeals = Math.max(pepperoniQty + cheeseQty, 0);
+  const totalCost = totalMeals * 8;
+  const pickupTiming = lunchOrder.pickupTiming === "before"
+    ? "Before performance time"
+    : lunchOrder.pickupTiming === "after"
+      ? "After performance time"
+      : "";
+
+  if (!event) {
+    alertUser("No event selected.");
+    return;
+  }
+  if (!selectedEnsembleId || !state.director.entryDraft) {
+    alertUser("Open an ensemble event form first.");
+    return;
+  }
+  if (totalMeals <= 0) {
+    alertUser("Add a pizza order before downloading an invoice.");
+    return;
+  }
+  if (!pickupTiming) {
+    alertUser("Select whether pizza is needed before or after performance time.");
+    return;
+  }
+
+  const startDate = event.startAt?.toDate ? event.startAt.toDate().toLocaleDateString() : "";
+  const endDate = event.endAt?.toDate ? event.endAt.toDate().toLocaleDateString() : "";
+  const dateLabel = startDate && endDate && startDate !== endDate
+    ? `${startDate} - ${endDate}`
+    : startDate || endDate || "";
+  const money = (value) => `$${Number(value || 0).toFixed(2)}`;
+  const pdfWidth = 612;
+  const pdfHeight = 792;
+  const lines = [];
+  const escapePdfText = (value) => String(value || "")
+    .replace(/[^\x20-\x7E]/g, "?")
+    .replaceAll("\\", "\\\\")
+    .replaceAll("(", "\\(")
+    .replaceAll(")", "\\)");
+  const addText = (text, x, yTop, size = 12, font = "F1") => {
+    const y = pdfHeight - yTop;
+    lines.push(`BT /${font} ${size} Tf 1 0 0 1 ${x} ${y} Tm (${escapePdfText(text)}) Tj ET`);
+  };
+  const addLine = (x1, y1Top, x2, y2Top) => {
+    const y1 = pdfHeight - y1Top;
+    const y2 = pdfHeight - y2Top;
+    lines.push(`${x1} ${y1} m ${x2} ${y2} l S`);
+  };
+  const addWrappedText = (text, x, yTop, maxChars = 76, size = 12, font = "F1", step = 16) => {
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      addText("", x, yTop, size, font);
+      return yTop + step;
+    }
+    const wrapped = [];
+    let current = "";
+    words.forEach((word) => {
+      const next = current ? `${current} ${word}` : word;
+      if (next.length > maxChars && current) {
+        wrapped.push(current);
+        current = word;
+      } else {
+        current = next;
+      }
+    });
+    if (current) wrapped.push(current);
+    wrapped.forEach((line, index) => {
+      addText(line, x, yTop + (index * step), size, font);
+    });
+    return yTop + (wrapped.length * step);
+  };
+
+  addText("ASHLEY HIGH SCHOOL BAND BOOSTERS", 54, 54, 11, "F2");
+  addText("Pizza Order Invoice", 54, 80, 20, "F2");
+  addText(getEventCardLabel(event), 54, 104, 12, "F1");
+  if (dateLabel) addText(dateLabel, 54, 122, 11, "F1");
+  addLine(54, 136, 558, 136);
+
+  let y = 164;
+  addText("School", 54, y, 10, "F2");
+  y = addWrappedText(schoolName, 54, y + 18, 42, 12, "F1", 15) + 8;
+
+  let rightY = 164;
+  addText("Ensemble", 330, rightY, 10, "F2");
+  rightY = addWrappedText(ensembleName, 330, rightY + 18, 34, 12, "F1", 15) + 8;
+
+  const detailBottom = Math.max(y, rightY);
+  addText("Pickup Timing", 54, detailBottom, 10, "F2");
+  addText(pickupTiming, 54, detailBottom + 18, 12, "F1");
+  addText("Generated", 330, detailBottom, 10, "F2");
+  addText(new Date().toLocaleString(), 330, detailBottom + 18, 12, "F1");
+
+  y = detailBottom + 52;
+  addLine(54, y, 558, y);
+  y += 24;
+  addText("Item", 54, y, 10, "F2");
+  addText("Qty", 360, y, 10, "F2");
+  addText("Unit", 430, y, 10, "F2");
+  addText("Total", 500, y, 10, "F2");
+  y += 10;
+  addLine(54, y, 558, y);
+  y += 24;
+
+  const addRow = (label, qty, total) => {
+    addText(label, 54, y, 12, "F1");
+    addText(String(qty), 360, y, 12, "F1");
+    addText(money(8), 430, y, 12, "F1");
+    addText(money(total), 500, y, 12, "F1");
+    y += 24;
+  };
+
+  addRow("Pepperoni Pizza Lunch", pepperoniQty, pepperoniQty * 8);
+  addRow("Cheese Pizza Lunch", cheeseQty, cheeseQty * 8);
+
+  addLine(330, y, 558, y);
+  y += 24;
+  addText("Total Meals", 330, y, 11, "F2");
+  addText(String(totalMeals), 500, y, 11, "F2");
+  y += 24;
+  addText("Total Due", 330, y, 15, "F2");
+  addText(money(totalCost), 500, y, 15, "F2");
+
+  y += 46;
+  addText("Each lunch includes two slices of pizza, chips/snack, and soda or bottled water.", 54, y, 11, "F1");
+  y += 22;
+  addText("Make checks payable to Ashley High School Band Boosters.", 54, y, 11, "F1");
+  y += 22;
+  addText("Payment accepted by check or cash. Submit one lump-sum payment for total meals.", 54, y, 11, "F1");
+
+  const encoder = new TextEncoder();
+  const content = lines.join("\n");
+  const contentLength = encoder.encode(content).length;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfWidth} ${pdfHeight}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
+    `<< /Length ${contentLength} >>\nstream\n${content}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((objectBody, index) => {
+    offsets.push(encoder.encode(pdf).length);
+    pdf += `${index + 1} 0 obj\n${objectBody}\nendobj\n`;
+  });
+  const xrefOffset = encoder.encode(pdf).length;
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  offsets.slice(1).forEach((offset) => {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  });
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  const blob = new Blob([pdf], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const safeSchool = schoolName.replace(/[^a-zA-Z0-9]/g, "_");
+  const safeEnsemble = ensembleName.replace(/[^a-zA-Z0-9]/g, "_");
+  link.href = url;
+  link.download = `PizzaInvoice_${safeSchool}_${safeEnsemble}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function updateRepertoirePreview(wrapper, key) {

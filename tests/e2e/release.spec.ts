@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { captureActiveEventSnapshot, restoreActiveEventSnapshot, type ActiveEventSnapshot } from "./event-state";
 
 const requiredEnv = [
   "MPA_BASE_URL",
@@ -23,6 +24,8 @@ test.beforeAll(() => {
 const data = {
   eventName: `Release Event ${Date.now()}`,
 };
+
+let initialActiveEvent: ActiveEventSnapshot = { name: null };
 
 async function signIn(page, email, password) {
   await page.goto("/");
@@ -51,6 +54,28 @@ async function signOut(page) {
 }
 
 test.describe.serial("Release E2E Tests", () => {
+  test.beforeAll(async ({ browser }) => {
+    const page = await browser.newPage();
+    try {
+      await signIn(page, requireEnv("MPA_ADMIN_EMAIL"), requireEnv("MPA_ADMIN_PASSWORD"));
+      initialActiveEvent = await captureActiveEventSnapshot(page);
+      await signOut(page);
+    } finally {
+      await page.close();
+    }
+  });
+
+  test.afterAll(async ({ browser }) => {
+    const page = await browser.newPage();
+    try {
+      await signIn(page, requireEnv("MPA_ADMIN_EMAIL"), requireEnv("MPA_ADMIN_PASSWORD"));
+      await restoreActiveEventSnapshot(page, initialActiveEvent);
+      await signOut(page);
+    } finally {
+      await page.close();
+    }
+  });
+
   test("Admin: release controls are unavailable without scheduled packets", async ({ page }) => {
     await signIn(page, requireEnv("MPA_ADMIN_EMAIL"), requireEnv("MPA_ADMIN_PASSWORD"));
 

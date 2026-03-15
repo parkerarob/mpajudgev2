@@ -9,6 +9,7 @@ export function createJudgeOpenHandlerBinder({
   gatherOpenPacketMeta,
   createOpenPacket,
   renderOpenSegments,
+  renderOpenMicOptions,
   saveOpenPrefsToServer,
   renderOpenCaptionForm,
   updateOpenHeader,
@@ -16,6 +17,7 @@ export function createJudgeOpenHandlerBinder({
   updateOpenEmptyState,
   updateOpenSubmitState,
   saveOpenPrefs,
+  refreshOpenMicrophones,
   markJudgeOpenDirty,
   buildOpenEnsembleSnapshot,
   updateOpenPacketDraft,
@@ -36,6 +38,7 @@ export function createJudgeOpenHandlerBinder({
 } = {}) {
   let judgeOpenHandlersBound = false;
   let tapePlaybackBound = false;
+  let micDeviceListenerBound = false;
   const autoSizeCaptionTextarea = (textareaEl) => {
     if (!textareaEl) return;
     textareaEl.style.height = "auto";
@@ -60,6 +63,41 @@ export function createJudgeOpenHandlerBinder({
     return false;
   }
 
+  async function refreshAndRenderOpenMicrophones() {
+    try {
+      const microphones = await refreshOpenMicrophones();
+      renderOpenMicOptions(microphones);
+    } catch (error) {
+      console.error("Failed to refresh microphones", error);
+      renderOpenMicOptions(state.judgeOpen.availableMicrophones || []);
+      if (els.judgeOpenMicStatus) {
+        els.judgeOpenMicStatus.textContent = "Unable to refresh microphones.";
+      }
+    }
+  }
+
+  async function persistOpenMicPreference(deviceId) {
+    const normalizedDeviceId = String(deviceId || "");
+    state.judgeOpen.selectedMicDeviceId = normalizedDeviceId;
+    const selected = (state.judgeOpen.availableMicrophones || []).find(
+      (item) => item.deviceId === normalizedDeviceId
+    );
+    state.judgeOpen.selectedMicLabel = selected?.label || "";
+    saveOpenPrefs({ micDeviceId: normalizedDeviceId });
+    renderOpenMicOptions(state.judgeOpen.availableMicrophones || []);
+    try {
+      await saveOpenPrefsToServer({ judgeOpenMicDeviceId: normalizedDeviceId });
+      if (state.auth.userProfile) {
+        state.auth.userProfile.preferences = {
+          ...(state.auth.userProfile.preferences || {}),
+          judgeOpenMicDeviceId: normalizedDeviceId,
+        };
+      }
+    } catch (error) {
+      console.error("Failed to save open microphone preference", error);
+    }
+  }
+
   return function bindJudgeOpenHandlers() {
     if (judgeOpenHandlersBound) return;
     judgeOpenHandlersBound = true;
@@ -77,6 +115,7 @@ export function createJudgeOpenHandlerBinder({
         els.judgeOpenChoosePracticeBtn.dataset.loadingLabel = "Opening Practice...";
         await withLoading(els.judgeOpenChoosePracticeBtn, async () => {
           await chooseJudgeOpenMode("practice");
+          await refreshAndRenderOpenMicrophones();
           setOpenPacketHint(
             "Practice workspace open. Resume a draft or choose New Adjudication to create another one."
           );
@@ -88,6 +127,7 @@ export function createJudgeOpenHandlerBinder({
         els.judgeOpenChooseOfficialBtn.dataset.loadingLabel = "Opening Official...";
         await withLoading(els.judgeOpenChooseOfficialBtn, async () => {
           await chooseJudgeOpenMode("official");
+          await refreshAndRenderOpenMicrophones();
           setOpenPacketHint(
             "Official workspace open. Resume a draft or choose New Adjudication to create another one."
           );
@@ -98,6 +138,28 @@ export function createJudgeOpenHandlerBinder({
       els.judgeOpenBackToLandingBtn.addEventListener("click", async () => {
         await backToJudgeOpenLanding();
       });
+    }
+
+    if (els.judgeOpenMicSelect) {
+      els.judgeOpenMicSelect.addEventListener("change", async () => {
+        await persistOpenMicPreference(els.judgeOpenMicSelect.value || "");
+      });
+    }
+
+    if (els.judgeOpenMicRefreshBtn) {
+      els.judgeOpenMicRefreshBtn.addEventListener("click", async () => {
+        els.judgeOpenMicRefreshBtn.dataset.loadingLabel = "Refreshing...";
+        await withLoading(els.judgeOpenMicRefreshBtn, async () => {
+          await refreshAndRenderOpenMicrophones();
+        });
+      });
+    }
+
+    if (!micDeviceListenerBound && navigator.mediaDevices?.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", () => {
+        void refreshAndRenderOpenMicrophones();
+      });
+      micDeviceListenerBound = true;
     }
 
     if (els.judgeOpenBackBtn) {
@@ -495,42 +557,60 @@ export function createJudgeOpenHandlerBinder({
       });
     }
 
+    const handleOpenStop = async (buttonEl) => {
+      if (buttonEl) {
+        buttonEl.dataset.loadingLabel = "Stopping...";
+        buttonEl.dataset.spinner = "true";
+      }
+      if (els.judgeOpenEmergencyStopBtn && buttonEl !== els.judgeOpenEmergencyStopBtn) {
+        els.judgeOpenEmergencyStopBtn.disabled = true;
+      }
+      if (els.judgeOpenStopBtn && buttonEl !== els.judgeOpenStopBtn) {
+        els.judgeOpenStopBtn.disabled = true;
+      }
+      if (els.judgeOpenRecordingStatus) {
+        els.judgeOpenRecordingStatus.textContent = "Stopping and finalizing...";
+      }
+      await withLoading(buttonEl || els.judgeOpenStopBtn, async () => {
+        const result = stopOpenRecording();
+        if (!result?.ok) {
+          if (els.judgeOpenRecordingStatus) {
+            els.judgeOpenRecordingStatus.textContent = "No active recording.";
+          }
+          return;
+        }
+        const settled = await waitForOpenRecordingSettle();
+        if (!settled) {
+          setOpenPacketHint("Recording stopped. Transcript finalization is still catching up.");
+          return;
+        }
+        if (els.judgeOpenRecordingStatus) {
+          els.judgeOpenRecordingStatus.textContent = "Finalizing transcript...";
+        }
+        const finalResult = await finalizeOpenTapeAutoTranscription();
+        if (!finalResult?.ok) {
+          setOpenPacketHint(finalResult?.message || "Final transcript check failed.");
+          return;
+        }
+        if (els.judgeOpenTranscriptInput) {
+          els.judgeOpenTranscriptInput.value = finalResult.transcript || "";
+        }
+        state.judgeOpen.transcriptText = finalResult.transcript || "";
+        updateOpenSubmitState();
+        setOpenPacketHint("Transcript ready.");
+      });
+      updateOpenRecordingStatus();
+    };
+
     if (els.judgeOpenStopBtn) {
       els.judgeOpenStopBtn.addEventListener("click", async () => {
-        els.judgeOpenStopBtn.dataset.loadingLabel = "Stopping...";
-        els.judgeOpenStopBtn.dataset.spinner = "true";
-        if (els.judgeOpenRecordingStatus) {
-          els.judgeOpenRecordingStatus.textContent = "Stopping and finalizing...";
-        }
-        await withLoading(els.judgeOpenStopBtn, async () => {
-          const result = stopOpenRecording();
-          if (!result?.ok) {
-            if (els.judgeOpenRecordingStatus) {
-              els.judgeOpenRecordingStatus.textContent = "No active recording.";
-            }
-            return;
-          }
-          const settled = await waitForOpenRecordingSettle();
-          if (!settled) {
-            setOpenPacketHint("Recording stopped. Transcript finalization is still catching up.");
-            return;
-          }
-          if (els.judgeOpenRecordingStatus) {
-            els.judgeOpenRecordingStatus.textContent = "Finalizing transcript...";
-          }
-          const finalResult = await finalizeOpenTapeAutoTranscription();
-          if (!finalResult?.ok) {
-            setOpenPacketHint(finalResult?.message || "Final transcript check failed.");
-            return;
-          }
-          if (els.judgeOpenTranscriptInput) {
-            els.judgeOpenTranscriptInput.value = finalResult.transcript || "";
-          }
-          state.judgeOpen.transcriptText = finalResult.transcript || "";
-          updateOpenSubmitState();
-          setOpenPacketHint("Transcript ready.");
-        });
-        updateOpenRecordingStatus();
+        await handleOpenStop(els.judgeOpenStopBtn);
+      });
+    }
+
+    if (els.judgeOpenEmergencyStopBtn) {
+      els.judgeOpenEmergencyStopBtn.addEventListener("click", async () => {
+        await handleOpenStop(els.judgeOpenEmergencyStopBtn);
       });
     }
 

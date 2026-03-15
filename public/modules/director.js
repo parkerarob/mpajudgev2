@@ -144,6 +144,9 @@ export function buildDirectorAutosavePayload() {
         : "",
     notes: lunchOrder.notes || "",
   };
+  const resolvedLunch = isPizzaOrderWindowClosed() && state.director.persistedLunchOrder
+    ? { ...state.director.persistedLunchOrder }
+    : normalizedLunch;
 
   return {
     status: "draft",
@@ -161,8 +164,18 @@ export function buildDirectorAutosavePayload() {
     rule3c: normalizedRule3c,
     seating: normalizedSeating,
     percussionNeeds: normalizedPercussion,
-    lunchOrder: normalizedLunch,
+    lunchOrder: resolvedLunch,
   };
+}
+
+export function isPizzaOrderWindowClosed(
+  eventId = state.director.selectedEventId || state.event.active?.id || ""
+) {
+  const targetId = String(eventId || "").trim();
+  if (!targetId) return false;
+  const event = (state.event.list || []).find((item) => item.id === targetId) ||
+    (state.event.active?.id === targetId ? state.event.active : null);
+  return Boolean(event?.pizzaOrdersClosed);
 }
 
 export function buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid }) {
@@ -755,6 +768,13 @@ export async function savePercussionSection() {
 
 export async function saveLunchSection() {
   if (!state.director.entryDraft) return;
+  if (isPizzaOrderWindowClosed()) {
+    return {
+      ok: false,
+      reason: "validation",
+      message: "Pizza ordering is closed for this event.",
+    };
+  }
   const lunchOrder = state.director.entryDraft.lunchOrder || {};
   lunchOrder.pepperoniQty = normalizeNumber(lunchOrder.pepperoniQty);
   lunchOrder.cheeseQty = normalizeNumber(lunchOrder.cheeseQty);
@@ -771,7 +791,11 @@ export async function saveLunchSection() {
     };
   }
   state.director.entryDraft.lunchOrder = lunchOrder;
-  return saveEntrySection("lunch", { lunchOrder }, "Pizza order saved.");
+  const result = await saveEntrySection("lunch", { lunchOrder }, "Pizza order saved.");
+  if (result?.ok) {
+    state.director.persistedLunchOrder = { ...lunchOrder };
+  }
+  return result;
 }
 
 export async function loadDirectorSchoolLunchTotal({ eventId, schoolId } = {}) {
@@ -936,6 +960,7 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
   const directorSchoolId = getDirectorSchoolId();
   if (!directorSchoolId || !state.director.selectedEventId || !state.director.selectedEnsembleId) {
     state.director.entryDraft = null;
+    state.director.persistedLunchOrder = null;
     state.director.entryExists = false;
     state.director.entryRef = null;
     onClear?.({
@@ -984,6 +1009,9 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
       state.director.entryDraft = prior
         ? normalizeEntryData(prior.data, defaults)
         : defaults;
+      state.director.persistedLunchOrder = {
+        ...(state.director.entryDraft.lunchOrder || defaults.lunchOrder),
+      };
       state.director.entryExists = false;
       state.director.dirtySections.clear();
       const carriedReady = state.director.entryDraft.status === "ready";
@@ -997,6 +1025,9 @@ export async function loadDirectorEntry({ onUpdate, onClear } = {}) {
     }
     state.director.entryExists = true;
     state.director.entryDraft = normalizeEntryData(snapshot.data(), defaults);
+    state.director.persistedLunchOrder = {
+      ...(state.director.entryDraft.lunchOrder || defaults.lunchOrder),
+    };
     const updatedAt = snapshot.data()?.updatedAt?.toDate?.();
     state.director.dirtySections.clear();
     onUpdate?.({

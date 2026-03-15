@@ -78,6 +78,7 @@
           <button type="button" class="admin-subnav-btn" id="adminSubnavEventChairBtn" role="tab" data-admin-view="preEvent" aria-selected="true">Pre-Event</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavChairBtn" role="tab" data-admin-view="liveEvent" aria-selected="false">Live Event</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavPacketsBtn" role="tab" data-admin-view="packets" aria-selected="false">Packets</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavAnnouncerBtn" role="tab" data-admin-view="announcer" aria-selected="false">Announcer</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavReadinessBtn" role="tab" data-admin-view="readiness" aria-selected="false">Readiness</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavSettingsBtn" role="tab" data-admin-view="settings" aria-selected="false">Settings</button>
         </nav>
@@ -214,6 +215,14 @@
               </div>
             </div>
             <div id="liveEventContent"></div>
+          </div>
+          </div>
+
+          <div id="adminViewAnnouncer" class="admin-view stack is-hidden" data-admin-view="announcer">
+          <div class="panel">
+            <h3>Announcer</h3>
+            <p class="hint">Read upcoming band information in performance order from the active event schedule.</p>
+            <div id="adminAnnouncerContent"></div>
           </div>
           </div>
 
@@ -593,6 +602,14 @@
                   <span class="badge">Step 2</span>
                   <strong>Audio Capture</strong>
                 </div>
+                <label>
+                  Microphone
+                  <div class="row">
+                    <select id="judgeOpenMicSelect"></select>
+                    <button type="button" id="judgeOpenMicRefreshBtn" class="ghost">Refresh Mics</button>
+                  </div>
+                </label>
+                <div class="hint" id="judgeOpenMicStatus"></div>
                 <div class="recording-control">
                   <button type="button" id="judgeOpenRecordBtn" class="btn--secondary record-btn">
                     <span class="record-dot" id="judgeOpenRecordDot" aria-hidden="true"></span>
@@ -671,6 +688,14 @@
             </div>
           </div>
         </div>
+
+        <button
+          type="button"
+          id="judgeOpenEmergencyStopBtn"
+          class="btn--danger judge-open-emergency-stop is-hidden"
+        >
+          Stop Recording Now
+        </button>
 
         <div class="sticky-bottom" id="judgeOpenStickyBar">
           <div class="sticky-meta">
@@ -906,6 +931,7 @@
                 <details class="panel accordion-card">
                   <summary><div><strong>Pizza Order</strong></div></summary>
                   <div class="form-section">
+                    <div class="hint" id="pizzaOrderWindowStatus"></div>
                     <div class="hint">Each lunch includes two slices of pizza, chips/snack, and soda or bottled water. Cost per meal is $8.00.</div>
                     <label>Pepperoni pizza lunch quantity <input type="number" id="lunchPepperoniInput" min="0" value="0" /></label>
                     <label>Cheese pizza lunch quantity <input type="number" id="lunchCheeseInput" min="0" value="0" /></label>

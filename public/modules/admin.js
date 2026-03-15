@@ -76,6 +76,7 @@ export async function createEvent({
     name: name.trim(),
     isActive: false,
     eventMode: normalizedMode,
+    pizzaOrdersClosed: false,
     readinessState: {
       preflight: null,
       steps: {},
@@ -216,9 +217,30 @@ export async function renameEvent({ eventId, name }) {
   });
 }
 
+export async function setPizzaOrdersClosed({ eventId, closed }) {
+  if (!eventId) throw new Error("eventId required");
+  const eventRef = doc(db, COLLECTIONS.events, eventId);
+  return updateDoc(eventRef, {
+    pizzaOrdersClosed: Boolean(closed),
+    updatedAt: serverTimestamp(),
+  });
+}
+
 export async function deleteEvent(eventId) {
   const deleteEventFn = httpsCallable(functions, "deleteEvent");
   return deleteEventFn({ eventId });
+}
+
+export async function regenerateDirectorPacketExport({ eventId, ensembleId }) {
+  const fn = httpsCallable(functions, "regenerateDirectorPacketExport");
+  const response = await fn({ eventId, ensembleId });
+  return response.data || {};
+}
+
+export async function generateOpenPacketPrintAsset({ packetId }) {
+  const fn = httpsCallable(functions, "generateOpenPacketPrintAsset");
+  const response = await fn({ packetId });
+  return response.data || {};
 }
 
 export async function setActiveEvent(eventId) {

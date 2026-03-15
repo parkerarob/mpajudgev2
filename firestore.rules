@@ -62,6 +62,19 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/events/$(eventId)).data.isActive == true;
     }
 
+    function pizzaOrdersOpen(eventId) {
+      return get(/databases/$(database)/documents/events/$(eventId)).data.pizzaOrdersClosed != true;
+    }
+
+    function defaultLunchOrder() {
+      return {
+        "pepperoniQty": 0,
+        "cheeseQty": 0,
+        "pickupTiming": "",
+        "notes": ""
+      };
+    }
+
     function schoolExists(schoolId) {
       return exists(/databases/$(database)/documents/schools/$(schoolId));
     }
@@ -188,7 +201,18 @@ service cloud.firestore {
           || (isDirector()
             && request.resource.data.schoolId == userSchoolId()
             && request.resource.data.eventId == eventId
-            && request.resource.data.ensembleId == ensembleId);
+            && request.resource.data.ensembleId == ensembleId
+            && (
+              pizzaOrdersOpen(eventId)
+              || (
+                resource == null
+                && request.resource.data.lunchOrder == defaultLunchOrder()
+              )
+              || (
+                resource != null
+                && request.resource.data.lunchOrder == resource.data.lunchOrder
+              )
+            ));
       }
 
       match /assignments/{assignmentId} {

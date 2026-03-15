@@ -149,6 +149,7 @@ ensureSchoolDropdownsWatcher();
 function handleSignedOut() {
   stopOpenRecording();
   stopOpenLevelMeter();
+  document.body.classList.remove("judge-open-recording-safe");
   setMainInteractionDisabled(true);
   const working = hasUnsavedChanges();
   if (working) {

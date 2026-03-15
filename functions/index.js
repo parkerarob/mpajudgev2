@@ -36,7 +36,7 @@ const MAX_STAGE_SYNTHESIS_TRANSCRIPT_CHARS = 10000;
 const MAX_FINAL_CAPTION_WORDS = 140;
 const PARSE_TRANSCRIPT_TIMEOUT_SECONDS = 300;
 const DIRECTOR_PACKET_EXPORT_TTL_MS = 1000 * 60 * 30;
-const DIRECTOR_PACKET_EXPORT_VERSION = "generated-v1";
+const DIRECTOR_PACKET_EXPORT_VERSION = "generated-v2";
 const DIRECTOR_PACKET_EXPORT_RETENTION_MS = 1000 * 60 * 60 * 24 * 14;
 const DIRECTOR_PACKET_EXPORT_STALE_FAILURE_MS = 1000 * 60 * 60 * 24 * 2;
 const ORPHAN_PACKET_SESSION_RETENTION_MS = 1000 * 60 * 60 * 24 * 2;
@@ -82,6 +82,7 @@ const APPCHECK_SENSITIVE_SECRET_OPTIONS = {
 };
 
 let pdfLib = null;
+let stageFormTemplateBytesPromise = null;
 
 function getPdfLib() {
   if (!pdfLib) {
@@ -92,6 +93,14 @@ function getPdfLib() {
 
 function pdfRgb(red = 0.08, green = 0.08, blue = 0.08) {
   return getPdfLib().rgb(red, green, blue);
+}
+
+async function getStageFormTemplateBytes() {
+  if (!stageFormTemplateBytesPromise) {
+    const templatePath = path.join(__dirname, "assets", "stage-form-template-fillable.pdf");
+    stageFormTemplateBytesPromise = fs.readFile(templatePath);
+  }
+  return stageFormTemplateBytesPromise;
 }
 
 function buildDirectorPacketExportId(eventId, ensembleId) {
@@ -439,93 +448,196 @@ function drawSimpleValue({page, font, value, x, y, size = 9, color = null} = {})
   page.drawText(text, {x, y, size, font, color: color || pdfRgb(0.08, 0.08, 0.08)});
 }
 
-function renderStageTemplatePage({
-  page,
-  font,
+function formatDateLabel(value) {
+  if (!value) return "";
+  const date = value.toDate ? value.toDate() : new Date(value);
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString();
+}
+
+function formatTimeLabel(value) {
+  if (!value) return "";
+  const date = value.toDate ? value.toDate() : new Date(value);
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+}
+
+function computeEntryMemberCount(entry = {}) {
+  const instrumentation = entry.instrumentation || {};
+  const standardCounts = instrumentation.standardCounts && typeof instrumentation.standardCounts === "object" ?
+    instrumentation.standardCounts :
+    {};
+  let total = Object.values(standardCounts).reduce((sum, value) => {
+    const count = Number(value || 0);
+    return sum + (Number.isFinite(count) ? count : 0);
+  }, 0);
+  total += Number.isFinite(Number(instrumentation.totalPercussion)) ?
+    Number(instrumentation.totalPercussion) :
+    0;
+  if (Array.isArray(instrumentation.nonStandard)) {
+    total += instrumentation.nonStandard.reduce((sum, row) => {
+      const count = Number(row?.count || 0);
+      return sum + (Number.isFinite(count) ? count : 0);
+    }, 0);
+  }
+  return total > 0 ? String(total) : "";
+}
+
+async function loadStageSubmissionContext({
+  db,
+  eventId,
+  ensembleId,
+  schoolId,
+} = {}) {
+  const schoolRef = schoolId ? db.collection(COLLECTIONS.schools).doc(schoolId) : null;
+  const directorQuery = schoolId ?
+    db.collection(COLLECTIONS.users)
+        .where(FIELDS.users.role, "==", "director")
+        .where(FIELDS.users.schoolId, "==", schoolId)
+        .limit(1) :
+    null;
+
+  const [schoolSnap, directorSnap] = await Promise.all([
+    schoolRef ? schoolRef.get() : Promise.resolve(null),
+    directorQuery ? directorQuery.get() : Promise.resolve(null),
+  ]);
+
+  const school = schoolSnap && schoolSnap.exists ? (schoolSnap.data() || {}) : {};
+  const director = directorSnap && !directorSnap.empty ? (directorSnap.docs[0].data() || {}) : {};
+  if (!eventId || !ensembleId) {
+    return {
+      event: {},
+      entry: {},
+      schedule: {},
+      school,
+      director,
+    };
+  }
+
+  const eventRef = db.collection(COLLECTIONS.events).doc(eventId);
+  const entryRef = eventRef.collection(COLLECTIONS.entries).doc(ensembleId);
+  const scheduleQuery = eventRef
+      .collection(COLLECTIONS.schedule)
+      .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+      .limit(1);
+  const [eventSnap, entrySnap, scheduleSnap] = await Promise.all([
+    eventRef.get(),
+    entryRef.get(),
+    scheduleQuery.get(),
+  ]);
+
+  const event = eventSnap.exists ? (eventSnap.data() || {}) : {};
+  const entry = entrySnap.exists ? (entrySnap.data() || {}) : {};
+  const scheduleDoc = !scheduleSnap.empty ? (scheduleSnap.docs[0].data() || {}) : {};
+  return {
+    event,
+    entry,
+    schedule: scheduleDoc,
+    school,
+    director,
+  };
+}
+
+async function renderStageSubmissionTemplatePdf({
   eventId,
   ensembleId,
   schoolId,
   grade,
   position,
   submission,
+  context = {},
 } = {}) {
-  const dark = pdfRgb(0.07, 0.07, 0.07);
-  const pageWidth = page.getWidth();
-  const pageHeight = page.getHeight();
-  const margin = 40;
-  let y = pageHeight - margin;
+  const {PDFDocument, StandardFonts, TextAlignment} = getPdfLib();
+  const pdfDoc = await PDFDocument.load(await getStageFormTemplateBytes());
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const form = pdfDoc.getForm();
   const captions = submission?.captions && typeof submission.captions === "object" ?
     submission.captions :
     {};
+  const entry = context.entry && typeof context.entry === "object" ? context.entry : {};
+  const schedule = context.schedule && typeof context.schedule === "object" ? context.schedule : {};
+  const school = context.school && typeof context.school === "object" ? context.school : {};
+  const director = context.director && typeof context.director === "object" ? context.director : {};
   const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge");
-  const judgeSlot = judgeLabelByPosition(position);
-  const ensembleLabel = String(ensembleId || "");
-  const schoolLabel = String(schoolId || "");
-  const heading = "NCBA Music Performance Adjudication - Stage Form";
-  drawSimpleValue({page, font, value: heading, x: margin, y, size: 16, color: dark});
-  y -= 24;
-  drawSimpleValue({
-    page,
-    font,
-    value: `Event: ${eventId}   School: ${schoolLabel}   Ensemble: ${ensembleLabel}`,
-    x: margin,
-    y,
-    size: 10,
-    color: dark,
-  });
-  y -= 16;
-  drawSimpleValue({
-    page,
-    font,
-    value: `Judge: ${judgeName} (${judgeSlot})   Grade: ${grade || "N/A"}   Rating: ${String(submission?.computedFinalRatingLabel || "N/A")}`,
-    x: margin,
-    y,
-    size: 10,
-    color: dark,
-  });
-  y -= 18;
-  drawSimpleValue({
-    page,
-    font,
-    value: `Caption Total: ${Number(submission?.captionScoreTotal || 0)}   Status: Released`,
-    x: margin,
-    y,
-    size: 10,
-    color: dark,
-  });
-  y -= 22;
+  const displaySchool = String(
+      schedule.schoolName ||
+      entry.schoolName ||
+      school.name ||
+      schoolId ||
+      "",
+  ).trim();
+  const displayEnsemble = String(
+      schedule.ensembleName ||
+      entry.ensembleName ||
+      ensembleId ||
+      "",
+  ).trim();
+  const displayDirector = String(director.displayName || director.email || "").trim();
+  const performanceGrade = String(entry.performanceGrade || grade || "").trim();
+  const finalRating = String(submission?.computedFinalRatingLabel || "").trim();
+  const scheduleDate = formatDateLabel(schedule.performanceAt || context.event?.startAt || null);
+  const scheduleTime = formatTimeLabel(schedule.performanceAt || null);
+  const memberCount = computeEntryMemberCount(entry);
+  const repertoire = entry.repertoire && typeof entry.repertoire === "object" ? entry.repertoire : {};
+  const setFieldText = (name, value, options = {}) => {
+    const textField = form.getTextField(name);
+    if (options.alignment !== undefined) {
+      textField.setAlignment(options.alignment);
+    }
+    if (options.fontSize !== undefined) {
+      textField.setFontSize(options.fontSize);
+    }
+    textField.setText(String(value || "").trim());
+  };
 
-  const rows = CAPTION_TEMPLATES.stage || [];
-  for (const row of rows) {
-    const value = captions[row.key] || {};
-    const gradeText = `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim() || "N/A";
-    drawSimpleValue({
-      page,
-      font,
-      value: `${row.label}: ${gradeText}`,
-      x: margin,
-      y,
-      size: 10.5,
-      color: dark,
-    });
-    y -= 13;
-    y = drawWrappedText({
-      page,
-      font,
-      text: String(value.comment || "").trim() || "No comment provided.",
-      x: margin + 8,
-      y,
-      maxWidth: pageWidth - (margin * 2) - 8,
-      size: 9,
-      lineHeight: 11,
-      color: dark,
-      maxLines: 3,
-    });
-    y -= 8;
-    if (y < 90) break;
-  }
-  drawSimpleValue({page, font, value: "Adjudicator Signature:", x: margin, y: 48, size: 10, color: dark});
-  drawSimpleValue({page, font, value: judgeName, x: margin + 120, y: 48, size: 10, color: dark});
+  setFieldText("ensembleName", displayEnsemble);
+  setFieldText("schoolName", displaySchool);
+  setFieldText("directorName", displayDirector);
+  setFieldText("eventDate", scheduleDate);
+  setFieldText("eventTime", scheduleTime);
+  setFieldText("memberCount", memberCount);
+  setFieldText("performanceGrade", performanceGrade);
+  setFieldText("finalRating", finalRating, {alignment: TextAlignment.Center});
+  setFieldText("marchTitle", repertoire.march?.title || "");
+  setFieldText("selection1Title", repertoire.selection1?.title || "");
+  setFieldText("selection2Title", repertoire.selection2?.title || "");
+  setFieldText("marchComposer", repertoire.march?.composer || "");
+  setFieldText("selection1Composer", repertoire.selection1?.composer || "");
+  setFieldText("selection2Composer", repertoire.selection2?.composer || "");
+  setFieldText("marchGrade", "");
+  setFieldText("selection1Grade", repertoire.selection1?.grade || "");
+  setFieldText("selection2Grade", repertoire.selection2?.grade || "");
+  setFieldText("adjudicatorSignatureName", judgeName);
+
+  const captionFieldMap = {
+    toneQuality: {comment: "toneQualityComment", grade: "toneQualityGrade"},
+    intonation: {comment: "intonationComment", grade: "intonationGrade"},
+    balanceBlend: {comment: "balanceBlendComment", grade: "balanceBlendGrade"},
+    precision: {comment: "precisionComment", grade: "precisionGrade"},
+    basicMusicianship: {
+      comment: "basicMusicianshipComment",
+      grade: "basicMusicianshipGrade",
+    },
+    interpretativeMusicianship: {
+      comment: "interpretiveMusicianshipComment",
+      grade: "interpretiveMusicianshipGrade",
+    },
+    generalFactors: {comment: "generalFactorsComment", grade: "generalFactorsGrade"},
+  };
+
+  Object.entries(captionFieldMap).forEach(([key, fields]) => {
+    const value = captions[key] || {};
+    setFieldText(fields.comment, String(value.comment || "").trim());
+    setFieldText(
+        fields.grade,
+        `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim(),
+        {alignment: TextAlignment.Center},
+    );
+  });
+
+  form.updateFieldAppearances(font);
+  form.flatten();
+  return await pdfDoc.save();
 }
 
 function renderSightTemplatePage({
@@ -613,34 +725,112 @@ async function renderSubmissionTemplatePdf({
   grade,
   position,
   submission,
+  context = {},
 } = {}) {
   const {PDFDocument, StandardFonts} = getPdfLib();
+  if (position !== JUDGE_POSITIONS.sight) {
+    return renderStageSubmissionTemplatePdf({
+      eventId,
+      ensembleId,
+      schoolId,
+      grade,
+      position,
+      submission,
+      context,
+    });
+  }
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]); // US Letter
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  if (position === JUDGE_POSITIONS.sight) {
-    renderSightTemplatePage({
-      page,
-      font,
-      eventId,
-      ensembleId,
-      schoolId,
-      grade,
-      position,
-      submission,
-    });
-  } else {
-    renderStageTemplatePage({
-      page,
-      font,
-      eventId,
-      ensembleId,
-      schoolId,
-      grade,
-      position,
-      submission,
+  renderSightTemplatePage({
+    page,
+    font,
+    eventId,
+    ensembleId,
+    schoolId,
+    grade,
+    position,
+    submission,
+  });
+  return await pdfDoc.save();
+}
+
+async function renderOpenPacketPrintablePdf({
+  packetId,
+  packet,
+  context = {},
+} = {}) {
+  const resolvedPacket = packet && typeof packet === "object" ? packet : {};
+  const formType = resolvedPacket.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
+  const submissionLike = {
+    judgeName: resolvedPacket.createdByJudgeName || "",
+    judgeEmail: resolvedPacket.createdByJudgeEmail || "",
+    captions: resolvedPacket.captions && typeof resolvedPacket.captions === "object" ?
+      resolvedPacket.captions :
+      {},
+    captionScoreTotal: Number.isFinite(Number(resolvedPacket.captionScoreTotal)) ?
+      Number(resolvedPacket.captionScoreTotal) :
+      0,
+    computedFinalRatingLabel: resolvedPacket.computedFinalRatingLabel || "N/A",
+  };
+  const renderContext = {
+    ...context,
+    entry:
+      context.entry ||
+      resolvedPacket.directorEntrySnapshot ||
+      null,
+    schedule: context.schedule || {
+      schoolName: resolvedPacket.schoolName || "",
+      ensembleName: resolvedPacket.ensembleName || "",
+      performanceAt: null,
+    },
+    school: context.school || {
+      name: resolvedPacket.schoolName || "",
+    },
+  };
+
+  if (formType === FORM_TYPES.stage) {
+    return renderStageSubmissionTemplatePdf({
+      eventId: String(resolvedPacket.officialEventId || resolvedPacket.assignmentEventId || "").trim(),
+      ensembleId: String(resolvedPacket.ensembleName || resolvedPacket.ensembleId || packetId || "").trim(),
+      schoolId: String(resolvedPacket.schoolId || "").trim(),
+      grade: String(
+          renderContext.entry?.performanceGrade ||
+          resolvedPacket.directorEntrySnapshot?.performanceGrade ||
+          "",
+      ).trim(),
+      position:
+        normalizeOpenPacketJudgePosition(
+            resolvedPacket.officialJudgePosition ||
+            resolvedPacket.judgePosition,
+        ) || JUDGE_POSITIONS.stage1,
+      submission: submissionLike,
+      context: renderContext,
     });
   }
+
+  const {PDFDocument, StandardFonts} = getPdfLib();
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([612, 792]);
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  renderSightTemplatePage({
+    page,
+    font,
+    eventId: String(resolvedPacket.officialEventId || resolvedPacket.assignmentEventId || "").trim(),
+    ensembleId: String(resolvedPacket.ensembleName || resolvedPacket.ensembleId || packetId || "").trim(),
+    schoolId: String(resolvedPacket.schoolName || resolvedPacket.schoolId || "").trim(),
+    grade: String(
+        renderContext.entry?.performanceGrade ||
+        resolvedPacket.directorEntrySnapshot?.performanceGrade ||
+        "",
+    ).trim(),
+    position:
+      normalizeOpenPacketJudgePosition(
+          resolvedPacket.officialJudgePosition ||
+          resolvedPacket.judgePosition,
+      ) || JUDGE_POSITIONS.sight,
+    submission: submissionLike,
+  });
   return await pdfDoc.save();
 }
 
@@ -667,6 +857,12 @@ async function generateDirectorPacketExportInternal({
   });
 
   const schoolId = String(submissionsByPosition[positions[0]]?.schoolId || "");
+  const renderContext = await loadStageSubmissionContext({
+    db,
+    eventId,
+    ensembleId,
+    schoolId,
+  });
 
   const exportId = buildDirectorPacketExportId(eventId, ensembleId);
   const judgeAssets = {};
@@ -681,6 +877,7 @@ async function generateDirectorPacketExportInternal({
       grade,
       position,
       submission,
+      context: renderContext,
     });
     const judgePdfPath = `exports/${eventId}/${ensembleId}/${position}.pdf`;
     await bucket.file(judgePdfPath).save(Buffer.from(judgePdfBytes), {
@@ -4686,6 +4883,64 @@ exports.regenerateDirectorPacketExport = onCall(async (request) => {
     });
     throw new HttpsError("internal", error?.message || "Unable to regenerate packet export.");
   }
+});
+
+exports.generateOpenPacketPrintAsset = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = String(data.packetId || "").trim();
+  if (!packetId) {
+    throw new HttpsError("invalid-argument", "packetId required.");
+  }
+
+  const db = admin.firestore();
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Packet not found.");
+  }
+  const packet = packetSnap.data() || {};
+  const eventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
+  const schoolId = String(packet.schoolId || "").trim();
+  const ensembleId = String(packet.ensembleId || "").trim();
+  let renderContext = {};
+  if (schoolId) {
+    renderContext = await loadStageSubmissionContext({
+      db,
+      eventId,
+      ensembleId,
+      schoolId,
+    });
+  }
+  const pdfBytes = await renderOpenPacketPrintablePdf({
+    packetId,
+    packet,
+    context: renderContext,
+  });
+  const objectPath = `open_exports/${packetId}/printable.pdf`;
+  const saved = await saveStorageObjectWithToken({
+    bucket: admin.storage().bucket(),
+    objectPath,
+    buffer: Buffer.from(pdfBytes),
+    contentType: "application/pdf",
+    metadata: {
+      packetId,
+      exportType: "open-packet-printable",
+      templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
+    },
+  });
+  const url = String(saved.url || "").trim();
+  if (!url) {
+    throw new HttpsError("internal", "Printable PDF generated but could not be linked.");
+  }
+  return {
+    ok: true,
+    packetId,
+    pdfPath: saved.path,
+    pdfUrl: url,
+    formType: packet.formType || FORM_TYPES.stage,
+    status: packet.status || "draft",
+  };
 });
 
 exports.getDirectorPacketAssets = onCall(async (request) => {

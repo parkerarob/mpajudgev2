@@ -18,6 +18,9 @@ export function createAdminRenderers({
   mergeScheduleDayBreaks,
   formatPerformanceAt,
   getPacketData,
+  fetchDirectorPacketAssets,
+  generateOpenPacketPrintAsset,
+  regenerateDirectorPacketExport,
   releasePacket,
   unreleasePacket,
   deleteScheduledPacket,
@@ -78,6 +81,288 @@ export function createAdminRenderers({
   function normalizeOpenPacketStatus(value) {
     const raw = String(value || "").trim();
     return raw || "draft";
+  }
+
+  function formatDuration(totalSec) {
+    const seconds = Number(totalSec || 0);
+    if (!Number.isFinite(seconds) || seconds <= 0) return "";
+    const whole = Math.max(0, Math.floor(seconds));
+    const hrs = Math.floor(whole / 3600);
+    const mins = Math.floor((whole % 3600) / 60);
+    const secs = whole % 60;
+    if (hrs > 0) {
+      return `${hrs}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+    }
+    return `${mins}:${String(secs).padStart(2, "0")}`;
+  }
+
+  function getAdminPacketAssetCacheKey({ eventId, ensembleId } = {}) {
+    return `${String(eventId || "").trim()}_${String(ensembleId || "").trim()}`;
+  }
+
+  function renderAdminPacketAssetsSection({ eventId, ensembleId }, wrapper) {
+    const resolvedEventId = String(eventId || "").trim();
+    const resolvedEnsembleId = String(ensembleId || "").trim();
+    if (!resolvedEventId || !resolvedEnsembleId || !wrapper) return;
+    if (!(state.admin.packetAssetsCache instanceof Map)) {
+      state.admin.packetAssetsCache = new Map();
+    }
+    const cacheKey = getAdminPacketAssetCacheKey({
+      eventId: resolvedEventId,
+      ensembleId: resolvedEnsembleId,
+    });
+
+    const section = document.createElement("div");
+    section.className = "panel stack";
+    const title = document.createElement("strong");
+    title.textContent = "Printable Judge Sheets";
+    const hint = document.createElement("div");
+    hint.className = "note";
+    hint.textContent =
+      "Generate or load the exact-match stage form PDFs for pre-printing and packet review.";
+    section.appendChild(title);
+    section.appendChild(hint);
+
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const generateBtn = document.createElement("button");
+    generateBtn.type = "button";
+    generateBtn.className = "ghost";
+    generateBtn.textContent = "Prepare Print Files";
+    const loadBtn = document.createElement("button");
+    loadBtn.type = "button";
+    loadBtn.className = "ghost";
+    loadBtn.textContent = "Load Print Files";
+    actions.appendChild(generateBtn);
+    actions.appendChild(loadBtn);
+    section.appendChild(actions);
+
+    const output = document.createElement("div");
+    output.className = "stack";
+    section.appendChild(output);
+
+    const renderAssets = (assets) => {
+      output.innerHTML = "";
+      if (!assets || assets.status !== "ready") {
+        const pending = document.createElement("div");
+        pending.className = "note";
+        pending.textContent = assets?.status === "failed" ?
+          `Export failed: ${assets?.error || "Unknown error"}` :
+          "Print files are not ready yet. Use Prepare Print Files to generate them.";
+        output.appendChild(pending);
+        return;
+      }
+
+      if (assets.combined?.url) {
+        const combinedRow = document.createElement("div");
+        combinedRow.className = "row";
+        const openCombined = document.createElement("a");
+        openCombined.className = "ghost";
+        openCombined.href = assets.combined.url;
+        openCombined.target = "_blank";
+        openCombined.rel = "noopener";
+        openCombined.textContent = "Open Full Packet PDF";
+        const printCombined = document.createElement("a");
+        printCombined.className = "ghost";
+        printCombined.href = assets.combined.url;
+        printCombined.target = "_blank";
+        printCombined.rel = "noopener";
+        printCombined.textContent = "Print Full Packet PDF";
+        combinedRow.appendChild(openCombined);
+        combinedRow.appendChild(printCombined);
+        output.appendChild(combinedRow);
+      }
+
+      const judgeAssets = assets.judges && typeof assets.judges === "object" ? assets.judges : {};
+      Object.values(judgeAssets).forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "packet-card";
+        const label = document.createElement("div");
+        label.className = "badge";
+        label.textContent = item.judgeLabel || item.judgePosition || "Judge";
+        row.appendChild(label);
+
+        const fileActions = document.createElement("div");
+        fileActions.className = "row";
+        if (item.pdfUrl) {
+          const openPdf = document.createElement("a");
+          openPdf.className = "ghost";
+          openPdf.href = item.pdfUrl;
+          openPdf.target = "_blank";
+          openPdf.rel = "noopener";
+          openPdf.textContent = "Open Form PDF";
+          const printPdf = document.createElement("a");
+          printPdf.className = "ghost";
+          printPdf.href = item.pdfUrl;
+          printPdf.target = "_blank";
+          printPdf.rel = "noopener";
+          printPdf.textContent = "Print Form PDF";
+          fileActions.appendChild(openPdf);
+          fileActions.appendChild(printPdf);
+        }
+        if (item.audioUrl) {
+          const audioLink = document.createElement("a");
+          audioLink.className = "ghost";
+          audioLink.href = item.audioUrl;
+          audioLink.target = "_blank";
+          audioLink.rel = "noopener";
+          const durationText = formatDuration(Number(item.audioDurationSec || 0));
+          audioLink.textContent = durationText ? `Open Audio (${durationText})` : "Open Audio";
+          fileActions.appendChild(audioLink);
+        }
+        if (!item.pdfUrl && !item.audioUrl) {
+          const unavailable = document.createElement("div");
+          unavailable.className = "note";
+          unavailable.textContent = "No packet files available for this judge yet.";
+          row.appendChild(unavailable);
+        }
+        row.appendChild(fileActions);
+        output.appendChild(row);
+      });
+    };
+
+    const loadAssets = async () => {
+      const result = await fetchDirectorPacketAssets({
+        eventId: resolvedEventId,
+        ensembleId: resolvedEnsembleId,
+      });
+      if (!result?.ok) {
+        hint.textContent = result?.message || "Unable to load print files.";
+        renderAssets(result || null);
+        return;
+      }
+      state.admin.packetAssetsCache.set(cacheKey, result);
+      renderAssets(result);
+      hint.textContent = "Print files loaded.";
+      loadBtn.textContent = "Refresh Print Files";
+    };
+
+    generateBtn.addEventListener("click", async () => {
+      generateBtn.disabled = true;
+      loadBtn.disabled = true;
+      hint.textContent = "Generating print files...";
+      try {
+        await regenerateDirectorPacketExport({
+          eventId: resolvedEventId,
+          ensembleId: resolvedEnsembleId,
+        });
+        await loadAssets();
+        hint.textContent = "Print files prepared.";
+      } catch (error) {
+        console.error("regenerateDirectorPacketExport failed", error);
+        hint.textContent = error?.message || "Unable to prepare print files.";
+      } finally {
+        generateBtn.disabled = false;
+        loadBtn.disabled = false;
+      }
+    });
+
+    loadBtn.addEventListener("click", async () => {
+      loadBtn.disabled = true;
+      generateBtn.disabled = true;
+      hint.textContent = "Loading print files...";
+      try {
+        await loadAssets();
+      } finally {
+        loadBtn.disabled = false;
+        generateBtn.disabled = false;
+      }
+    });
+
+    const cached = state.admin.packetAssetsCache.get(cacheKey);
+    if (cached) {
+      renderAssets(cached);
+      loadBtn.textContent = "Refresh Print Files";
+    }
+
+    wrapper.appendChild(section);
+  }
+
+  function renderAdminOpenPacketPrintSection(packet, wrapper) {
+    const packetId = String(packet?.id || "").trim();
+    if (!packetId || !wrapper) return;
+    if (!(state.admin.packetAssetsCache instanceof Map)) {
+      state.admin.packetAssetsCache = new Map();
+    }
+    const cacheKey = `open:${packetId}`;
+    const section = document.createElement("div");
+    section.className = "panel stack";
+    const title = document.createElement("strong");
+    title.textContent = "Printable Open Sheet";
+    const hint = document.createElement("div");
+    hint.className = "note";
+    hint.textContent =
+      "Generate a printable PDF for this Open Judge sheet. Stage packets use the exact-match stage form template.";
+    section.appendChild(title);
+    section.appendChild(hint);
+
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const generateBtn = document.createElement("button");
+    generateBtn.type = "button";
+    generateBtn.className = "ghost";
+    generateBtn.textContent = "Prepare Printable PDF";
+    actions.appendChild(generateBtn);
+    section.appendChild(actions);
+
+    const output = document.createElement("div");
+    output.className = "stack";
+    section.appendChild(output);
+
+    const renderAsset = (asset) => {
+      output.innerHTML = "";
+      if (!asset?.pdfUrl) {
+        const empty = document.createElement("div");
+        empty.className = "note";
+        empty.textContent = "Printable PDF not generated yet.";
+        output.appendChild(empty);
+        return;
+      }
+      const row = document.createElement("div");
+      row.className = "row";
+      const openPdf = document.createElement("a");
+      openPdf.className = "ghost";
+      openPdf.href = asset.pdfUrl;
+      openPdf.target = "_blank";
+      openPdf.rel = "noopener";
+      openPdf.textContent = "Open Printable PDF";
+      const printPdf = document.createElement("a");
+      printPdf.className = "ghost";
+      printPdf.href = asset.pdfUrl;
+      printPdf.target = "_blank";
+      printPdf.rel = "noopener";
+      printPdf.textContent = "Print PDF";
+      row.appendChild(openPdf);
+      row.appendChild(printPdf);
+      output.appendChild(row);
+    };
+
+    generateBtn.addEventListener("click", async () => {
+      generateBtn.disabled = true;
+      hint.textContent = "Generating printable PDF...";
+      try {
+        const result = await generateOpenPacketPrintAsset({ packetId });
+        state.admin.packetAssetsCache.set(cacheKey, result);
+        renderAsset(result);
+        hint.textContent = result?.pdfUrl
+          ? "Printable PDF ready."
+          : "Printable PDF generated, but no download URL was returned.";
+        generateBtn.textContent = "Regenerate Printable PDF";
+      } catch (error) {
+        console.error("generateOpenPacketPrintAsset failed", error);
+        hint.textContent = error?.message || "Unable to generate printable PDF.";
+      } finally {
+        generateBtn.disabled = false;
+      }
+    });
+
+    const cached = state.admin.packetAssetsCache.get(cacheKey);
+    if (cached) {
+      renderAsset(cached);
+      generateBtn.textContent = "Regenerate Printable PDF";
+    }
+
+    wrapper.appendChild(section);
   }
 
   function getManualAudioStatusMap() {
@@ -892,6 +1177,7 @@ export function createAdminRenderers({
             panel.classList.remove("is-hidden");
             viewBtn.textContent = "Hide Packet";
             await loadAdminPacketView(entry, panel, eventId);
+            renderAdminPacketAssetsSection({ eventId, ensembleId }, panel);
           } else {
             panel.classList.add("is-hidden");
             viewBtn.textContent = "View Packet";
@@ -1215,6 +1501,7 @@ export function createAdminRenderers({
                   "—"
               }`;
               detail.appendChild(packetIdRow);
+              renderAdminOpenPacketPrintSection(packet, detail);
             }
           });
           actions.appendChild(viewBtn);

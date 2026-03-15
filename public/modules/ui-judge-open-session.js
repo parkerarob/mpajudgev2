@@ -14,6 +14,8 @@ export function createJudgeOpenSession({
   hideOpenDetailView,
   saveOpenPrefsToServer,
   loadOpenPrefs,
+  refreshOpenMicrophones,
+  renderOpenMicOptions,
   canUseOpenJudge,
   syncOpenEventDefaultsUI,
   refreshOpenEventDefaultsState,
@@ -178,6 +180,9 @@ export function createJudgeOpenSession({
     if (!state.judgeOpen.mode) return;
     const local = loadOpenPrefs();
     const prefs = state.auth.userProfile?.preferences || {};
+    state.judgeOpen.selectedMicDeviceId = prefs.judgeOpenMicDeviceId || local.micDeviceId || "";
+    await refreshOpenMicrophones();
+    renderOpenMicOptions(state.judgeOpen.availableMicrophones || []);
     state.judgeOpen.useActiveEventDefaults = true;
     syncOpenEventDefaultsUI();
     refreshOpenEventDefaultsState();

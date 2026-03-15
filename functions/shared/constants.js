@@ -26,6 +26,7 @@ const FIELDS = {
     isActive: "isActive",
     name: "name",
     eventMode: "eventMode",
+    pizzaOrdersClosed: "pizzaOrdersClosed",
     readinessState: "readinessState",
   },
   schedule: {

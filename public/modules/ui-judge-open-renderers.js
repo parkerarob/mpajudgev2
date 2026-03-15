@@ -196,8 +196,44 @@ export function createJudgeOpenRenderers({
     }
   }
 
+  function renderOpenMicOptions(items = []) {
+    if (!els.judgeOpenMicSelect) return;
+    const microphones = Array.isArray(items) ? items : [];
+    const selectedDeviceId = String(state.judgeOpen.selectedMicDeviceId || "");
+    els.judgeOpenMicSelect.innerHTML = "";
+
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = "Browser Default Microphone";
+    els.judgeOpenMicSelect.appendChild(defaultOption);
+
+    microphones.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.deviceId;
+      option.textContent = item.label || "Microphone";
+      els.judgeOpenMicSelect.appendChild(option);
+    });
+
+    els.judgeOpenMicSelect.value = selectedDeviceId || "";
+    if (els.judgeOpenMicStatus) {
+      if (selectedDeviceId) {
+        const selected = microphones.find((item) => item.deviceId === selectedDeviceId);
+        els.judgeOpenMicStatus.textContent = selected
+          ? `Selected microphone: ${selected.label}`
+          : "Selected microphone is unavailable. Using browser default until you choose another.";
+      } else if (microphones.length) {
+        els.judgeOpenMicStatus.textContent =
+          "Using Chrome's current default microphone unless you choose one here.";
+      } else {
+        els.judgeOpenMicStatus.textContent =
+          "No microphone labels yet. Chrome may show them after microphone permission is granted.";
+      }
+    }
+  }
+
   return {
     renderOpenPacketOptions,
     renderOpenExistingOptions,
+    renderOpenMicOptions,
   };
 }

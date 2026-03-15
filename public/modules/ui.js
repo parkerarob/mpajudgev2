@@ -19,6 +19,7 @@ import {
   bulkImportSchools,
   createEvent,
   createScheduleEntry,
+  generateOpenPacketPrintAsset,
   cleanupRehearsalArtifacts,
   deleteUserAccount,
   deleteEvent,
@@ -39,7 +40,9 @@ import {
   assignDirectorSchool,
   getPacketData,
   getLunchTotalsBySchool,
+  regenerateDirectorPacketExport,
   renameEvent,
+  setPizzaOrdersClosed,
   lockOpenPacket,
   lockSubmission,
   linkOpenPacketToEnsemble,
@@ -92,6 +95,7 @@ import {
   getMpaRepertoireForGrade,
   getDirectorSchoolId,
   invalidateDirectorSchoolLunchTotalCache,
+  isPizzaOrderWindowClosed,
   loadDirectorEntry,
   loadDirectorSchoolLunchTotal,
   markDirectorDirty,
@@ -137,6 +141,7 @@ import {
   loadDirectorEntrySnapshotForJudge,
   loadOpenPrefs,
   markJudgeOpenDirty,
+  refreshOpenMicrophones,
   resetJudgeOpenState,
   retryOpenSessionUploads,
   setJudgeOpenAutoTranscriptionHooks,
@@ -181,6 +186,7 @@ import {
   romanToLevel,
 } from "./utils.js";
 import { createAdminViewController } from "./ui-admin-shell.js";
+import { createAdminAnnouncerController } from "./ui-admin-announcer.js";
 import { createAdminRenderers } from "./ui-admin-renderers.js";
 import { createAdminLiveRenderers } from "./ui-admin-live-renderers.js";
 import { createJudgeOpenRenderers } from "./ui-judge-open-renderers.js";
@@ -471,6 +477,47 @@ function updateLunchTotalCost() {
   els.lunchTotalCost.textContent = `Pizza Order Total: $${total.toFixed(2)}`;
 }
 
+function lunchOrdersMatch(a = {}, b = {}) {
+  return Number(a.pepperoniQty || 0) === Number(b.pepperoniQty || 0) &&
+    Number(a.cheeseQty || 0) === Number(b.cheeseQty || 0) &&
+    String(a.pickupTiming || "") === String(b.pickupTiming || "") &&
+    String(a.notes || "") === String(b.notes || "");
+}
+
+function renderDirectorPizzaOrderWindowState() {
+  const closed = isPizzaOrderWindowClosed();
+  if (els.pizzaOrderWindowStatus) {
+    els.pizzaOrderWindowStatus.textContent = closed
+      ? "Order window is closed. Existing pizza orders are read-only."
+      : "";
+  }
+  if (els.lunchPepperoniInput) els.lunchPepperoniInput.disabled = closed;
+  if (els.lunchCheeseInput) els.lunchCheeseInput.disabled = closed;
+  if (els.pizzaPickupTimingInput) els.pizzaPickupTimingInput.disabled = closed;
+  if (els.saveLunchBtn) {
+    els.saveLunchBtn.disabled = closed;
+    els.saveLunchBtn.textContent = closed ? "Order Window Closed" : "Save Pizza Order";
+  }
+}
+
+function syncDirectorPizzaOrderWindowState() {
+  const closed = isPizzaOrderWindowClosed();
+  if (
+    closed &&
+    state.director.entryDraft?.lunchOrder &&
+    state.director.persistedLunchOrder &&
+    !lunchOrdersMatch(state.director.entryDraft.lunchOrder, state.director.persistedLunchOrder)
+  ) {
+    state.director.entryDraft.lunchOrder = {
+      ...state.director.persistedLunchOrder,
+    };
+    state.director.dirtySections.delete("lunch");
+    showDirectorSectionStatus("lunch", "Pizza ordering is closed for this event.", "error");
+    updateLunchTotalCost();
+  }
+  renderDirectorPizzaOrderWindowState();
+}
+
 async function handleDirectorEnsembleSelection(ensembleId) {
   if (!ensembleId || ensembleId === state.director.selectedEnsembleId) return;
   if (hasDirectorUnsavedChanges() && !confirmUser("You have unsaved changes. Leave anyway?")) {
@@ -560,6 +607,7 @@ function applyDirectorEntryUpdate({
   if (entry) {
     renderDirectorEntryForm(entry);
   }
+  syncDirectorPizzaOrderWindowState();
   renderDirectorEditorShell();
     setDirectorEntryStatusLabel(status || "Incomplete");
   setDirectorPerformanceGradeValue(performanceGrade || entry?.performanceGrade || "");
@@ -577,6 +625,7 @@ function applyDirectorEntryUpdate({
 
 function applyDirectorEntryClear({ hint, status, readyStatus } = {}) {
   clearDirectorEntryPanels();
+  renderDirectorPizzaOrderWindowState();
   renderDirectorEditorShell();
   setDirectorEntryHint(hint || "");
     setDirectorEntryStatusLabel(status || "Incomplete");
@@ -1459,42 +1508,8 @@ export function setMainInteractionDisabled(disabled) {
 }
 
 function startOpenLevelMeter(stream) {
-  if (!els.judgeOpenLevelMeterFill || !stream) return;
-  if (state.judgeOpen.levelMeter) return;
-  try {
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 512;
-    const source = audioContext.createMediaStreamSource(stream);
-    source.connect(analyser);
-    const dataArray = new Uint8Array(analyser.fftSize);
-    const meter = {
-      audioContext,
-      analyser,
-      source,
-      dataArray,
-      rafId: null,
-    };
-    const tick = () => {
-      analyser.getByteTimeDomainData(dataArray);
-      let sum = 0;
-      for (let i = 0; i < dataArray.length; i += 1) {
-        const value = (dataArray[i] - 128) / 128;
-        sum += value * value;
-      }
-      const rms = Math.sqrt(sum / dataArray.length);
-      const level = Math.min(1, Math.max(0.05, rms * 2.4));
-      els.judgeOpenLevelMeterFill.style.width = `${Math.round(level * 100)}%`;
-      meter.rafId = window.requestAnimationFrame(tick);
-    };
-    state.judgeOpen.levelMeter = meter;
-    if (els.judgeOpenLevelMeter) {
-      els.judgeOpenLevelMeter.style.display = "block";
-    }
-    tick();
-  } catch (error) {
-    console.warn("Level meter unavailable", error);
-  }
+  void stream;
+  stopOpenLevelMeter();
 }
 
 export function stopOpenLevelMeter() {
@@ -1874,6 +1889,7 @@ let adminPreflightRefreshInFlight = false;
 let adminViewController = null;
 let adminRenderers = null;
 let adminLiveRenderers = null;
+let adminAnnouncerController = null;
 let authHandlerBinder = null;
 let adminHandlerBinder = null;
 let adminMockPacketPreviewRenderer = null;
@@ -1971,6 +1987,7 @@ function getAdminViewController() {
     renderAdminSchoolDetail,
     renderRegisteredEnsemblesList,
     renderAdminPacketsBySchedule,
+    renderAdminAnnouncerView,
     renderAdminReadinessView,
     renderEventList,
     renderAdminSchoolsDirectory,
@@ -1978,6 +1995,27 @@ function getAdminViewController() {
     renderAdminUsersDirectory,
   });
   return adminViewController;
+}
+
+function getAdminAnnouncerController() {
+  if (adminAnnouncerController) return adminAnnouncerController;
+  adminAnnouncerController = createAdminAnnouncerController({
+    els,
+    state,
+    db,
+    COLLECTIONS,
+    collection,
+    getDocs,
+    query,
+    fetchScheduleEntries,
+    fetchRegisteredEnsembles,
+    getSchoolNameById,
+    normalizeEnsembleDisplayName,
+    toDateOrNull,
+    escapeHtml,
+    formatStartTime,
+  });
+  return adminAnnouncerController;
 }
 
 function getAuthHandlerBinder() {
@@ -2068,6 +2106,9 @@ function getAdminRenderers() {
     mergeScheduleDayBreaks,
     formatPerformanceAt,
     getPacketData,
+    fetchDirectorPacketAssets,
+    generateOpenPacketPrintAsset,
+    regenerateDirectorPacketExport,
     releasePacket,
     unreleasePacket,
     deleteScheduledPacket,
@@ -2189,6 +2230,7 @@ function getJudgeOpenHandlerBinder() {
     gatherOpenPacketMeta,
     createOpenPacket,
     renderOpenSegments,
+    renderOpenMicOptions,
     saveOpenPrefsToServer,
     renderOpenCaptionForm,
     updateOpenHeader,
@@ -2196,6 +2238,7 @@ function getJudgeOpenHandlerBinder() {
     updateOpenEmptyState,
     updateOpenSubmitState,
     saveOpenPrefs,
+    refreshOpenMicrophones,
     markJudgeOpenDirty,
     buildOpenEnsembleSnapshot,
     updateOpenPacketDraft,
@@ -2283,6 +2326,8 @@ function getJudgeOpenSession() {
     hideOpenDetailView,
     saveOpenPrefsToServer,
     loadOpenPrefs,
+    refreshOpenMicrophones,
+    renderOpenMicOptions,
     canUseOpenJudge,
     syncOpenEventDefaultsUI,
     refreshOpenEventDefaultsState,
@@ -3226,6 +3271,9 @@ export function startWatchers() {
     if (state.admin.currentView === "packets") {
       renderAdminPacketsBySchedule();
     }
+    if (state.admin.currentView === "announcer") {
+      renderAdminAnnouncerView();
+    }
   };
   const syncRosterWatcherForActiveEvent = () => {
     const nextEventId = state.event.active?.id || "";
@@ -3246,7 +3294,11 @@ export function startWatchers() {
     if (state.app.currentTab === "admin" && state.admin.currentView === "readiness") {
       renderAdminReadinessView();
     }
+    if (state.app.currentTab === "admin" && state.admin.currentView === "announcer") {
+      renderAdminAnnouncerView();
+    }
     renderDirectorEventOptions();
+    syncDirectorPizzaOrderWindowState();
     if (els.eventDetailPage && !els.eventDetailPage.classList.contains("is-hidden")) {
       const detailEventId = els.eventDetailPage.dataset.eventId || "";
       const detailViewMode = getEventDetailViewMode(els.eventDetailPage.dataset.viewMode || "");
@@ -3277,6 +3329,10 @@ export function startWatchers() {
     updateEventModeBanner();
     updateAdminEmptyState();
     renderDirectorEventOptions();
+    if (state.app.currentTab === "admin" && state.admin.currentView === "announcer") {
+      renderAdminAnnouncerView();
+    }
+    syncDirectorPizzaOrderWindowState();
     renderAdminReadiness();
     if (judgeEnabled) {
       refreshOpenEventDefaultsState();
@@ -3529,7 +3585,8 @@ export function renderEventList() {
     const modeLabel = String(event.eventMode || "").trim().toLowerCase() === "rehearsal" ?
       "Rehearsal" :
       "Live";
-    activeBadge.textContent = `${event.isActive ? "Active" : "Inactive"} · ${modeLabel}`;
+    const pizzaLabel = event.pizzaOrdersClosed ? "Pizza Closed" : "Pizza Open";
+    activeBadge.textContent = `${event.isActive ? "Active" : "Inactive"} · ${modeLabel} · ${pizzaLabel}`;
 
     const activateBtn = document.createElement("button");
     activateBtn.className = "ghost";
@@ -3592,6 +3649,16 @@ export function renderEventList() {
       renderEventList();
     });
 
+    const pizzaToggleBtn = document.createElement("button");
+    pizzaToggleBtn.className = event.pizzaOrdersClosed ? "ghost" : "danger";
+    pizzaToggleBtn.textContent = event.pizzaOrdersClosed ? "Reopen Pizza Orders" : "Close Pizza Orders";
+    pizzaToggleBtn.addEventListener("click", async () => {
+      await setPizzaOrdersClosed({
+        eventId: event.id,
+        closed: !event.pizzaOrdersClosed,
+      });
+    });
+
     if (isEditing) {
       const cancelBtn = document.createElement("button");
       cancelBtn.className = "ghost";
@@ -3613,6 +3680,7 @@ export function renderEventList() {
     });
 
     actions.appendChild(activeBadge);
+    actions.appendChild(pizzaToggleBtn);
     actions.appendChild(activateBtn);
     actions.appendChild(deactivateBtn);
     actions.appendChild(editBtn);
@@ -4045,6 +4113,14 @@ async function openJudgeOpenPacket(packetId) {
 
 export function renderOpenExistingOptions(items) {
   return getJudgeOpenRenderers().renderOpenExistingOptions(items || []);
+}
+
+export function renderAdminAnnouncerView() {
+  return getAdminAnnouncerController().renderAdminAnnouncerView();
+}
+
+export function renderOpenMicOptions(items) {
+  return getJudgeOpenRenderers().renderOpenMicOptions(items || []);
 }
 
 export function renderOpenCaptionForm() {

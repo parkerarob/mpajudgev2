@@ -15,12 +15,20 @@ export function createAdminViewController({
   renderAdminSchoolDetail,
   renderRegisteredEnsemblesList,
   renderAdminPacketsBySchedule,
+  renderAdminAnnouncerView,
   renderAdminReadinessView,
   renderEventList,
   renderAdminSchoolsDirectory,
   renderDirectorAssignmentsDirectory,
   renderAdminUsersDirectory,
 } = {}) {
+  function setSectionVisible(element, visible) {
+    if (!element) return;
+    element.classList.toggle("is-hidden", !visible);
+    element.hidden = !visible;
+    element.style.display = visible ? "" : "none";
+  }
+
   const preEventController = createAdminPreEventController({
     els,
     renderAdminSchoolDetail,
@@ -85,6 +93,7 @@ export function createAdminViewController({
     state.admin.currentView = resolvedView;
     const showPreEvent = resolvedView === "preEvent";
     const showPackets = resolvedView === "packets";
+    const showAnnouncer = resolvedView === "announcer";
     const showLiveEvent = resolvedView === "liveEvent" && isAdminLiveEventEnabled();
     const showSettings = resolvedView === "settings" && isAdminSettingsEnabled();
     const showReadiness = resolvedView === "readiness";
@@ -92,6 +101,12 @@ export function createAdminViewController({
     const heavyLoaded = isAdminHeavyViewLoaded(resolvedView);
     setAdminSafeModePanel(resolvedView);
 
+    setSectionVisible(els.adminViewEvents, showPreEvent);
+    setSectionVisible(els.adminViewChair, showLiveEvent);
+    setSectionVisible(els.adminViewPackets, showPackets);
+    setSectionVisible(els.adminViewAnnouncer, showAnnouncer);
+    setSectionVisible(els.adminViewSettings, showSettings);
+    setSectionVisible(els.adminViewReadiness, showReadiness);
     liveController.setVisible(showLiveEvent);
     preEventController.setVisible(showPreEvent);
     packetsController.setVisible(showPackets);
@@ -101,6 +116,9 @@ export function createAdminViewController({
     liveController.render({ visible: showLiveEvent, heavyLoaded });
     preEventController.render({ showSchoolDetail, heavyLoaded });
     packetsController.render({ visible: showPackets });
+    if (showAnnouncer) {
+      renderAdminAnnouncerView();
+    }
     settingsController.render({ visible: showSettings });
     readinessController.render({ visible: showReadiness });
     if (els.adminSubnavChairBtn) {
@@ -112,6 +130,9 @@ export function createAdminViewController({
     }
     if (els.adminSubnavPacketsBtn) {
       els.adminSubnavPacketsBtn.setAttribute("aria-selected", showPackets ? "true" : "false");
+    }
+    if (els.adminSubnavAnnouncerBtn) {
+      els.adminSubnavAnnouncerBtn.setAttribute("aria-selected", showAnnouncer ? "true" : "false");
     }
     if (els.adminSubnavReadinessBtn) {
       els.adminSubnavReadinessBtn.setAttribute("aria-selected", showReadiness ? "true" : "false");

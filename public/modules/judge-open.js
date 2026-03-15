@@ -28,20 +28,30 @@ import {
   state,
 } from "../state.js";
 
-const OPEN_RECORDING_TIMESLICE_MS = 10000;
 const OPEN_RECORDING_MAX_SEGMENT_MS = 6 * 60 * 1000;
+const OPEN_RECORDING_RESTART_COOLDOWN_MS = 2500;
 const OPEN_AUTO_TRANSCRIBE_SETTLE_MS = 5000;
 const OPEN_AUTO_TRANSCRIBE_MAX_RETRIES = 2;
 const OPEN_AUTO_TRANSCRIBE_RETRY_BASE_MS = 3000;
 const OPEN_PREFS_KEY = "judgeOpenPrefs";
 const OPEN_ENSEMBLE_INDEX_CACHE_TTL_MS = 60 * 1000;
+const OPEN_RECORDING_AUDIO_BITS_PER_SECOND = 96000;
 const OPEN_AUDIO_CONSTRAINTS = {
   audio: {
+    channelCount: 1,
+    sampleRate: 48000,
+    sampleSize: 16,
     echoCancellation: false,
     noiseSuppression: false,
     autoGainControl: false,
   },
 };
+const OPEN_MIC_LABEL_REWRITES = [
+  {
+    pattern: /\bAK-2\b/i,
+    label: "Aokeo Judge Microphone",
+  },
+];
 
 let openEnsembleIndexCache = {
   key: "",
@@ -341,6 +351,10 @@ export function resetJudgeOpenState() {
   state.judgeOpen.recordingKeepAlive = false;
   state.judgeOpen.recordingAutoRolloverReason = "";
   clearOpenRolloverTimer();
+  state.judgeOpen.recordingCooldownUntil = 0;
+  state.judgeOpen.availableMicrophones = [];
+  state.judgeOpen.selectedMicDeviceId = "";
+  state.judgeOpen.selectedMicLabel = "";
   state.judgeOpen.transcriptText = "";
   state.judgeOpen.captions = {};
   state.judgeOpen.retryUploads = {};
@@ -808,6 +822,45 @@ function clearOpenRolloverTimer() {
   }
 }
 
+function normalizeMicrophoneLabel(device = {}, index = 0) {
+  const label = String(device?.label || "").trim();
+  if (label) {
+    const rewrite = OPEN_MIC_LABEL_REWRITES.find(({ pattern }) => pattern.test(label));
+    if (rewrite) return rewrite.label;
+    return label;
+  }
+  return `Microphone ${index + 1}`;
+}
+
+function normalizeMicrophoneOptions(devices = []) {
+  return devices
+    .filter((device) => device?.kind === "audioinput")
+    .map((device, index) => ({
+      deviceId: String(device.deviceId || ""),
+      groupId: String(device.groupId || ""),
+      label: normalizeMicrophoneLabel(device, index),
+    }));
+}
+
+export async function refreshOpenMicrophones() {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    state.judgeOpen.availableMicrophones = [];
+    state.judgeOpen.selectedMicLabel = "";
+    return [];
+  }
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const microphones = normalizeMicrophoneOptions(devices);
+  state.judgeOpen.availableMicrophones = microphones;
+  const selectedDeviceId = String(state.judgeOpen.selectedMicDeviceId || "");
+  const selected =
+    microphones.find((device) => device.deviceId === selectedDeviceId) || null;
+  state.judgeOpen.selectedMicLabel = selected?.label || "";
+  if (selectedDeviceId && !selected) {
+    state.judgeOpen.selectedMicDeviceId = "";
+  }
+  return microphones;
+}
+
 export async function startOpenRecording({
   onStatus,
   onSessions,
@@ -822,6 +875,17 @@ export async function startOpenRecording({
   }
   if (state.judgeOpen.mediaRecorder?.state === "recording") {
     return { ok: false, message: "Recording already in progress." };
+  }
+  if (Number(state.judgeOpen.pendingUploads || 0) > 0) {
+    return { ok: false, message: "Please wait for the previous recording to finish uploading." };
+  }
+  const cooldownRemainingMs = Number(state.judgeOpen.recordingCooldownUntil || 0) - Date.now();
+  if (cooldownRemainingMs > 0) {
+    const waitSeconds = Math.max(1, Math.ceil(cooldownRemainingMs / 1000));
+    return {
+      ok: false,
+      message: `Please wait ${waitSeconds}s before starting the next recording.`,
+    };
   }
   if (!continuation) {
     state.judgeOpen.recordingKeepAlive = true;
@@ -853,22 +917,56 @@ export async function startOpenRecording({
   });
 
   let stream;
+  const selectedMicDeviceId = String(state.judgeOpen.selectedMicDeviceId || "").trim();
+  const selectedConstraints = selectedMicDeviceId
+    ? {
+        audio: {
+          ...OPEN_AUDIO_CONSTRAINTS.audio,
+          deviceId: { exact: selectedMicDeviceId },
+        },
+      }
+    : OPEN_AUDIO_CONSTRAINTS;
   try {
-    stream = await navigator.mediaDevices.getUserMedia(OPEN_AUDIO_CONSTRAINTS);
+    stream = await navigator.mediaDevices.getUserMedia(selectedConstraints);
   } catch (error) {
+    if (
+      selectedMicDeviceId &&
+      ["NotFoundError", "OverconstrainedError"].includes(String(error?.name || ""))
+    ) {
+      await refreshOpenMicrophones();
+      return {
+        ok: false,
+        message: "Selected microphone is unavailable. Choose another microphone and try again.",
+      };
+    }
     // Fallback for browsers that reject one or more advanced audio constraints.
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await navigator.mediaDevices.getUserMedia(
+      selectedMicDeviceId ? { audio: { deviceId: { exact: selectedMicDeviceId } } } : { audio: true }
+    );
   }
   const audioTrack = stream.getAudioTracks?.()[0] || null;
   state.judgeOpen.micTrackSettings =
     typeof audioTrack?.getSettings === "function" ? audioTrack.getSettings() : null;
+  await refreshOpenMicrophones();
+  const activeDeviceId = String(state.judgeOpen.micTrackSettings?.deviceId || "");
+  if (activeDeviceId) {
+    state.judgeOpen.selectedMicDeviceId = activeDeviceId;
+    const activeMic = state.judgeOpen.availableMicrophones.find(
+      (device) => device.deviceId === activeDeviceId
+    );
+    state.judgeOpen.selectedMicLabel = activeMic?.label || state.judgeOpen.selectedMicLabel || "";
+  }
 
   const options = MediaRecorder.isTypeSupported("audio/webm")
-    ? { mimeType: "audio/webm" }
-    : {};
+    ? {
+        mimeType: "audio/webm",
+        audioBitsPerSecond: OPEN_RECORDING_AUDIO_BITS_PER_SECOND,
+      }
+    : {
+        audioBitsPerSecond: OPEN_RECORDING_AUDIO_BITS_PER_SECOND,
+      };
   const recorder = new MediaRecorder(stream, options);
   state.judgeOpen.mediaRecorder = recorder;
-  let chunkIndex = 0;
 
   clearOpenRolloverTimer();
   state.judgeOpen.recordingRolloverTimerId = window.setTimeout(() => {
@@ -882,37 +980,11 @@ export async function startOpenRecording({
 
   recorder.addEventListener("dataavailable", async (event) => {
     if (!event.data || event.data.size === 0) return;
-    const chunk = event.data;
-    state.judgeOpen.recordingChunks.push(chunk);
-    chunkIndex += 1;
-    const objectPath = getSessionStoragePath({ packetId, sessionId, chunkIndex });
-    const storageRef = ref(storage, objectPath);
-    state.judgeOpen.pendingUploads += 1;
-    onStatus?.();
-    try {
-      await uploadBytes(storageRef, chunk, { contentType: recorder.mimeType || "audio/webm" });
-      const retryState = state.judgeOpen.retryUploads[sessionId];
-      if (retryState?.chunks?.[chunkIndex]) {
-        delete retryState.chunks[chunkIndex];
-      }
-      await updateDoc(sessionRef, {
-        chunkCount: chunkIndex,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      const retryState = ensureRetryState(sessionId);
-      retryState.chunks[chunkIndex] = chunk;
-      await updateDoc(sessionRef, {
-        needsUpload: true,
-        updatedAt: serverTimestamp(),
-      });
-    } finally {
-      state.judgeOpen.pendingUploads = Math.max(0, state.judgeOpen.pendingUploads - 1);
-      onStatus?.();
-    }
+    state.judgeOpen.recordingChunks.push(event.data);
   });
 
   recorder.addEventListener("stop", async () => {
+    state.judgeOpen.recordingCooldownUntil = Date.now() + OPEN_RECORDING_RESTART_COOLDOWN_MS;
     clearOpenRolloverTimer();
     const shouldAutoContinue =
       state.judgeOpen.recordingKeepAlive &&
@@ -926,6 +998,8 @@ export async function startOpenRecording({
     const objectPath = getSessionStoragePath({ packetId, sessionId, isMaster: true });
     const storageRef = ref(storage, objectPath);
     let audioUrl = "";
+    state.judgeOpen.pendingUploads += 1;
+    onStatus?.();
     try {
       await uploadBytes(storageRef, blob, { contentType: recorder.mimeType || "audio/webm" });
       audioUrl = await getDownloadURL(storageRef);
@@ -935,6 +1009,9 @@ export async function startOpenRecording({
         needsUpload: true,
         updatedAt: serverTimestamp(),
       });
+    } finally {
+      state.judgeOpen.pendingUploads = Math.max(0, state.judgeOpen.pendingUploads - 1);
+      onStatus?.();
     }
     const audio = new Audio();
     const blobUrl = URL.createObjectURL(blob);
@@ -955,7 +1032,8 @@ export async function startOpenRecording({
           durationSec,
           masterAudioUrl: audioUrl,
           masterAudioPath: objectPath,
-          needsUpload: Boolean(Object.keys(retryState.chunks || {}).length || !audioUrl),
+          chunkCount: blob.size > 0 ? 1 : 0,
+          needsUpload: Boolean(!audioUrl),
           endedAt: serverTimestamp(),
           completedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -996,6 +1074,7 @@ export async function startOpenRecording({
     onStatus?.();
     if (shouldAutoContinue) {
       try {
+        state.judgeOpen.recordingCooldownUntil = 0;
         const next = await startOpenRecording({
           onStatus,
           onSessions,
@@ -1014,7 +1093,7 @@ export async function startOpenRecording({
     }
   });
 
-  recorder.start(OPEN_RECORDING_TIMESLICE_MS);
+  recorder.start();
   onStatus?.();
   return { ok: true, sessionId };
 }
@@ -1024,6 +1103,7 @@ export function stopOpenRecording() {
   if (!recorder || recorder.state !== "recording") return { ok: false };
   state.judgeOpen.recordingKeepAlive = false;
   state.judgeOpen.recordingAutoRolloverReason = "";
+  state.judgeOpen.recordingCooldownUntil = Date.now() + OPEN_RECORDING_RESTART_COOLDOWN_MS;
   clearOpenRolloverTimer();
   recorder.stop();
   return { ok: true };

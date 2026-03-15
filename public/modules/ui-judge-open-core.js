@@ -464,6 +464,13 @@ export function createJudgeOpenCore({
     if (els.judgeOpenStopBtn) {
       els.judgeOpenStopBtn.disabled = !editable;
     }
+    const micControlsDisabled = !editable || readiness.recordingActive;
+    if (els.judgeOpenMicSelect) {
+      els.judgeOpenMicSelect.disabled = micControlsDisabled;
+    }
+    if (els.judgeOpenMicRefreshBtn) {
+      els.judgeOpenMicRefreshBtn.disabled = micControlsDisabled;
+    }
   }
 
   function updateOpenRecordingStatus() {
@@ -479,13 +486,27 @@ export function createJudgeOpenCore({
       const ec = s.echoCancellation;
       const ns = s.noiseSuppression;
       const agc = s.autoGainControl;
+      const activeDeviceId = String(s.deviceId || "");
+      const activeMic = (state.judgeOpen.availableMicrophones || []).find(
+        (device) => device.deviceId === activeDeviceId
+      );
+      const micLabel =
+        activeMic?.label ||
+        state.judgeOpen.selectedMicLabel ||
+        (activeDeviceId ? "Selected microphone" : "Browser default microphone");
       els.judgeOpenMicSettingsDebug.textContent =
-        `Mic settings: EC=${String(ec)} - NS=${String(ns)} - AGC=${String(agc)}`;
+        `Mic: ${micLabel} | EC=${String(ec)} - NS=${String(ns)} - AGC=${String(agc)}`;
     };
     const recorder = state.judgeOpen.mediaRecorder;
-    if (recorder && recorder.state === "recording") {
+    const recordingActive = Boolean(recorder && recorder.state === "recording");
+    document.body.classList.toggle("judge-open-recording-safe", recordingActive);
+    if (recordingActive) {
       els.judgeOpenRecordingStatus.textContent = "Recording...";
       els.judgeOpenRecordingStatus.classList.add("recording-active");
+      if (els.judgeOpenEmergencyStopBtn) {
+        els.judgeOpenEmergencyStopBtn.classList.remove("is-hidden");
+        els.judgeOpenEmergencyStopBtn.disabled = false;
+      }
       if (els.judgeOpenRecordDot) {
         els.judgeOpenRecordDot.classList.add("is-active");
       }
@@ -503,6 +524,10 @@ export function createJudgeOpenCore({
       return;
     }
     els.judgeOpenRecordingStatus.classList.remove("recording-active");
+    if (els.judgeOpenEmergencyStopBtn) {
+      els.judgeOpenEmergencyStopBtn.classList.add("is-hidden");
+      els.judgeOpenEmergencyStopBtn.disabled = true;
+    }
     if (els.judgeOpenRecordDot) {
       els.judgeOpenRecordDot.classList.remove("is-active");
     }
@@ -514,11 +539,15 @@ export function createJudgeOpenCore({
     }
     stopOpenLevelMeter();
     const pendingUploads = Number(state.judgeOpen.pendingUploads || 0);
+    const cooldownRemainingMs = Number(state.judgeOpen.recordingCooldownUntil || 0) - Date.now();
     if (!hasPacket) {
       els.judgeOpenRecordingStatus.textContent = "Choose an ensemble and start a draft adjudication.";
     } else if (pendingUploads > 0) {
       const plural = pendingUploads === 1 ? "" : "s";
       els.judgeOpenRecordingStatus.textContent = `Uploading ${pendingUploads} chunk${plural}...`;
+    } else if (cooldownRemainingMs > 0) {
+      const waitSeconds = Math.max(1, Math.ceil(cooldownRemainingMs / 1000));
+      els.judgeOpenRecordingStatus.textContent = `Finalizing microphone... ready in ${waitSeconds}s.`;
     } else if (state.judgeOpen.autoTranscriptStatusText) {
       els.judgeOpenRecordingStatus.textContent = state.judgeOpen.autoTranscriptStatusText;
     } else {

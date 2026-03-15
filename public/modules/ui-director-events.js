@@ -32,13 +32,16 @@ export function createDirectorEventRenderers({
       startDate && endDate && startDate !== endDate
         ? `${startDate} - ${endDate}`
         : startDate || endDate || "";
+    const detailLabel = event.pizzaOrdersClosed
+      ? [dateLabel, "Pizza orders closed"].filter(Boolean).join(" · ")
+      : dateLabel;
     if (els.directorEventName) {
       els.directorEventName.textContent = name;
     } else {
       els.directorEventMeta.textContent = name;
     }
     if (els.directorEventDetail) {
-      els.directorEventDetail.textContent = dateLabel;
+      els.directorEventDetail.textContent = detailLabel;
     }
     if (els.directorScheduleBtn) {
       els.directorScheduleBtn.disabled = false;

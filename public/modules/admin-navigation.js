@@ -2,6 +2,7 @@ const ADMIN_VIEWS = new Set([
   "preEvent",
   "liveEvent",
   "packets",
+  "announcer",
   "readiness",
   "settings",
 ]);
@@ -22,6 +23,9 @@ const ADMIN_VIEW_BY_SEGMENT = {
   settings: "settings",
   packets: "packets",
   packet: "packets",
+  announcer: "announcer",
+  announce: "announcer",
+  emcee: "announcer",
   readiness: "readiness",
 };
 

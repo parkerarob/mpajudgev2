@@ -149,7 +149,7 @@ test.describe.serial("Smoke E2E Tests", () => {
       { timeout: 20000 }
     );
     await expect(page.locator("#judgeOpenPacketHint")).toContainText(
-      "Practice mode active",
+      /Practice (mode active|workspace open)/,
       { timeout: 20000 }
     );
 

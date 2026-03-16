@@ -35,13 +35,14 @@ import {
 } from "./modules/ui.js";
 import { hasUnsavedChanges } from "./modules/navigation.js";
 
-const VERSION_CHECK_INTERVAL_MS = 5 * 60_000;
-const VERSION_CHECK_PATHS = ["/index.html"];
+const VERSION_CHECK_INTERVAL_MS = 60_000;
+const VERSION_CHECK_PATH = "/version.json";
 const AUTH_INIT_DELAY_MS = 200;
 
 let versionCheckBaseline = null;
 let versionCheckTimerId = null;
 let versionReloadTriggered = false;
+let versionReloadPending = false;
 let authInitTimeoutId = null;
 let schoolDropdownsUnsub = null;
 
@@ -52,33 +53,33 @@ function ensureSchoolDropdownsWatcher() {
   });
 }
 
-async function getAssetSignature(path) {
-  const url = `${path}${path.includes("?") ? "&" : "?"}vcheck=${Date.now()}`;
+async function getVersionManifest() {
+  const url = `${VERSION_CHECK_PATH}?vcheck=${Date.now()}`;
   const response = await fetch(url, {
-    method: "HEAD",
     cache: "no-store",
     headers: { "cache-control": "no-cache" },
   });
   if (!response.ok) {
-    throw new Error(`Version check failed for ${path}: ${response.status}`);
+    throw new Error(`Version check failed for ${VERSION_CHECK_PATH}: ${response.status}`);
   }
-  const etag = response.headers.get("etag") || "";
-  if (!etag) {
-    throw new Error(`Version check skipped: missing ETag for ${path}`);
+  const payload = await response.json();
+  if (!payload || !payload.buildId) {
+    throw new Error("Version check skipped: missing buildId in version manifest");
   }
-  return etag;
+  return payload;
 }
 
-async function getVersionSignatureSnapshot() {
-  const signatures = await Promise.all(
-    VERSION_CHECK_PATHS.map(async (path) => [path, await getAssetSignature(path)])
-  );
-  return Object.fromEntries(signatures);
-}
-
-function triggerVersionReload() {
+async function triggerVersionReload() {
   if (versionReloadTriggered) return;
   versionReloadTriggered = true;
+  if ("caches" in window) {
+    try {
+      const cacheKeys = await window.caches.keys();
+      await Promise.all(cacheKeys.map((key) => window.caches.delete(key)));
+    } catch (error) {
+      console.warn("Cache clear before reload failed", error);
+    }
+  }
   const url = new URL(window.location.href);
   url.searchParams.set("refresh", String(Date.now()));
   window.location.replace(url.toString());
@@ -86,22 +87,24 @@ function triggerVersionReload() {
 
 async function runVersionCheck({ initial = false } = {}) {
   try {
-    const next = await getVersionSignatureSnapshot();
+    const next = await getVersionManifest();
     if (!versionCheckBaseline) {
       versionCheckBaseline = next;
       return;
     }
-    const changed = VERSION_CHECK_PATHS.some((path) => versionCheckBaseline[path] !== next[path]);
+    const changed = versionCheckBaseline.buildId !== next.buildId;
     if (!changed) return;
     if (initial) {
       versionCheckBaseline = next;
       return;
     }
     if (hasUnsavedChanges()) {
+      versionReloadPending = true;
       console.info("Update detected, waiting for unsaved changes to clear before reload.");
       return;
     }
-    triggerVersionReload();
+    versionReloadPending = false;
+    await triggerVersionReload();
   } catch (error) {
     console.warn("Version check skipped", error);
   }
@@ -112,9 +115,23 @@ function startVersionChecks() {
   runVersionCheck({ initial: true });
   versionCheckTimerId = window.setInterval(() => {
     if (document.visibilityState === "hidden") return;
+    if (versionReloadPending && !hasUnsavedChanges()) {
+      triggerVersionReload();
+      return;
+    }
     runVersionCheck();
   }, VERSION_CHECK_INTERVAL_MS);
 }
+
+window.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    if (versionReloadPending && !hasUnsavedChanges()) {
+      triggerVersionReload();
+      return;
+    }
+    runVersionCheck();
+  }
+});
 
 bindAuthHandlers();
 bindAdminHandlers();

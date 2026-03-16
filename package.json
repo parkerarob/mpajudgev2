@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "type": "commonjs",
   "scripts": {
+    "build:version": "node scripts/write_version_manifest.js",
     "test:unit": "vitest run tests/unit",
     "test:security": "cross-env FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 GCLOUD_PROJECT=mpa-judge-v2 npx firebase emulators:exec --project mpa-judge-v2 --only firestore,storage \"vitest run tests/security\"",
     "test:e2e": "playwright test -c playwright.config.ts",

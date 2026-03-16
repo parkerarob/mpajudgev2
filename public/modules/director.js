@@ -898,7 +898,11 @@ export async function markEntryReady() {
     return { ok: true, status: "ready", message: "Marked ready." };
   } catch (error) {
     console.error("Mark ready failed", error);
-    return { ok: false, error };
+    const code = error?.code || "";
+    const message = code === "permission-denied"
+      ? "Unable to mark ready. Confirm this director account is attached to the same school as the ensemble."
+      : "Unable to mark ready right now. Please try again, then contact support if it continues.";
+    return { ok: false, error, message };
   }
 }
 

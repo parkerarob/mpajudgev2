@@ -472,9 +472,7 @@ export function createDirectorHandlerBinder({
         const result = isReady ? await markEntryDraft() : await markEntryReady();
         if (!result) return;
         if (!result.ok) {
-          if (result.message) {
-            alertUser(result.message);
-          }
+          alertUser(result.message || "Unable to update entry readiness right now.");
           return;
         }
         const nextStatus = isReady ? "Incomplete" : "Ready";

@@ -39,4 +39,12 @@ describe("callable auth contract coverage", () => {
     expect(lockBlock).toContain("await assertOpsLead(request)");
     expect(unlockBlock).toContain("await assertOpsLead(request)");
   });
+
+  it("repairDirectorEntrySchoolMismatch enforces auth and director/admin access", () => {
+    const block = getExportBlock("repairDirectorEntrySchoolMismatch");
+    expect(block).toContain("Authentication required.");
+    expect(block).toContain("eventId and ensembleId are required.");
+    expect(block).toContain("Director or admin access required.");
+    expect(block).toContain("Director is not attached to a school.");
+  });
 });

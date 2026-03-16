@@ -178,6 +178,98 @@ export function isPizzaOrderWindowClosed(
   return Boolean(event?.pizzaOrdersClosed);
 }
 
+function isPermissionDeniedError(error) {
+  return String(error?.code || "").includes("permission-denied");
+}
+
+function getCurrentDirectorEntryContext() {
+  return {
+    eventId: String(state.director.selectedEventId || "").trim(),
+    ensembleId: String(state.director.selectedEnsembleId || "").trim(),
+    schoolId: String(getDirectorSchoolId() || "").trim(),
+  };
+}
+
+function resolveDirectorEntryPermissionMessage(error, repairResult = null) {
+  if (repairResult?.reason === "not-attached") {
+    return "Attach this director account to the correct school, then try again.";
+  }
+  if (repairResult?.reason === "ensemble-not-found-for-school") {
+    return "This ensemble is not attached to your school. Ask an admin to repair the ensemble entry.";
+  }
+  if (repairResult?.reason === "entry-not-found") {
+    return "Open this ensemble's event form again, then try again.";
+  }
+  if (repairResult?.reason === "entry-mismatch-unrepairable") {
+    return "This event form is attached to a different school than this director account. Ask an admin to repair the entry.";
+  }
+  if (isPizzaOrderWindowClosed()) {
+    return "Pizza ordering is closed for this event.";
+  }
+  if (isPermissionDeniedError(error)) {
+    return "Unable to save because this event form does not match the director's school access. Ask an admin to repair the entry if it continues.";
+  }
+  return error?.message || "Unable to save right now.";
+}
+
+export async function repairDirectorEntrySchoolMismatch({
+  eventId,
+  ensembleId,
+  schoolId,
+} = {}) {
+  const resolvedEventId = String(eventId || state.director.selectedEventId || "").trim();
+  const resolvedEnsembleId = String(ensembleId || state.director.selectedEnsembleId || "").trim();
+  const resolvedSchoolId = String(schoolId || getDirectorSchoolId() || "").trim();
+  if (!resolvedEventId || !resolvedEnsembleId) {
+    return { ok: false, reason: "missing-context" };
+  }
+  if (!resolvedSchoolId) {
+    return { ok: false, reason: "not-attached" };
+  }
+  if (state.director.entryRepairInFlight) {
+    return { ok: false, reason: "in-flight" };
+  }
+  state.director.entryRepairInFlight = true;
+  try {
+    const repairFn = httpsCallable(functions, "repairDirectorEntrySchoolMismatch");
+    const response = await repairFn({
+      eventId: resolvedEventId,
+      ensembleId: resolvedEnsembleId,
+      schoolId: resolvedSchoolId,
+    });
+    return {
+      ok: true,
+      ...(response?.data || {}),
+    };
+  } catch (error) {
+    console.error("repairDirectorEntrySchoolMismatch failed", error);
+    return {
+      ok: false,
+      reason: "call-failed",
+      error,
+      message: error?.message || "Unable to repair event form access.",
+    };
+  } finally {
+    state.director.entryRepairInFlight = false;
+  }
+}
+
+export async function runDirectorEntryWriteWithRepair(writeOperation) {
+  try {
+    return await writeOperation();
+  } catch (error) {
+    if (!isPermissionDeniedError(error)) {
+      throw error;
+    }
+    const repairResult = await repairDirectorEntrySchoolMismatch(getCurrentDirectorEntryContext());
+    if (repairResult?.ok && repairResult.repaired) {
+      return writeOperation();
+    }
+    error.directorRepairResult = repairResult || null;
+    throw error;
+  }
+}
+
 export function buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid }) {
   const standardCounts = STANDARD_INSTRUMENTS.reduce((acc, item) => {
     acc[item.key] = 0;
@@ -423,7 +515,7 @@ export async function ensureEntryDocExists() {
     updatedAt: serverTimestamp(),
     createdAt: serverTimestamp(),
   };
-  await setDoc(state.director.entryRef, payload, { merge: true });
+  await runDirectorEntryWriteWithRepair(() => setDoc(state.director.entryRef, payload, { merge: true }));
   state.director.entryExists = true;
   state.director.entryDraft = normalizeEntryData(payload, base);
   return true;
@@ -467,15 +559,15 @@ export async function upsertRegistrationForEnsemble({
 
   if (!snap.exists()) {
     const base = buildDefaultEntry({ eventId, schoolId, ensembleId, createdByUid });
-    await setDoc(entryRef, {
+    await runDirectorEntryWriteWithRepair(() => setDoc(entryRef, {
       ...base,
       ...registrationPayload,
       createdAt: serverTimestamp(),
       registeredAt: serverTimestamp(),
       registeredByUid: createdByUid,
-    }, { merge: true });
+    }, { merge: true }));
   } else {
-    await updateDoc(entryRef, registrationPayload);
+    await runDirectorEntryWriteWithRepair(() => updateDoc(entryRef, registrationPayload));
   }
 }
 
@@ -499,7 +591,7 @@ export async function saveEntrySection(section, payload, successMessage) {
       updatePayload.readyAt = null;
       updatePayload.readyByUid = null;
     }
-    await updateDoc(state.director.entryRef, updatePayload);
+    await runDirectorEntryWriteWithRepair(() => updateDoc(state.director.entryRef, updatePayload));
     if (wasReady) {
       state.director.entryDraft.status = "draft";
     }
@@ -514,7 +606,11 @@ export async function saveEntrySection(section, payload, successMessage) {
     };
   } catch (error) {
     console.error("Save section failed", error);
-    return { ok: false, error };
+    return {
+      ok: false,
+      error,
+      message: resolveDirectorEntryPermissionMessage(error, error?.directorRepairResult || null),
+    };
   } finally {
     state.director.entrySaveInFlight = false;
   }
@@ -888,19 +984,18 @@ export async function markEntryReady() {
     };
     if (!state.director.entryExists) {
       payload.createdAt = serverTimestamp();
-      await setDoc(state.director.entryRef, payload, { merge: true });
+      await runDirectorEntryWriteWithRepair(() => setDoc(state.director.entryRef, payload, { merge: true }));
       state.director.entryExists = true;
     } else {
-      await setDoc(state.director.entryRef, payload, { merge: true });
+      await runDirectorEntryWriteWithRepair(() => setDoc(state.director.entryRef, payload, { merge: true }));
     }
     state.director.entryDraft.status = "ready";
     state.director.dirtySections.clear();
     return { ok: true, status: "ready", message: "Marked ready." };
   } catch (error) {
     console.error("Mark ready failed", error);
-    const code = error?.code || "";
-    const message = code === "permission-denied"
-      ? "Unable to mark ready. Confirm this director account is attached to the same school as the ensemble."
+    const message = isPermissionDeniedError(error)
+      ? resolveDirectorEntryPermissionMessage(error, error?.directorRepairResult || null)
       : "Unable to mark ready right now. Please try again, then contact support if it continues.";
     return { ok: false, error, message };
   }
@@ -909,12 +1004,12 @@ export async function markEntryReady() {
 export async function markEntryDraft() {
   if (!state.director.entryDraft || !state.director.entryRef) return;
   try {
-    await updateDoc(state.director.entryRef, {
+    await runDirectorEntryWriteWithRepair(() => updateDoc(state.director.entryRef, {
       status: "draft",
       readyAt: null,
       readyByUid: null,
       updatedAt: serverTimestamp(),
-    });
+    }));
     state.director.entryDraft.status = "draft";
     return { ok: true, status: "draft", message: "Marked draft." };
   } catch (error) {
@@ -1749,9 +1844,21 @@ export function watchDirectorSchoolDirectors(callback) {
     callback?.([]);
     return;
   }
+  if (state.auth.userProfile?.role === "director") {
+    callback?.([{
+      id: state.auth.currentUser?.uid || "",
+      displayName:
+        state.auth.userProfile?.displayName ||
+        state.auth.userProfile?.email ||
+        "",
+      email: state.auth.userProfile?.email || "",
+    }]);
+    return;
+  }
   const directorQuery = query(
     collection(db, COLLECTIONS.users),
-    where(FIELDS.users.schoolId, "==", schoolId)
+    where(FIELDS.users.schoolId, "==", schoolId),
+    where(FIELDS.users.role, "==", "director")
   );
   state.subscriptions.directorSchoolDirectors = onSnapshot(
     directorQuery,

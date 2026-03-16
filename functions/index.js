@@ -6158,6 +6158,99 @@ exports.unassignDirectorSchool = onCall(async (request) => {
   return {ok: true, directorUid};
 });
 
+exports.repairDirectorEntrySchoolMismatch = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId are required.");
+  }
+
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const profile = userSnap.exists ? (userSnap.data() || {}) : {};
+  const role = getEffectiveRole(profile);
+  const isAdmin = isAdminProfile(profile);
+  if (!isAdmin && role !== "director") {
+    throw new HttpsError("permission-denied", "Director or admin access required.");
+  }
+
+  const schoolId = String(
+      isAdmin ? (data.schoolId || profile.schoolId || "") : (profile.schoolId || ""),
+  ).trim();
+  if (!schoolId) {
+    throw new HttpsError("failed-precondition", "Director is not attached to a school.");
+  }
+
+  const ensembleRef = db
+      .collection(COLLECTIONS.schools)
+      .doc(schoolId)
+      .collection("ensembles")
+      .doc(ensembleId);
+  const entryRef = db
+      .collection(COLLECTIONS.events)
+      .doc(eventId)
+      .collection(COLLECTIONS.entries)
+      .doc(ensembleId);
+
+  const [ensembleSnap, entrySnap] = await Promise.all([
+    ensembleRef.get(),
+    entryRef.get(),
+  ]);
+
+  if (!ensembleSnap.exists) {
+    return {
+      ok: false,
+      repaired: false,
+      reason: "ensemble-not-found-for-school",
+      schoolId,
+      eventId,
+      ensembleId,
+    };
+  }
+  if (!entrySnap.exists) {
+    return {
+      ok: false,
+      repaired: false,
+      reason: "entry-not-found",
+      schoolId,
+      eventId,
+      ensembleId,
+    };
+  }
+
+  const entry = entrySnap.data() || {};
+  const previousSchoolId = String(entry.schoolId || "").trim();
+  if (previousSchoolId === schoolId) {
+    return {
+      ok: true,
+      repaired: false,
+      reason: "already-matched",
+      schoolId,
+      previousSchoolId,
+      eventId,
+      ensembleId,
+    };
+  }
+
+  await entryRef.set({
+    schoolId,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+
+  return {
+    ok: true,
+    repaired: true,
+    schoolId,
+    previousSchoolId,
+    eventId,
+    ensembleId,
+  };
+});
+
 exports.deleteEnsemble = onCall(async (request) => {
   if (!request.auth || !request.auth.uid) {
     throw new HttpsError("unauthenticated", "Authentication required.");

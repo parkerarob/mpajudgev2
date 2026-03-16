@@ -4,6 +4,7 @@ import {
   buildDirectorAutosavePayload,
   ensureEntryDocExists,
   hasDirectorUnsavedChanges,
+  runDirectorEntryWriteWithRepair,
 } from "./director.js";
 import {
   calculateCaptionTotal as calculateOpenCaptionTotal,
@@ -22,10 +23,10 @@ export async function autosaveDirectorEntry() {
   try {
     await ensureEntryDocExists();
     const payload = buildDirectorAutosavePayload();
-    await updateDoc(state.director.entryRef, {
+    await runDirectorEntryWriteWithRepair(() => updateDoc(state.director.entryRef, {
       ...payload,
       updatedAt: serverTimestamp(),
-    });
+    }));
     state.director.entryDraft.status = "draft";
     if (state.director.draftVersion === startVersion) {
       state.director.dirtySections.clear();
@@ -34,7 +35,12 @@ export async function autosaveDirectorEntry() {
     return { ok: true, type: "director", cleared: false, status: "draft" };
   } catch (error) {
     console.error("Director autosave failed", error);
-    return { ok: false, type: "director", error };
+    return {
+      ok: false,
+      type: "director",
+      error,
+      message: error?.directorRepairResult?.message || error?.message || "Autosave failed.",
+    };
   } finally {
     state.director.autosaveInFlight = false;
   }

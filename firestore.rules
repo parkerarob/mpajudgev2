@@ -30,19 +30,27 @@ service cloud.firestore {
       return userData().schoolId;
     }
 
+    function userRoles() {
+      return userData().roles is map ? userData().roles : {};
+    }
+
+    function hasUserRoleFlag(roleName) {
+      return roleName in userRoles() && userRoles()[roleName] == true;
+    }
+
     function isAdmin() {
       return isSignedIn()
-        && (userRole() == "admin" || userData().roles.admin == true);
+        && (userRole() == "admin" || hasUserRoleFlag("admin"));
     }
 
     function isJudge() {
       return isSignedIn()
-        && (userRole() == "judge" || userData().roles.judge == true);
+        && (userRole() == "judge" || hasUserRoleFlag("judge"));
     }
 
     function isTeamLead() {
       return isSignedIn()
-        && (userRole() == "teamLead" || userData().roles.teamLead == true);
+        && (userRole() == "teamLead" || hasUserRoleFlag("teamLead"));
     }
 
     function isOpsLead() {
@@ -51,7 +59,7 @@ service cloud.firestore {
 
     function isDirector() {
       return isSignedIn()
-        && (userRole() == "director" || userData().roles.director == true);
+        && (userRole() == "director" || hasUserRoleFlag("director"));
     }
 
     function isDirectorForSchool(schoolId) {
@@ -88,14 +96,18 @@ service cloud.firestore {
         || (isOpsLead()
           && (
             resource.data.role == "director"
-            || resource.data.roles.director == true
+            || (resource.data.roles is map
+              && "director" in resource.data.roles
+              && resource.data.roles.director == true)
           ))
         || request.auth.uid == userId
         || (isDirector()
           && resource.data.schoolId == userSchoolId()
           && (
             resource.data.role == "director"
-            || resource.data.roles.director == true
+            || (resource.data.roles is map
+              && "director" in resource.data.roles
+              && resource.data.roles.director == true)
           ));
       allow create: if isAdmin()
         || (request.auth.uid == userId
@@ -143,8 +155,8 @@ service cloud.firestore {
           )
           && (
             request.resource.data.schoolId == resource.data.schoolId
-            || (resource.data.schoolId == null
-              && request.resource.data.schoolId is string
+            || request.resource.data.schoolId == null
+            || (request.resource.data.schoolId is string
               && exists(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)))
           ));
       allow delete: if isAdmin();
@@ -202,6 +214,7 @@ service cloud.firestore {
             && request.resource.data.schoolId == userSchoolId()
             && request.resource.data.eventId == eventId
             && request.resource.data.ensembleId == ensembleId
+            && schoolEnsembleExists(request.resource.data.schoolId, ensembleId)
             && (
               pizzaOrdersOpen(eventId)
               || (

@@ -827,6 +827,7 @@ export const state = {
     lunchTotalsInFlight: new Map(),
     autosaveInFlight: false,
     autosaveIndicatorTimeout: null,
+    entryRepairInFlight: false,
   },
   admin: {
     currentView: "preEvent",

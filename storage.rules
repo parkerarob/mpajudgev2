@@ -18,19 +18,27 @@ service firebase.storage {
       return userData().schoolId;
     }
 
+    function userRoles() {
+      return userData().roles is map ? userData().roles : {};
+    }
+
+    function hasUserRoleFlag(roleName) {
+      return roleName in userRoles() && userRoles()[roleName] == true;
+    }
+
     function isAdmin() {
       return isSignedIn()
-        && (userRole() == "admin" || userData().roles.admin == true);
+        && (userRole() == "admin" || hasUserRoleFlag("admin"));
     }
 
     function isJudge() {
       return isSignedIn()
-        && (userRole() == "judge" || userData().roles.judge == true);
+        && (userRole() == "judge" || hasUserRoleFlag("judge"));
     }
 
     function isTeamLead() {
       return isSignedIn()
-        && (userRole() == "teamLead" || userData().roles.teamLead == true);
+        && (userRole() == "teamLead" || hasUserRoleFlag("teamLead"));
     }
 
     function isOpsLead() {
@@ -39,7 +47,7 @@ service firebase.storage {
 
     function isDirector() {
       return isSignedIn()
-        && (userRole() == "director" || userData().roles.director == true);
+        && (userRole() == "director" || hasUserRoleFlag("director"));
     }
 
     function isDirectorForSchool(schoolId) {

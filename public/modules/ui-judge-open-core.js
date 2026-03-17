@@ -92,34 +92,6 @@ export function createJudgeOpenCore({
       done: readiness.captionsComplete,
       active: readiness.hasAudio && !readiness.captionsComplete,
     });
-    if (els.judgeOpenReadinessHint) {
-      if (!state.judgeOpen.currentPacketId) {
-        els.judgeOpenReadinessHint.textContent = readiness.linkedEnsemble
-          ? "Ensemble selected. Start recording to begin this assessment."
-          : "Select an ensemble to begin.";
-      } else if (!readiness.linkedEnsemble) {
-        els.judgeOpenReadinessHint.textContent = "Select an existing school and ensemble.";
-      } else if (!readiness.hasAudio) {
-        els.judgeOpenReadinessHint.textContent = "Record audio.";
-      } else if (!readiness.captionsComplete) {
-        const parts = [];
-        if (readiness.missingCaptionCommentCount > 0) {
-          parts.push(`${readiness.missingCaptionCommentCount} caption comment${readiness.missingCaptionCommentCount === 1 ? "" : "s"}`);
-        }
-        if (readiness.missingCaptionGradeCount > 0) {
-          parts.push(`${readiness.missingCaptionGradeCount} caption score${readiness.missingCaptionGradeCount === 1 ? "" : "s"}`);
-        }
-        els.judgeOpenReadinessHint.textContent = `Complete required captions: ${parts.join(" and ")} missing.`;
-      } else if (!readiness.editable) {
-        els.judgeOpenReadinessHint.textContent = "Assessment is locked and can no longer be edited.";
-      } else if (readiness.recordingActive) {
-        els.judgeOpenReadinessHint.textContent = "Stop recording to continue.";
-      } else if (readiness.pendingUploads) {
-        els.judgeOpenReadinessHint.textContent = "Waiting for audio uploads to finish.";
-      } else {
-        els.judgeOpenReadinessHint.textContent = "Ready to submit for admin review.";
-      }
-    }
     if (els.judgeOpenSubmitHint) {
       if (!state.judgeOpen.currentPacketId) {
         els.judgeOpenSubmitHint.textContent = readiness.linkedEnsemble
@@ -195,19 +167,6 @@ export function createJudgeOpenCore({
       const mode = packet.mode === "official" ? "Official" : "Practice";
       els.judgeOpenSummaryMeta.textContent = `${mode} ${formLabel} assessment - ${segments} recording part${segments === 1 ? "" : "s"}`;
     }
-    if (els.judgeOpenSummaryHint) {
-      if (!state.judgeOpen.currentPacketId) {
-        els.judgeOpenSummaryHint.textContent = readiness.linkedEnsemble
-          ? "Selected ensemble. Start recording to create the assessment."
-          : "Select an ensemble to begin.";
-      } else if (statusRaw === "released") {
-        els.judgeOpenSummaryHint.textContent = "This assessment has been released.";
-      } else if (statusRaw === "submitted" || statusRaw === "locked") {
-        els.judgeOpenSummaryHint.textContent = "Assessment is saved and awaiting admin review.";
-      } else {
-        els.judgeOpenSummaryHint.textContent = "Record audio, complete caption comments and scores, then submit for review.";
-      }
-    }
   }
 
   function renderOpenCaptionForm() {
@@ -276,9 +235,6 @@ export function createJudgeOpenCore({
     }
     if (els.judgeOpenFinalRating) {
       els.judgeOpenFinalRating.textContent = rating.label;
-    }
-    if (els.judgeOpenCommentStatus) {
-      els.judgeOpenCommentStatus.textContent = complete ? "Ready" : "Incomplete";
     }
   }
 
@@ -522,27 +478,6 @@ export function createJudgeOpenCore({
   function updateOpenRecordingStatus() {
     if (!els.judgeOpenRecordingStatus) return;
     const hasPacket = Boolean(state.judgeOpen.currentPacketId);
-    const setMicDebug = () => {
-      if (!els.judgeOpenMicSettingsDebug) return;
-      const s = state.judgeOpen.micTrackSettings;
-      if (!s) {
-        els.judgeOpenMicSettingsDebug.textContent = "";
-        return;
-      }
-      const ec = s.echoCancellation;
-      const ns = s.noiseSuppression;
-      const agc = s.autoGainControl;
-      const activeDeviceId = String(s.deviceId || "");
-      const activeMic = (state.judgeOpen.availableMicrophones || []).find(
-        (device) => device.deviceId === activeDeviceId
-      );
-      const micLabel =
-        activeMic?.label ||
-        state.judgeOpen.selectedMicLabel ||
-        (activeDeviceId ? "Selected microphone" : "Browser default microphone");
-      els.judgeOpenMicSettingsDebug.textContent =
-        `Mic: ${micLabel} | EC=${String(ec)} - NS=${String(ns)} - AGC=${String(agc)}`;
-    };
     const recorder = state.judgeOpen.mediaRecorder;
     const recordingActive = Boolean(recorder && recorder.state === "recording");
     document.body.classList.toggle("judge-open-recording-safe", recordingActive);
@@ -565,7 +500,6 @@ export function createJudgeOpenCore({
       if (els.judgeOpenRecordBtn) els.judgeOpenRecordBtn.disabled = true;
       if (els.judgeOpenStopBtn) els.judgeOpenStopBtn.disabled = false;
       startOpenLevelMeter(recorder.stream);
-      setMicDebug();
       updateOpenSubmitState();
       return;
     }
@@ -587,9 +521,7 @@ export function createJudgeOpenCore({
     const pendingUploads = Number(state.judgeOpen.pendingUploads || 0);
     const cooldownRemainingMs = Number(state.judgeOpen.recordingCooldownUntil || 0) - Date.now();
     if (!hasPacket) {
-      els.judgeOpenRecordingStatus.textContent = hasLinkedOpenEnsemble()
-        ? "Selected ensemble. Start recording to create this assessment."
-        : "Choose an ensemble before starting this assessment.";
+      els.judgeOpenRecordingStatus.textContent = "";
     } else if (pendingUploads > 0) {
       const plural = pendingUploads === 1 ? "" : "s";
       els.judgeOpenRecordingStatus.textContent = `Uploading ${pendingUploads} chunk${plural}...`;
@@ -605,7 +537,6 @@ export function createJudgeOpenCore({
       els.judgeOpenStickyAudioDuration.textContent =
         els.judgeOpenTapeDuration?.textContent || "0:00";
     }
-    setMicDebug();
     if (els.judgeOpenRecordBtn) els.judgeOpenRecordBtn.disabled = false;
     if (els.judgeOpenStopBtn) els.judgeOpenStopBtn.disabled = true;
     updateOpenSubmitState();

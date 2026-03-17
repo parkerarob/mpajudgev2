@@ -48,7 +48,7 @@ describe("resolveHash", () => {
     });
   });
 
-  it("falls back to preEvent when live route is disabled", () => {
+  it("falls back to dashboard when live route is disabled", () => {
     mockState.app.features = {
       ...mockState.app.features,
       enableAdminLiveEvent: false,
@@ -57,11 +57,11 @@ describe("resolveHash", () => {
     expect(resolved).toEqual({
       type: "tab",
       tab: "admin",
-      adminView: "preEvent",
+      adminView: "dashboard",
     });
   });
 
-  it("falls back to preEvent when settings/directory route is disabled", () => {
+  it("falls back to dashboard when settings/directory route is disabled", () => {
     mockState.app.features = {
       ...mockState.app.features,
       enableAdminSettings: false,
@@ -70,11 +70,11 @@ describe("resolveHash", () => {
     expect(resolved).toEqual({
       type: "tab",
       tab: "admin",
-      adminView: "preEvent",
+      adminView: "dashboard",
     });
   });
 
-  it("routes judge-open hash to admin when judge-open is disabled", () => {
+  it("routes judge-open hash to admin dashboard when judge-open is disabled", () => {
     mockState.app.features = {
       ...mockState.app.features,
       enableJudgeOpen: false,
@@ -83,7 +83,7 @@ describe("resolveHash", () => {
     expect(resolved).toEqual({
       type: "tab",
       tab: "admin",
-      adminView: "preEvent",
+      adminView: "dashboard",
     });
   });
 

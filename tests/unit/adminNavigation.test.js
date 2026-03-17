@@ -7,8 +7,9 @@ import {
 
 describe("admin navigation hash helper", () => {
   it("maps known admin views", () => {
-    expect(getAdminHashForView("preEvent")).toBe("#admin");
-    expect(getAdminHashForView("liveEvent")).toBe("#admin/live");
+    expect(getAdminHashForView("dashboard")).toBe("#admin");
+    expect(getAdminHashForView("preEvent")).toBe("#admin/registrations");
+    expect(getAdminHashForView("liveEvent")).toBe("#admin/flow");
     expect(getAdminHashForView("readiness")).toBe("#admin/readiness");
   });
 
@@ -25,6 +26,7 @@ describe("admin navigation hash helper", () => {
 
 describe("resolveAdminView", () => {
   it("returns canonical known admin views", () => {
+    expect(resolveAdminView("dashboard")).toBe("dashboard");
     expect(resolveAdminView("preEvent")).toBe("preEvent");
     expect(resolveAdminView("liveEvent")).toBe("liveEvent");
     expect(resolveAdminView("packets")).toBe("packets");
@@ -32,14 +34,14 @@ describe("resolveAdminView", () => {
     expect(resolveAdminView("settings")).toBe("settings");
   });
 
-  it("falls back to preEvent for invalid view", () => {
-    expect(resolveAdminView("")).toBe("preEvent");
-    expect(resolveAdminView("unknown")).toBe("preEvent");
+  it("falls back to dashboard for invalid view", () => {
+    expect(resolveAdminView("")).toBe("dashboard");
+    expect(resolveAdminView("unknown")).toBe("dashboard");
   });
 
   it("respects feature gates for live/settings", () => {
-    expect(resolveAdminView("liveEvent", { liveEnabled: false })).toBe("preEvent");
-    expect(resolveAdminView("settings", { settingsEnabled: false })).toBe("preEvent");
+    expect(resolveAdminView("liveEvent", { liveEnabled: false })).toBe("dashboard");
+    expect(resolveAdminView("settings", { settingsEnabled: false })).toBe("dashboard");
   });
 });
 
@@ -53,12 +55,12 @@ describe("resolveAdminViewFromHashSegment", () => {
   });
 
   it("applies feature gates while resolving segments", () => {
-    expect(resolveAdminViewFromHashSegment("live", { liveEnabled: false })).toBe("preEvent");
-    expect(resolveAdminViewFromHashSegment("settings", { settingsEnabled: false })).toBe("preEvent");
+    expect(resolveAdminViewFromHashSegment("live", { liveEnabled: false })).toBe("dashboard");
+    expect(resolveAdminViewFromHashSegment("settings", { settingsEnabled: false })).toBe("dashboard");
   });
 
-  it("falls back to preEvent for unknown segments", () => {
-    expect(resolveAdminViewFromHashSegment("unknown")).toBe("preEvent");
-    expect(resolveAdminViewFromHashSegment("")).toBe("preEvent");
+  it("falls back to dashboard for unknown segments", () => {
+    expect(resolveAdminViewFromHashSegment("unknown")).toBe("dashboard");
+    expect(resolveAdminViewFromHashSegment("")).toBe("dashboard");
   });
 });

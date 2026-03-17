@@ -2680,6 +2680,9 @@ export function setTab(tabName, { force } = {}) {
     if (!confirmDiscardUnsaved()) return { changed: false, reason: "unsaved" };
     state.director.adminLaunchContext = null;
   }
+  if (tabName === "admin" && state.app.currentTab !== "admin") {
+    state.admin.currentView = "dashboard";
+  }
   const result = setTabState(tabName, { force });
   if (!result.changed) return result;
   updateTabUI(result.tabName, result.role);
@@ -3563,6 +3566,13 @@ export function initTabs() {
   state.app.tabsBound = true;
   els.tabButtons.forEach((button) => {
     button.addEventListener("click", () => {
+      if (button.dataset.tab === "admin" && state.app.currentTab !== "admin") {
+        state.admin.currentView = "dashboard";
+        if (window.location.hash !== "#admin") {
+          window.location.hash = "#admin";
+          return;
+        }
+      }
       setTab(button.dataset.tab);
     });
     button.addEventListener("keydown", (event) => {
@@ -3580,6 +3590,13 @@ export function initTabs() {
       const target = buttons[nextIndex];
       if (target) {
         target.focus();
+        if (target.dataset.tab === "admin" && state.app.currentTab !== "admin") {
+          state.admin.currentView = "dashboard";
+          if (window.location.hash !== "#admin") {
+            window.location.hash = "#admin";
+            return;
+          }
+        }
         setTab(target.dataset.tab);
       }
     });
@@ -3588,6 +3605,13 @@ export function initTabs() {
     els.roleSwitcherSelect.addEventListener("change", () => {
       const targetTab = els.roleSwitcherSelect.value;
       if (!targetTab) return;
+      if (targetTab === "admin" && state.app.currentTab !== "admin") {
+        state.admin.currentView = "dashboard";
+        if (window.location.hash !== "#admin") {
+          window.location.hash = "#admin";
+          return;
+        }
+      }
       setTab(targetTab);
     });
   }

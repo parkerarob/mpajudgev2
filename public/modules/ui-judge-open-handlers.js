@@ -755,15 +755,10 @@ export function createJudgeOpenHandlerBinder({
             return;
           }
           setOpenPacketHint("Assessment saved for admin review.");
-          const refreshed = await selectOpenPacket(state.judgeOpen.currentPacketId, {
-            onSessions: renderOpenSegments,
-          });
-          if (refreshed?.ok) {
-            renderOpenCaptionForm();
-            updateOpenHeader();
-            showOpenDetailView();
-            updateOpenSubmitState();
-          }
+          renderOpenCaptionForm();
+          updateOpenHeader();
+          showOpenDetailView();
+          updateOpenSubmitState();
         });
       });
     }

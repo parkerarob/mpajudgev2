@@ -58,8 +58,16 @@ npm --prefix functions run seed:emulator
 Optional staging seed:
 
 ```bash
+STAGING_PROJECT_ID=your-staging-project \
+STAGING_ADMIN_EMAIL=you@example.com \
+STAGING_ADMIN_PASSWORD='...' \
+STAGING_SHARED_PASSWORD='...' \
 npm --prefix functions run seed:staging
 ```
+
+Notes:
+- `seed:staging` now requires an explicit target project and passwords.
+- Protected project IDs are blocked unless `ALLOW_PROTECTED_PROJECT=true` is set intentionally.
 
 ## Verification
 

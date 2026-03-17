@@ -1490,104 +1490,13 @@ export function createAdminRenderers({
         const cleanupRow = document.createElement("li");
         cleanupRow.className = "panel";
         const cleanupTitle = document.createElement("h4");
-        cleanupTitle.textContent = "Results Packet Cleanup";
+        cleanupTitle.textContent = "Packet Maintenance";
         cleanupRow.appendChild(cleanupTitle);
         const cleanupHint = document.createElement("p");
         cleanupHint.className = "hint";
-        cleanupHint.textContent = "Delete all unreleased scheduled results packets and Open Judge sheets across the entire database.";
+        cleanupHint.textContent =
+          "Release-safe maintenance tools only. Destructive cleanup actions are disabled on this branch.";
         cleanupRow.appendChild(cleanupHint);
-        const cleanupBtn = document.createElement("button");
-        cleanupBtn.type = "button";
-        cleanupBtn.className = "ghost";
-        cleanupBtn.textContent = "Delete All Unreleased Results Packets";
-        cleanupBtn.addEventListener("click", async () => {
-          const confirmed = confirmUser(
-            "Delete all unreleased results packets across the entire database? Released packets will be skipped."
-          );
-          if (!confirmed) return;
-          const phrase = window.prompt("Type DELETE UNRELEASED to confirm bulk cleanup.");
-          if (phrase !== "DELETE UNRELEASED") {
-            alertUser("Bulk cleanup cancelled: confirmation phrase did not match.");
-            return;
-          }
-          cleanupBtn.disabled = true;
-          try {
-            const result = await deleteAllUnreleasedPackets();
-            await renderAdminPacketsBySchedule();
-            alertUser(
-              `Cleanup complete. Open deleted: ${result.deletedOpenPackets || 0}; scheduled deleted: ${result.deletedScheduledPackets || 0}; released skipped: ${(result.skippedReleasedOpenPackets || 0) + (result.skippedReleasedScheduledPackets || 0)}.`
-            );
-          } catch (error) {
-            console.error("Bulk delete unreleased packets failed", error);
-            alertUser(error?.message || "Unable to delete unreleased packets.");
-          } finally {
-            cleanupBtn.disabled = false;
-          }
-        });
-        cleanupRow.appendChild(cleanupBtn);
-        const cleanupTestBtn = document.createElement("button");
-        cleanupTestBtn.type = "button";
-        cleanupTestBtn.className = "ghost danger";
-        cleanupTestBtn.textContent = "Delete Test Data";
-        cleanupTestBtn.addEventListener("click", async () => {
-          cleanupTestBtn.disabled = true;
-          try {
-            const preview = await cleanupTestArtifacts({ dryRun: true });
-            const eventCount = Number(preview.eventCandidates?.length || 0);
-            const schoolCount = Number(preview.schoolCandidates?.length || 0);
-            const suggestedEventCount = Number(preview.suggestedEventMatches?.length || 0);
-            const suggestedSchoolCount = Number(preview.suggestedSchoolMatches?.length || 0);
-            const packetCount = Number(preview.packetCandidates || 0);
-            const submissionCount = Number(preview.submissionCandidates || 0);
-            const officialAssessmentCount = Number(preview.officialAssessmentCandidates || 0);
-            if (!eventCount && !schoolCount && !packetCount && !submissionCount && !officialAssessmentCount) {
-              if (suggestedEventCount || suggestedSchoolCount) {
-                alertUser(
-                  `No explicitly tagged test artifacts found.\n` +
-                  `Suggested matches (not deleted in strict mode): events ${suggestedEventCount}, schools ${suggestedSchoolCount}.\n` +
-                  `Tag records with isTestArtifact=true to enable safe cleanup.`
-                );
-              } else {
-                alertUser("No test artifacts matched the cleanup rules.");
-              }
-              return;
-            }
-            const confirmed = confirmUser(
-              `Test cleanup preview:\n` +
-              `Events: ${eventCount}\n` +
-              `Schools: ${schoolCount}\n` +
-              `Open packets: ${packetCount}\n` +
-              `Scheduled assessment mirrors: ${submissionCount}\n` +
-              `Official assessments: ${officialAssessmentCount}\n` +
-              `Strict mode: ${preview.strictMode === true ? "on" : "off"}\n` +
-              `Active event skipped: ${Number(preview.activeEventSkipped?.length || 0)}\n\n` +
-              "Proceed with permanent deletion?"
-            );
-            if (!confirmed) return;
-            const phrase = window.prompt("Type DELETE TEST DATA to confirm.");
-            if (phrase !== "DELETE TEST DATA") {
-              alertUser("Test cleanup cancelled: confirmation phrase did not match.");
-              return;
-            }
-            const result = await cleanupTestArtifacts({ dryRun: false });
-            await renderAdminPacketsBySchedule();
-            alertUser(
-              `Test cleanup complete.\n` +
-              `Deleted events: ${result.deletedEvents || 0}\n` +
-              `Deleted schools: ${result.deletedSchools || 0}\n` +
-              `Deleted open packets: ${result.deletedOpenPackets || 0}\n` +
-              `Deleted scheduled assessment mirrors: ${result.deletedSubmissions || 0}\n` +
-              `Deleted official assessments: ${result.deletedOfficialAssessments || 0}\n` +
-              `Deleted audio-only rows: ${result.deletedAudioResults || 0}`
-            );
-          } catch (error) {
-            console.error("cleanupTestArtifacts failed", error);
-            alertUser(error?.message || "Unable to cleanup test artifacts.");
-          } finally {
-            cleanupTestBtn.disabled = false;
-          }
-        });
-        cleanupRow.appendChild(cleanupTestBtn);
         const repairBtn = document.createElement("button");
         repairBtn.type = "button";
         repairBtn.className = "ghost";

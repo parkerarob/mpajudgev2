@@ -263,8 +263,10 @@ service cloud.firestore {
     }
 
     match /officialAssessments/{officialAssessmentId} {
-      allow read: if isOpsLead()
-        || isDirector();
+      allow get: if isOpsLead()
+        || (isDirectorForSchool(resource.data.schoolId)
+          && resource.data.status == "released");
+      allow list: if isOpsLead();
       allow create, update, delete: if false;
 
       match /history/{historyId} {

@@ -66,6 +66,10 @@ service firebase.storage {
       ).data;
     }
 
+    function packetBelongsToJudge(packetId, judgeUid) {
+      return packetDoc(packetId).createdByJudgeUid == judgeUid;
+    }
+
     match /audio/{judgeUid}/{submissionId}/{fileName} {
       allow read: if isAdmin()
         || (isJudge() && request.auth.uid == judgeUid)
@@ -80,12 +84,16 @@ service firebase.storage {
 
     match /packet_audio/{judgeUid}/{packetId}/{sessionId}/{fileName} {
       allow read: if isAdmin()
-        || (isSignedIn() && request.auth.uid == judgeUid)
+        || (isSignedIn()
+          && request.auth.uid == judgeUid
+          && packetBelongsToJudge(packetId, judgeUid))
         || (isDirectorForSchool(packetDoc(packetId).schoolId)
           && packetDoc(packetId).status == "released");
       allow write: if isAdmin()
         || (isSignedIn()
-          && request.auth.uid == judgeUid);
+          && request.auth.uid == judgeUid
+          && packetBelongsToJudge(packetId, judgeUid)
+          && packetDoc(packetId).locked == false);
     }
 
     match /director_cards/{uid}/{fileName} {

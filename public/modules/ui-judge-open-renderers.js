@@ -34,6 +34,10 @@ export function createJudgeOpenRenderers({
   }
 
   async function handleDeletePacket(packet, deleteBtn) {
+    if (["submitted", "locked", "released"].includes(String(packet?.status || "").trim())) {
+      setOpenPacketHint("Submitted or released assessments must be managed from admin review.");
+      return;
+    }
     if (state.judgeOpen.mediaRecorder?.state === "recording") {
       setOpenPacketHint("Stop recording before deleting an assessment.");
       return;
@@ -133,6 +137,11 @@ export function createJudgeOpenRenderers({
       deleteBtn.type = "button";
       deleteBtn.className = "ghost";
       deleteBtn.textContent = "Delete";
+      const status = String(packet.status || "").trim();
+      if (["submitted", "locked", "released"].includes(status)) {
+        deleteBtn.disabled = true;
+        deleteBtn.title = "Submitted or released assessments must be managed from admin review.";
+      }
       deleteBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
         await handleDeletePacket(packet, deleteBtn);

@@ -37,6 +37,12 @@ async function seedFirestoreDocs() {
       email: "director@example.com",
       roles: {director: true},
     });
+    await setDoc(doc(db, "users/director-2"), {
+      role: "director",
+      schoolId: "school-1",
+      email: "director2@example.com",
+      roles: {director: true},
+    });
     await setDoc(doc(db, "users/judge-1"), {
       role: "judge",
       schoolId: "school-1",
@@ -89,6 +95,14 @@ async function seedFirestoreDocs() {
       judgePosition: "stage1",
       status: "released",
       writtenComments: "Good tone center.",
+    });
+    await setDoc(doc(db, "officialAssessments/event-open_ensemble-2_stage1"), {
+      schoolId: "school-2",
+      eventId: "event-open",
+      ensembleId: "ensemble-2",
+      judgePosition: "stage1",
+      status: "released",
+      writtenComments: "Other school result.",
     });
   });
 }
@@ -230,10 +244,17 @@ describe("raw assessment access", () => {
 
 describe("official assessment access", () => {
   it("allows a director to read released official assessments for their school", async () => {
-    const ctx = testEnv.authenticatedContext("director-1");
+    const ctx = testEnv.authenticatedContext("director-2");
     const db = ctx.firestore();
 
     await assertSucceeds(getDoc(doc(db, "officialAssessments/event-open_ensemble-1_stage1")));
+  });
+
+  it("blocks a director from reading released official assessments for another school", async () => {
+    const ctx = testEnv.authenticatedContext("director-2");
+    const db = ctx.firestore();
+
+    await assertFails(getDoc(doc(db, "officialAssessments/event-open_ensemble-2_stage1")));
   });
 
   it("blocks a judge from reading other schools' released official assessments by default", async () => {

@@ -42,6 +42,13 @@ async function seedFirestoreDocs() {
       createdByJudgeUid: "judge-1",
       schoolId: "school-1",
       status: "draft",
+      locked: false,
+    });
+    await setDoc(doc(db, "packets/packet-2"), {
+      createdByJudgeUid: "judge-2",
+      schoolId: "school-1",
+      status: "draft",
+      locked: false,
     });
   });
 }
@@ -83,7 +90,7 @@ describe("storage ownership bindings", () => {
     await assertFails(uploadString(mismatchRef, "nope"));
   });
 
-  it("allows packet audio writes for the signed-in judge's own storage path", async () => {
+  it("allows packet audio writes only for the owning judge's packet path", async () => {
     const ownCtx = testEnv.authenticatedContext("judge-1");
     const ownStorage = ownCtx.storage();
     const ownRef = ref(ownStorage, "packet_audio/judge-1/packet-1/session-1/master.webm");
@@ -97,7 +104,14 @@ describe("storage ownership bindings", () => {
       "packet_audio/judge-2/packet-1/session-1/master.webm",
     );
 
-    await assertSucceeds(uploadString(mismatchRef, "ok"));
+    await assertFails(uploadString(mismatchRef, "nope"));
+
+    const ownedRef = ref(
+      mismatchStorage,
+      "packet_audio/judge-2/packet-2/session-1/master.webm",
+    );
+
+    await assertSucceeds(uploadString(ownedRef, "ok"));
 
     const otherJudgePathRef = ref(
       mismatchStorage,

@@ -60,6 +60,12 @@ const APP_CHECK_ENFORCEMENT_MODE = String(
     process.env.APP_CHECK_ENFORCEMENT_MODE || "deferred",
 ).trim().toLowerCase();
 const ENFORCE_APP_CHECK = APP_CHECK_ENFORCEMENT_MODE === "enforced";
+const DESTRUCTIVE_ADMIN_TOOLS_ENABLED = String(
+    process.env.ALLOW_DESTRUCTIVE_ADMIN_TOOLS || "",
+).trim().toLowerCase() === "true";
+const RUNNING_IN_EMULATOR =
+  process.env.FUNCTIONS_EMULATOR === "true" ||
+  Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 const CANONICAL_AUDIO_STATUS = {
   pending: "pending",
   ready: "ready",
@@ -116,6 +122,16 @@ function buildDirectorPacketExportId(eventId, ensembleId) {
 function buildStorageTokenUrl(bucketName, objectPath, token) {
   if (!bucketName || !objectPath || !token) return "";
   return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(objectPath)}?alt=media&token=${token}`;
+}
+
+function assertDestructiveAdminToolsAllowed(toolName = "This maintenance tool") {
+  if (DESTRUCTIVE_ADMIN_TOOLS_ENABLED || RUNNING_IN_EMULATOR) {
+    return;
+  }
+  throw new HttpsError(
+      "failed-precondition",
+      `${toolName} is disabled for this deployment.`,
+  );
 }
 
 async function signStorageReadPath(path, {expiresAtMs = Date.now() + DIRECTOR_PACKET_EXPORT_TTL_MS} = {}) {
@@ -3605,7 +3621,7 @@ exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
     const officialSnap = await tx.get(officialRef);
     const officialExisting = officialSnap.exists ? (officialSnap.data() || {}) : {};
     tx.set(officialRef, {
-      [FIELDS.officialAssessments.status]: "official",
+      [FIELDS.officialAssessments.status]: STATUSES.officialized,
       [FIELDS.officialAssessments.releaseEligible]: true,
       [FIELDS.officialAssessments.sourceRawAssessmentId]: rawAssessmentId,
       [FIELDS.officialAssessments.judgeUid]: raw.judgeUid || "",
@@ -4646,8 +4662,9 @@ function isLikelyTestArtifact({
   return isTestArtifactText(id) || isTestArtifactText(name);
 }
 
-exports.cleanupTestArtifacts = onCall(async (request) => {
+exports.cleanupTestArtifacts = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
   await assertAdmin(request);
+  assertDestructiveAdminToolsAllowed("cleanupTestArtifacts");
   const data = request.data || {};
   const dryRun = data.dryRun !== false;
   const db = admin.firestore();
@@ -5047,8 +5064,9 @@ exports.cleanupRehearsalArtifacts = onCall(async (request) => {
   };
 });
 
-exports.deleteAllUnreleasedPackets = onCall(async (request) => {
+exports.deleteAllUnreleasedPackets = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
   await assertAdmin(request);
+  assertDestructiveAdminToolsAllowed("deleteAllUnreleasedPackets");
   const db = admin.firestore();
   const bucket = admin.storage().bucket();
 
@@ -5543,13 +5561,55 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
         [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
       }, {merge: true});
     });
-    officialDocs.forEach((docSnap, index) => {
-      if (!docSnap.exists) return;
+    assessments.forEach((item, index) => {
+      const canonical = item.assessment || {};
+      const officialExisting = officialDocs[index]?.exists ? (officialDocs[index].data() || {}) : {};
       tx.set(officialRefs[index], {
         [FIELDS.officialAssessments.status]: STATUSES.released,
+        [FIELDS.officialAssessments.releaseEligible]: canonical.releaseEligible !== false,
+        [FIELDS.officialAssessments.sourceRawAssessmentId]:
+          canonical.sourceRawAssessmentId || officialExisting.sourceRawAssessmentId || "",
+        [FIELDS.officialAssessments.judgeUid]: canonical.judgeUid || "",
+        [FIELDS.officialAssessments.judgeName]: canonical.judgeName || "",
+        [FIELDS.officialAssessments.judgeEmail]: canonical.judgeEmail || "",
+        [FIELDS.officialAssessments.schoolId]: canonical.schoolId || "",
+        [FIELDS.officialAssessments.eventId]: canonical.eventId || eventId,
+        [FIELDS.officialAssessments.ensembleId]: canonical.ensembleId || ensembleId,
+        [FIELDS.officialAssessments.judgePosition]: canonical.judgePosition || item.position,
+        [FIELDS.officialAssessments.formType]: canonical.formType || (
+          item.position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage
+        ),
+        [FIELDS.officialAssessments.audioUrl]:
+          canonical.audioUrl ||
+          canonical.canonicalAudioUrl ||
+          "",
+        [FIELDS.officialAssessments.audioPath]:
+          canonical.audioPath ||
+          canonical.canonicalAudioPath ||
+          "",
+        [FIELDS.officialAssessments.audioSegments]: canonical.audioSegments || [],
+        [FIELDS.officialAssessments.audioDurationSec]: Number(
+            canonical.audioDurationSec ||
+            canonical.canonicalAudioDurationSec ||
+            0,
+        ),
+        [FIELDS.officialAssessments.transcript]: canonical.transcript || "",
+        [FIELDS.officialAssessments.writtenComments]:
+          canonical.writtenComments || canonical.transcript || "",
+        [FIELDS.officialAssessments.captions]: canonical.captions || {},
+        [FIELDS.officialAssessments.captionScoreTotal]:
+          Number.isFinite(Number(canonical.captionScoreTotal)) ? Number(canonical.captionScoreTotal) : null,
+        [FIELDS.officialAssessments.computedFinalRatingJudge]:
+          Number.isFinite(Number(canonical.computedFinalRatingJudge)) ?
+              Number(canonical.computedFinalRatingJudge) :
+              null,
+        [FIELDS.officialAssessments.computedFinalRatingLabel]:
+          String(canonical.computedFinalRatingLabel || "N/A"),
         [FIELDS.officialAssessments.releasedAt]: admin.firestore.FieldValue.serverTimestamp(),
         releasedBy: request.auth.uid,
         [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.officialAssessments.createdAt]:
+          officialExisting.createdAt || admin.firestore.FieldValue.serverTimestamp(),
       }, {merge: true});
     });
   });
@@ -5677,7 +5737,7 @@ exports.unreleasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => 
     officialDocs.forEach((docSnap, index) => {
       if (!docSnap.exists) return;
       tx.set(officialRefs[index], {
-        [FIELDS.officialAssessments.status]: "official",
+        [FIELDS.officialAssessments.status]: STATUSES.officialized,
         [FIELDS.officialAssessments.releasedAt]: admin.firestore.FieldValue.delete(),
         releasedBy: admin.firestore.FieldValue.delete(),
         [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
@@ -6438,8 +6498,9 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
   return summary;
 });
 
-exports.releaseMockPacketForAshleyTesting = onCall(async (request) => {
+exports.releaseMockPacketForAshleyTesting = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
   await assertAdmin(request);
+  assertDestructiveAdminToolsAllowed("releaseMockPacketForAshleyTesting");
   const data = request.data || {};
   const db = admin.firestore();
   const activeSnap = await db
@@ -6659,7 +6720,10 @@ exports.unlockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
       throw new HttpsError("not-found", "Submission not found.");
     }
     const canonical = officialSnap.exists ? officialSnap.data() || {} : submissionSnap.data() || {};
-    if (canonical.status !== STATUSES.submitted && canonical.status !== "official") {
+    if (
+      canonical.status !== STATUSES.submitted &&
+      canonical.status !== STATUSES.officialized
+    ) {
       throw new HttpsError(
           "failed-precondition",
           "Only submitted or officialized packets can be unlocked.",
@@ -6725,7 +6789,7 @@ exports.lockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
     if (
       canonical.status !== STATUSES.submitted &&
       canonical.status !== STATUSES.released &&
-      canonical.status !== "official"
+      canonical.status !== STATUSES.officialized
     ) {
       throw new HttpsError(
           "failed-precondition",

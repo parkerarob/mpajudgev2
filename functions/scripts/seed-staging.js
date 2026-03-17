@@ -49,24 +49,49 @@ async function ensureUser({uid, email, password, displayName}) {
 async function main() {
   const projectId =
     getArg("--project") ||
+    process.env.STAGING_PROJECT_ID ||
     process.env.FIREBASE_PROJECT_ID ||
-    process.env.GCLOUD_PROJECT ||
-    "mpaapp-1";
+    process.env.GCLOUD_PROJECT;
+  if (!projectId) {
+    throw new Error("Staging seed requires --project or STAGING_PROJECT_ID.");
+  }
+
+  const protectedProjects = new Set(["mpa-judge-v2", "mpaapp-1"]);
+  const allowProtectedProject =
+    getArg("--allow-protected-project") === "true" ||
+    String(process.env.ALLOW_PROTECTED_PROJECT || "").trim().toLowerCase() === "true";
+  if (protectedProjects.has(projectId) && !allowProtectedProject) {
+    throw new Error(
+        `Refusing to seed protected project ${projectId}. ` +
+        "Set ALLOW_PROTECTED_PROJECT=true only if you intentionally want that target.",
+    );
+  }
 
   const gitEmail = getGitEmailFallback();
   const adminEmail =
     getArg("--admin-email") ||
     process.env.STAGING_ADMIN_EMAIL ||
-    gitEmail ||
-    "robert.parker@nhcs.net";
+    gitEmail;
+  if (!adminEmail) {
+    throw new Error("Staging seed requires --admin-email or STAGING_ADMIN_EMAIL.");
+  }
   const adminPassword =
     getArg("--admin-password") ||
-    process.env.STAGING_ADMIN_PASSWORD ||
-    "StageAdmin!2026";
+    process.env.STAGING_ADMIN_PASSWORD;
+  const sharedPassword =
+    getArg("--shared-password") ||
+    process.env.STAGING_SHARED_PASSWORD;
+  if (!adminPassword || !sharedPassword) {
+    throw new Error(
+        "Staging seed requires STAGING_ADMIN_PASSWORD and STAGING_SHARED_PASSWORD " +
+        "(or --admin-password / --shared-password).",
+    );
+  }
   const adminName =
     getArg("--admin-name") ||
     process.env.STAGING_ADMIN_NAME ||
     "Rob Parker";
+  const emailSuffix = `${sanitizeUidPart(projectId, "staging")}.local`;
 
   admin.initializeApp({projectId});
   const db = admin.firestore();
@@ -85,32 +110,32 @@ async function main() {
 
   const stage1 = await ensureUser({
     uid: "judge_stage1",
-    email: "stage1@example.com",
-    password: "password123",
+    email: `stage1@${emailSuffix}`,
+    password: sharedPassword,
     displayName: "Stage Judge 1",
   });
   const stage2 = await ensureUser({
     uid: "judge_stage2",
-    email: "stage2@example.com",
-    password: "password123",
+    email: `stage2@${emailSuffix}`,
+    password: sharedPassword,
     displayName: "Stage Judge 2",
   });
   const stage3 = await ensureUser({
     uid: "judge_stage3",
-    email: "stage3@example.com",
-    password: "password123",
+    email: `stage3@${emailSuffix}`,
+    password: sharedPassword,
     displayName: "Stage Judge 3",
   });
   const sight = await ensureUser({
     uid: "judge_sight",
-    email: "sight@example.com",
-    password: "password123",
+    email: `sight@${emailSuffix}`,
+    password: sharedPassword,
     displayName: "Sight Judge",
   });
   const director = await ensureUser({
     uid: "director_001",
-    email: "director@example.com",
-    password: "password123",
+    email: `director@${emailSuffix}`,
+    password: sharedPassword,
     displayName: "Director One",
   });
 
@@ -204,8 +229,8 @@ async function main() {
   console.log(`Seeded staging project ${projectId}`);
   console.log(`Admin login: ${adminEmail}`);
   console.log(`Admin password: ${adminPassword}`);
-  console.log("Judge login: stage1@example.com / password123");
-  console.log("Director login: director@example.com / password123");
+  console.log(`Judge login: ${stage1.email} / ${sharedPassword}`);
+  console.log(`Director login: ${director.email} / ${sharedPassword}`);
 }
 
 main().catch((error) => {

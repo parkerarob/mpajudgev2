@@ -35,7 +35,7 @@ export function createAdminPreEventController({
     }
     if (els.adminRegisteredEnsemblesList) {
       els.adminRegisteredEnsemblesList.innerHTML =
-        "<li class='hint'>Safe mode: click \"Load This View\" to fetch full Pre-Event data.</li>";
+        "<li class='hint'>Safe mode: click \"Load This View\" to fetch registrations and schedule data.</li>";
     }
   }
 

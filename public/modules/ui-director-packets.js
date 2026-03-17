@@ -6,7 +6,7 @@ export function createDirectorPacketRenderers({
   STATUSES,
   FORM_TYPES,
   CAPTION_TEMPLATES,
-  renderSubmissionCard,
+  renderAssessmentCard,
   fetchDirectorPacketAssets,
   fetchDirectorAudioResultAsset,
   withLoading,
@@ -80,10 +80,10 @@ export function createDirectorPacketRenderers({
     const section = document.createElement("div");
     section.className = "panel stack";
     const title = document.createElement("strong");
-    title.textContent = "Official Packet Files";
+    title.textContent = "Official Results Packet Files";
     const hint = document.createElement("div");
     hint.className = "note";
-    hint.textContent = "Load downloadable/printable PDF forms and audio files for each judge.";
+    hint.textContent = "Load released judge PDFs and audio files for this ensemble.";
     const actions = document.createElement("div");
     actions.className = "row";
     const loadBtn = document.createElement("button");
@@ -106,7 +106,7 @@ export function createDirectorPacketRenderers({
         pending.className = "note";
         pending.textContent = assets?.status === "failed" ?
           `Export failed: ${assets?.error || "Unknown error"}` :
-          "Packet files are still generating. Try again in a moment.";
+          "Results packet files are still generating. Try again in a moment.";
         output.appendChild(pending);
         return;
       }
@@ -119,20 +119,20 @@ export function createDirectorPacketRenderers({
         viewCombined.href = combined.url;
         viewCombined.target = "_blank";
         viewCombined.rel = "noopener";
-        viewCombined.textContent = "View Full Packet PDF";
+        viewCombined.textContent = "Open Full Results Packet PDF";
         const printCombined = document.createElement("a");
         printCombined.className = "ghost";
         printCombined.href = combined.url;
         printCombined.target = "_blank";
         printCombined.rel = "noopener";
-        printCombined.textContent = "Print Full Packet PDF";
+        printCombined.textContent = "Print Full Results Packet PDF";
         combinedRow.appendChild(viewCombined);
         combinedRow.appendChild(printCombined);
         output.appendChild(combinedRow);
       } else {
         const combinedMissing = document.createElement("div");
         combinedMissing.className = "note";
-        combinedMissing.textContent = "Combined packet PDF is not available yet.";
+        combinedMissing.textContent = "Combined results packet PDF is not available yet.";
         output.appendChild(combinedMissing);
       }
       const judgeAssets = assets.judges && typeof assets.judges === "object" ? assets.judges : {};
@@ -146,6 +146,10 @@ export function createDirectorPacketRenderers({
         label.className = "badge";
         label.textContent = item.judgeLabel || JUDGE_POSITION_LABELS[position] || position;
         row.appendChild(label);
+        const rowHint = document.createElement("div");
+        rowHint.className = "note";
+        rowHint.textContent = "Released judge files";
+        row.appendChild(rowHint);
         const fileActions = document.createElement("div");
         fileActions.className = "row";
         if (item.pdfUrl) {
@@ -235,12 +239,12 @@ export function createDirectorPacketRenderers({
       await withLoading(loadBtn, async () => {
         const result = await fetchDirectorPacketAssets({ eventId, ensembleId });
         if (!result?.ok) {
-          hint.textContent = result?.message || "Unable to load packet files.";
+          hint.textContent = result?.message || "Unable to load results packet files.";
           return;
         }
         state.director.packetAssetsCache.set(key, result);
         renderAssets(result);
-        hint.textContent = "Official packet files loaded.";
+        hint.textContent = "Released judge files loaded.";
         loadBtn.textContent = "Refresh Files";
       });
     });
@@ -256,6 +260,24 @@ export function createDirectorPacketRenderers({
 
   function renderDirectorPackets(groups = []) {
     els.directorPackets.innerHTML = "";
+    const releasedResultGroups = groups.filter(
+      (group) => !["open-assembled", "open", "audio-only"].includes(String(group?.type || ""))
+    );
+    if (els.directorResultsContextMeta) {
+      const schoolName = String(els.directorSummarySchool?.textContent || "").trim() || "No school selected";
+      els.directorResultsContextMeta.textContent = `School: ${schoolName}`;
+    }
+    if (els.directorResultsEventMeta) {
+      const eventLabel =
+        releasedResultGroups[0]?.eventName ||
+        state.event.list?.find((item) => item.id === state.director.selectedEventId)?.name ||
+        releasedResultGroups[0]?.eventId ||
+        "No event selected";
+      els.directorResultsEventMeta.textContent = `Event: ${eventLabel}`;
+    }
+    if (els.directorResultsCountMeta) {
+      els.directorResultsCountMeta.textContent = `Released ensembles: ${releasedResultGroups.length}`;
+    }
     if (els.directorEmpty) {
       els.directorEmpty.style.display = groups.length ? "none" : "block";
     }
@@ -270,7 +292,7 @@ export function createDirectorPacketRenderers({
         header.className = "packet-header";
         const ensembleRow = document.createElement("div");
         const ensembleLabel = document.createElement("strong");
-        ensembleLabel.textContent = "Open Judge Packet Set:";
+        ensembleLabel.textContent = "Open Judge Sheet Set:";
         ensembleRow.appendChild(ensembleLabel);
         ensembleRow.appendChild(
           document.createTextNode(` ${group.ensembleName || group.ensembleId || "Unknown ensemble"}`)
@@ -299,7 +321,10 @@ export function createDirectorPacketRenderers({
         gradeRow.textContent = `Grade: ${group.grade || "Unknown"}`;
         const overallRow = document.createElement("div");
         overallRow.className = "note";
-        overallRow.textContent = `Overall: ${group.overall?.label || "N/A"}`;
+        overallRow.textContent = `Judge Overall Rating: ${group.overall?.label || "N/A"}`;
+        const scopeRow = document.createElement("div");
+        scopeRow.className = "hint";
+        scopeRow.textContent = "These are open judge sheets and are separate from released official results packets.";
         header.appendChild(ensembleRow);
         header.appendChild(modeRow);
         header.appendChild(schoolRow);
@@ -307,10 +332,11 @@ export function createDirectorPacketRenderers({
         header.appendChild(directorRow);
         header.appendChild(gradeRow);
         header.appendChild(overallRow);
+        header.appendChild(scopeRow);
         if (group.hasConflicts) {
           const conflictRow = document.createElement("div");
           conflictRow.className = "note";
-          conflictRow.textContent = `Conflict: duplicate packet(s) for ${group.conflicts.join(", ")}`;
+          conflictRow.textContent = `Conflict: duplicate result sets for ${group.conflicts.join(", ")}`;
           header.appendChild(conflictRow);
         }
 
@@ -319,7 +345,7 @@ export function createDirectorPacketRenderers({
         Object.values(JUDGE_POSITIONS).forEach((position) => {
           const submission = group.submissions[position];
           if (submission && submission.status === STATUSES.released) {
-            grid.appendChild(renderSubmissionCard(submission, position, { showTranscript: false }));
+            grid.appendChild(renderAssessmentCard(submission, position, { showTranscript: false }));
           }
         });
 
@@ -334,7 +360,7 @@ export function createDirectorPacketRenderers({
         header.className = "packet-header";
         const ensembleRow = document.createElement("div");
         const ensembleLabel = document.createElement("strong");
-        ensembleLabel.textContent = "Open Packet";
+        ensembleLabel.textContent = "Open Judge Sheet";
         ensembleRow.appendChild(ensembleLabel);
         const modeRow = document.createElement("div");
         modeRow.className = "note";
@@ -351,19 +377,23 @@ export function createDirectorPacketRenderers({
         ensembleNameRow.textContent = `Ensemble: ${group.ensembleName || group.ensembleId || "Unknown"}`;
         const ratingRow = document.createElement("div");
         ratingRow.className = "note";
-        ratingRow.textContent = `Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
+        ratingRow.textContent = `Judge Overall Rating: ${group.computedFinalRatingLabel || "N/A"}`;
         const slotRow = document.createElement("div");
         slotRow.className = "note";
         slotRow.textContent = `Slot: ${
           JUDGE_POSITION_LABELS[group.judgePosition] ||
           (group.judgePosition ? group.judgePosition : "Unassigned")
         }`;
+        const scopeRow = document.createElement("div");
+        scopeRow.className = "hint";
+        scopeRow.textContent = "This open judge sheet is separate from the released official results packet.";
         header.appendChild(ensembleRow);
         header.appendChild(modeRow);
         header.appendChild(schoolRow);
         header.appendChild(ensembleNameRow);
         header.appendChild(slotRow);
         header.appendChild(ratingRow);
+        header.appendChild(scopeRow);
 
         const grid = document.createElement("div");
         grid.className = "packet-grid";
@@ -373,7 +403,7 @@ export function createDirectorPacketRenderers({
         scoringHeader.className = "row";
         const scoringBadge = document.createElement("span");
         scoringBadge.className = "badge";
-        scoringBadge.textContent = "Judge";
+        scoringBadge.textContent = "Caption Summary";
         const scoringStatus = document.createElement("span");
         scoringStatus.className = "note";
         scoringStatus.textContent = `Status: ${group.status || "released"}`;
@@ -405,7 +435,7 @@ export function createDirectorPacketRenderers({
         const scoringFooter = document.createElement("div");
         scoringFooter.className = "note";
         scoringFooter.textContent =
-          `Caption Total: ${group.captionScoreTotal || 0} - Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
+          `Caption Total: ${group.captionScoreTotal || 0} - Judge Overall Rating: ${group.computedFinalRatingLabel || "N/A"}`;
 
         scoringCard.appendChild(scoringHeader);
         scoringCard.appendChild(judgeInfo);
@@ -533,6 +563,9 @@ export function createDirectorPacketRenderers({
             "Practice adjudication" :
             "Official adjudication"
         }`;
+        const scopeRow = document.createElement("div");
+        scopeRow.className = "hint";
+        scopeRow.textContent = "Audio-only results do not include full caption sheets or released judge form PDFs.";
         const slotRow = document.createElement("div");
         slotRow.className = "note";
         slotRow.textContent = `Slot: ${
@@ -546,6 +579,7 @@ export function createDirectorPacketRenderers({
         header.appendChild(eventRow);
         header.appendChild(modeRow);
         header.appendChild(slotRow);
+        header.appendChild(scopeRow);
 
         const card = document.createElement("div");
         card.className = "packet-card";
@@ -588,35 +622,41 @@ export function createDirectorPacketRenderers({
       const ensembleLabel = document.createElement("strong");
       ensembleLabel.textContent = "Ensemble:";
       ensembleRow.appendChild(ensembleLabel);
-      ensembleRow.appendChild(document.createTextNode(` ${group.ensembleId}`));
+      ensembleRow.appendChild(
+        document.createTextNode(` ${group.ensembleName || group.ensembleId || "Unknown"}`)
+      );
       const schoolRow = document.createElement("div");
       schoolRow.className = "note";
-      schoolRow.textContent = `School: ${group.schoolId}`;
+      schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
       const directorRow = document.createElement("div");
       directorRow.className = "note";
       directorRow.textContent = `Director: ${directorName}`;
       const eventRow = document.createElement("div");
       eventRow.className = "note";
-      eventRow.textContent = `Event: ${group.eventId}`;
+      eventRow.textContent = `Event: ${group.eventName || group.eventId || "Unassigned"}`;
       const gradeRow = document.createElement("div");
       gradeRow.className = "note";
       gradeRow.textContent = `Grade: ${group.grade || "Unknown"}`;
       const overallRow = document.createElement("div");
       overallRow.className = "note";
-      overallRow.textContent = `Overall: ${group.overall.label}`;
+      overallRow.textContent = `Overall Rating: ${group.overall.label}`;
+      const scopeRow = document.createElement("div");
+      scopeRow.className = "hint";
+      scopeRow.textContent = "Released official judge forms, audio, and results packet files for this ensemble.";
       header.appendChild(ensembleRow);
       header.appendChild(schoolRow);
       header.appendChild(directorRow);
       header.appendChild(eventRow);
       header.appendChild(gradeRow);
       header.appendChild(overallRow);
+      header.appendChild(scopeRow);
 
       const grid = document.createElement("div");
       grid.className = "packet-grid";
       Object.values(JUDGE_POSITIONS).forEach((position) => {
         const submission = group.submissions[position];
         if (submission && submission.status === STATUSES.released) {
-          const submissionCard = renderSubmissionCard(submission, position, { showTranscript: false });
+          const submissionCard = renderAssessmentCard(submission, position, { showTranscript: false });
           grid.appendChild(submissionCard);
           if (submission.supplementalAudioUrl) {
             const supplementalCard = document.createElement("div");

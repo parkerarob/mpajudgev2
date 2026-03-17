@@ -28,23 +28,22 @@ export function createJudgeOpenRenderers({
     if (!packet) return 0;
     if (["submitted", "locked", "released"].includes(packet.status)) return 100;
     const hasTranscript = Boolean(packet.transcriptFull || packet.transcript);
-    const hasCaptions = packet.captions && Object.keys(packet.captions).length > 0;
-    if (hasTranscript && hasCaptions) return 75;
+    if (hasTranscript) return 75;
     if (packet.segmentCount || packet.audioSessionCount) return 40;
     return 10;
   }
 
   async function handleDeletePacket(packet, deleteBtn) {
     if (state.judgeOpen.mediaRecorder?.state === "recording") {
-      setOpenPacketHint("Stop recording before deleting an adjudication.");
+      setOpenPacketHint("Stop recording before deleting an assessment.");
       return;
     }
     if (state.judgeOpen.packetMutationInFlight) {
-      setOpenPacketHint("Please wait for the current adjudication action to complete.");
+      setOpenPacketHint("Please wait for the current assessment action to complete.");
       return;
     }
     const label = `${packet.schoolName || "Unknown school"} - ${packet.ensembleName || "Unknown ensemble"}`;
-    if (!confirmUser(`Delete adjudication for ${label}? This removes adjudication audio and sessions.`)) {
+    if (!confirmUser(`Delete assessment for ${label}? This removes saved audio and sessions.`)) {
       return;
     }
     deleteBtn.dataset.loadingLabel = "Deleting...";
@@ -93,7 +92,7 @@ export function createJudgeOpenRenderers({
             };
           }
         }
-        setOpenPacketHint("Adjudication deleted.");
+        setOpenPacketHint("Assessment deleted.");
       });
     } finally {
       if (state.judgeOpen.packetMutationToken === mutationToken) {
@@ -123,7 +122,7 @@ export function createJudgeOpenRenderers({
           <div class="packet-card-title">${packet.schoolName || "Unknown school"} - ${packet.ensembleName || "Unknown ensemble"}</div>
           <span class="status-badge">${status}</span>
         </div>
-        <div class="packet-card-meta">${mode} adjudication</div>
+        <div class="packet-card-meta">${mode} assessment</div>
         <div class="packet-card-meta">Judge: ${creator}</div>
         <div class="packet-card-meta">${formatPacketUpdatedAt(packet)}</div>
         <div class="progress-bar"><span style="width: ${progress}%"></span></div>
@@ -158,7 +157,7 @@ export function createJudgeOpenRenderers({
     els.judgeOpenPacketSelect.innerHTML = "";
     const placeholder = document.createElement("option");
     placeholder.value = "";
-    placeholder.textContent = packets.length ? "Select an adjudication" : "No adjudications yet";
+    placeholder.textContent = packets.length ? "Select an assessment" : "No assessments yet";
     els.judgeOpenPacketSelect.appendChild(placeholder);
     packets.forEach((packet) => {
       const option = document.createElement("option");

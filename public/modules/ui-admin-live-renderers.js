@@ -38,25 +38,48 @@ export function createAdminLiveRenderers({
     if (!els.adminLiveWorkflowCard) return;
     let step = "Start";
     let nextTitle = "Set an active event to begin.";
-    let nextHint = "Then run check-in and stage setup for scheduled ensembles.";
+    let nextHint = "Then run check-in and stage flow for scheduled ensembles.";
+    let nextActionLabel = "Open Settings";
+    let nextAction = () => {
+      window.location.hash = "#admin/settings";
+    };
 
     if (hasActiveEvent && !hasScheduled) {
       step = "Queue";
-      nextTitle = "Schedule ensembles to enable Live Event operations.";
-      nextHint = "Live Event queue and stage setup are driven from scheduled performance entries.";
+      nextTitle = "Schedule ensembles to enable Schedule & Flow operations.";
+      nextHint = "Queue and stage flow are driven from scheduled performance entries.";
+      nextActionLabel = "Open Registrations";
+      nextAction = () => {
+        window.location.hash = "#admin/registrations";
+      };
     } else if (hasActiveEvent && hasScheduled && checkedInCount < totalRows) {
       step = "Check-in";
       nextTitle = "Run check-in for upcoming ensembles.";
       nextHint = `${checkedInCount}/${totalRows} ensemble(s) currently checked in.`;
+      nextActionLabel = "Open Check-In Queue";
+      nextAction = () => {
+        els.liveEventContent?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
     } else if (hasActiveEvent && hasScheduled && totalRows > 0 && checkedInCount >= totalRows) {
       step = "Stage";
       nextTitle = "All scheduled ensembles are checked in.";
-      nextHint = "Use Stage Setup View to manage transitions and setup differences.";
+      nextHint = "Use Stage Flow View to manage transitions and changeover differences.";
+      nextActionLabel = "Open Stage Flow";
+      nextAction = () => {
+        els.liveEventContent?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
     }
 
     if (els.adminLiveCurrentStepPill) els.adminLiveCurrentStepPill.textContent = step;
     if (els.adminLiveNextStepTitle) els.adminLiveNextStepTitle.textContent = nextTitle;
     if (els.adminLiveNextStepHint) els.adminLiveNextStepHint.textContent = nextHint;
+    if (els.adminLiveWorkflowActionBtn) {
+      els.adminLiveWorkflowActionBtn.textContent = nextActionLabel;
+      els.adminLiveWorkflowActionBtn.onclick = (event) => {
+        event.preventDefault();
+        nextAction?.();
+      };
+    }
 
     setAdminStepChip(els.adminLiveStepChipEvent, {
       label: "Event",
@@ -64,12 +87,12 @@ export function createAdminLiveRenderers({
       active: !hasActiveEvent,
     });
     setAdminStepChip(els.adminLiveStepChipQueue, {
-      label: "Check-in Queue",
+      label: "Check-In Queue",
       done: hasScheduled && checkedInCount >= totalRows && totalRows > 0,
       active: hasActiveEvent && hasScheduled && checkedInCount < totalRows,
     });
     setAdminStepChip(els.adminLiveStepChipSetup, {
-      label: "Stage Setup",
+      label: "Stage Flow",
       done: hasScheduled,
       active: hasActiveEvent && hasScheduled && checkedInCount >= totalRows && totalRows > 0,
     });
@@ -98,10 +121,10 @@ export function createAdminLiveRenderers({
     const panel = document.createElement("div");
     panel.className = "panel stack";
     const title = document.createElement("h4");
-    title.textContent = "Stage Setup View";
+    title.textContent = "Stage Flow View";
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "Compare the band on stage with the next band to review setup changes.";
+    hint.textContent = "Compare the band on stage with the next band to review setup changes and transitions.";
     panel.appendChild(title);
     panel.appendChild(hint);
 
@@ -176,7 +199,7 @@ export function createAdminLiveRenderers({
       content.innerHTML = "";
 
       if (!currentId || !nextId) {
-        status.textContent = "Choose both ensembles to view stage setup.";
+        status.textContent = "Choose both ensembles to view stage flow.";
         return;
       }
       const currentRow = sortedRows.find((row) => row.ensembleId === currentId);
@@ -334,13 +357,13 @@ export function createAdminLiveRenderers({
     const eventId = state.event.active?.id || "";
     const eventName = state.event.active?.name || "Active Event";
     if (!eventId) {
-      els.liveEventContent.innerHTML = "<p class='hint'>Set an active event to view Check-in Queue.</p>";
+      els.liveEventContent.innerHTML = "<p class='hint'>Set an active event to view the check-in queue and stage flow.</p>";
       renderAdminLiveWorkflowGuidance({
         hasActiveEvent: false,
       });
       return;
     }
-    els.liveEventContent.innerHTML = "<p class='hint'>Loading check-in queue...</p>";
+    els.liveEventContent.innerHTML = "<p class='hint'>Loading check-in queue and stage flow...</p>";
     renderAdminLiveWorkflowGuidance({
       hasActiveEvent: true,
       hasScheduled: false,

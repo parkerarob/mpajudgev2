@@ -15,6 +15,7 @@ export function createAdminHandlerBinder({
   applyAdminView,
   closeAdminSchoolDetail,
   renderAdminPacketsBySchedule,
+  renderAdminLiveSubmissions,
   renderMockAdminPacketPreview,
   confirmUser,
   releaseMockPacketForAshleyTesting,
@@ -160,6 +161,24 @@ export function createAdminHandlerBinder({
       });
     });
 
+    Array.from(document.querySelectorAll("[data-admin-go-view]") || []).forEach((btn) => {
+      const view = btn.getAttribute("data-admin-go-view");
+      if (!view) return;
+      btn.addEventListener("click", () => {
+        if (isReadinessBusy()) return;
+        if (view === "preEvent") {
+          state.admin.selectedSchoolId = null;
+          state.admin.selectedSchoolName = "";
+        }
+        state.admin.currentView = view;
+        applyAdminView(view);
+        const hash = getAdminHashForView(view);
+        if (windowObj.location.hash !== hash) {
+          windowObj.location.hash = hash;
+        }
+      });
+    });
+
     if (els.adminSchoolDetailBackBtn) {
       els.adminSchoolDetailBackBtn.addEventListener("click", () => {
         closeAdminSchoolDetail();
@@ -184,6 +203,15 @@ export function createAdminHandlerBinder({
       });
     }
 
+    if (els.adminSubmissionsFilter) {
+      els.adminSubmissionsFilter.addEventListener("change", () => {
+        state.admin.rawAssessmentFilter = els.adminSubmissionsFilter?.value || "pending";
+        if (state.admin.currentView === "submissions") {
+          renderAdminLiveSubmissions();
+        }
+      });
+    }
+
     if (els.adminPacketsMockPreviewBtn) {
       els.adminPacketsMockPreviewBtn.addEventListener("click", () => {
         if (!els.adminPacketsMockPanel) return;
@@ -195,27 +223,27 @@ export function createAdminHandlerBinder({
         } else {
           els.adminPacketsMockPanel.classList.add("is-hidden");
           els.adminPacketsMockPanel.innerHTML = "";
-          els.adminPacketsMockPreviewBtn.textContent = "Preview Full Packet (Mock)";
+          els.adminPacketsMockPreviewBtn.textContent = "Preview Full Results Packet (Mock)";
         }
       });
     }
     if (els.adminPacketsReleaseAshleyMockBtn) {
       els.adminPacketsReleaseAshleyMockBtn.addEventListener("click", async () => {
-        const ok = confirmUser("Release a mock 4-judge packet to Ashley High School for testing?");
+        const ok = confirmUser("Release a mock 4-judge results packet to Ashley High School for testing?");
         if (!ok) return;
         els.adminPacketsReleaseAshleyMockBtn.dataset.loadingLabel = "Releasing...";
         await withLoading(els.adminPacketsReleaseAshleyMockBtn, async () => {
           try {
             const result = await releaseMockPacketForAshleyTesting();
             alertUser(
-              `Mock packet released for ${result.schoolName || "Ashley High School"} - ${result.ensembleName || result.ensembleId}.`
+              `Mock results packet released for ${result.schoolName || "Ashley High School"} - ${result.ensembleName || result.ensembleId}.`
             );
             if (state.admin.currentView === "packets") {
               renderAdminPacketsBySchedule();
             }
           } catch (error) {
             console.error("releaseMockPacketForAshleyTesting failed", error);
-            alertUser(error?.message || "Unable to release mock packet.");
+            alertUser(error?.message || "Unable to release mock results packet.");
           }
         });
       });
@@ -563,7 +591,7 @@ export function createAdminHandlerBinder({
           state.admin.schoolManageEnsembles?.find((item) => item.id === ensembleId)?.name || ensembleId;
         const schoolLabel = school.name || school.id;
         const ok = confirmUser(
-          `Delete ensemble ${ensembleName} from ${schoolLabel}? This will fully remove linked schedule, entries, submissions, and packets.`
+          `Delete ensemble ${ensembleName} from ${schoolLabel}? This will fully remove linked schedule, entries, official assessments, supporting release records, and packets.`
         );
         if (!ok) return;
         els.adminSchoolEnsembleDeleteBtn.dataset.loadingLabel = "Deleting...";

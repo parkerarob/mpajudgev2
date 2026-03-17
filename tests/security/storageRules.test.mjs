@@ -83,7 +83,7 @@ describe("storage ownership bindings", () => {
     await assertFails(uploadString(mismatchRef, "nope"));
   });
 
-  it("allows packet audio writes only when packet owner matches judge path UID", async () => {
+  it("allows packet audio writes for the signed-in judge's own storage path", async () => {
     const ownCtx = testEnv.authenticatedContext("judge-1");
     const ownStorage = ownCtx.storage();
     const ownRef = ref(ownStorage, "packet_audio/judge-1/packet-1/session-1/master.webm");
@@ -97,7 +97,14 @@ describe("storage ownership bindings", () => {
       "packet_audio/judge-2/packet-1/session-1/master.webm",
     );
 
-    await assertFails(uploadString(mismatchRef, "nope"));
+    await assertSucceeds(uploadString(mismatchRef, "ok"));
+
+    const otherJudgePathRef = ref(
+      mismatchStorage,
+      "packet_audio/judge-1/packet-1/session-1/master.webm",
+    );
+
+    await assertFails(uploadString(otherJudgePathRef, "nope"));
   });
 
   it("keeps admin override write behavior", async () => {

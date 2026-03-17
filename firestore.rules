@@ -23,15 +23,15 @@ service cloud.firestore {
     }
 
     function userRole() {
-      return userData().role;
+      return ("role" in userData()) ? userData().role : null;
     }
 
     function userSchoolId() {
-      return userData().schoolId;
+      return ("schoolId" in userData()) ? userData().schoolId : null;
     }
 
     function userRoles() {
-      return userData().roles is map ? userData().roles : {};
+      return ("roles" in userData()) && userData().roles is map ? userData().roles : {};
     }
 
     function hasUserRoleFlag(roleName) {
@@ -68,19 +68,6 @@ service cloud.firestore {
 
     function isActiveEvent(eventId) {
       return get(/databases/$(database)/documents/events/$(eventId)).data.isActive == true;
-    }
-
-    function pizzaOrdersOpen(eventId) {
-      return get(/databases/$(database)/documents/events/$(eventId)).data.pizzaOrdersClosed != true;
-    }
-
-    function defaultLunchOrder() {
-      return {
-        "pepperoniQty": 0,
-        "cheeseQty": 0,
-        "pickupTiming": "",
-        "notes": ""
-      };
     }
 
     function schoolExists(schoolId) {
@@ -176,8 +163,12 @@ service cloud.firestore {
     }
 
     match /ensembles/{ensembleId} {
-      allow read: if isAdmin()
+      allow get: if isAdmin()
+        || isJudge()
         || isDirectorForSchool(resource.data.schoolId);
+      allow list: if isAdmin()
+        || isJudge()
+        || isDirector();
       allow create: if isAdmin()
         || isDirectorForSchool(request.resource.data.schoolId);
       allow update: if isAdmin()
@@ -214,18 +205,7 @@ service cloud.firestore {
             && request.resource.data.schoolId == userSchoolId()
             && request.resource.data.eventId == eventId
             && request.resource.data.ensembleId == ensembleId
-            && schoolEnsembleExists(request.resource.data.schoolId, ensembleId)
-            && (
-              pizzaOrdersOpen(eventId)
-              || (
-                resource == null
-                && request.resource.data.lunchOrder == defaultLunchOrder()
-              )
-              || (
-                resource != null
-                && request.resource.data.lunchOrder == resource.data.lunchOrder
-              )
-            ));
+            && schoolEnsembleExists(request.resource.data.schoolId, ensembleId));
       }
 
       match /assignments/{assignmentId} {
@@ -273,6 +253,24 @@ service cloud.firestore {
           && request.resource.data.status == resource.data.status);
 
       allow delete: if isAdmin();
+    }
+
+    match /rawAssessments/{rawAssessmentId} {
+      allow read: if isOpsLead()
+        || (isJudge()
+          && (resource == null || resource.data.judgeUid == request.auth.uid));
+      allow create, update, delete: if false;
+    }
+
+    match /officialAssessments/{officialAssessmentId} {
+      allow read: if isOpsLead()
+        || isDirector();
+      allow create, update, delete: if false;
+
+      match /history/{historyId} {
+        allow read: if isOpsLead();
+        allow create, update, delete: if false;
+      }
     }
 
     match /packets/{packetId} {

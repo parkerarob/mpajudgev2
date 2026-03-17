@@ -40,6 +40,24 @@
   font-family: var(--font-ui);
 }
 
+.admin-submissions-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  align-items: start;
+}
+
+#adminSubmissionDetail label {
+  display: grid;
+  gap: 6px;
+}
+
+@media (max-width: 900px) {
+  .admin-submissions-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -685,6 +703,35 @@ h3 {
   border-color: rgba(118, 157, 255, 0.35);
 }
 
+.admin-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.admin-dashboard-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-dashboard-label {
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.admin-dashboard-value {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .admin-safe-mode {
   display: grid;
   gap: var(--space-3);
@@ -1307,6 +1354,20 @@ body.director-only #tabLockHint {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.checklist-item.is-clickable {
+  cursor: pointer;
+}
+
+.checklist-item.is-clickable:hover {
+  color: var(--text);
+}
+
+.checklist-item.is-clickable:focus-visible {
+  outline: 2px solid rgba(116, 145, 216, 0.45);
+  outline-offset: 3px;
+  border-radius: 8px;
 }
 
 .checklist-item .check {
@@ -3532,6 +3593,36 @@ select:focus-visible {
   margin-top: -2px;
 }
 
+#directorCard .director-registration-scope {
+  gap: 4px;
+  border: 1px solid rgba(116, 145, 216, 0.16);
+  background: rgba(18, 27, 49, 0.42);
+}
+
+#directorCard #directorEntryPanel .director-workspace-boundary-row {
+  gap: 10px;
+  align-items: center;
+}
+
+#directorCard #directorEntryPanel .director-workspace-boundary-note {
+  margin-top: -4px;
+  color: rgba(214, 225, 255, 0.72);
+}
+
+#directorCard #directorChecklistPanel .director-workspace-focus {
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(116, 145, 216, 0.18);
+  background: rgba(18, 27, 49, 0.55);
+}
+
+#directorCard #directorChecklistPanel .director-workspace-blockers {
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid rgba(116, 145, 216, 0.16);
+  background: rgba(10, 18, 34, 0.42);
+}
+
 #directorCard #directorEntryPanel .accordion-card {
   border: 0;
   border-top: 1px solid rgba(116, 145, 216, 0.2);
@@ -3542,6 +3633,54 @@ select:focus-visible {
 
 #directorCard #directorEntryPanel .accordion-card summary {
   padding: 11px 4px;
+}
+
+#directorCard #directorEntryPanel .director-section-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#directorCard #directorEntryPanel .director-section-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 70px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(230, 237, 255, 0.88);
+  background: rgba(116, 145, 216, 0.14);
+  border: 1px solid rgba(116, 145, 216, 0.24);
+}
+
+#directorCard #directorEntryPanel .director-section-status.is-complete {
+  color: #b7f0c0;
+  background: rgba(68, 160, 95, 0.16);
+  border-color: rgba(68, 160, 95, 0.28);
+}
+
+#directorCard #directorEntryPanel .director-section-status.is-next {
+  color: #f8dea0;
+  background: rgba(187, 138, 38, 0.18);
+  border-color: rgba(187, 138, 38, 0.3);
+}
+
+#directorCard #directorEntryPanel .director-section-status.is-missing {
+  color: #f1c8c8;
+  background: rgba(173, 71, 71, 0.14);
+  border-color: rgba(173, 71, 71, 0.22);
+}
+
+#directorCard #directorEntryPanel .director-section-status.is-optional,
+#directorCard #directorEntryPanel .director-section-status.is-review {
+  color: rgba(230, 237, 255, 0.72);
+  background: rgba(116, 145, 216, 0.1);
+  border-color: rgba(116, 145, 216, 0.18);
 }
 
 #directorCard #directorEntryPanel .accordion-card:first-of-type {
@@ -3598,6 +3737,13 @@ select:focus-visible {
 
 #directorCard #directorResultsPanel.director-results-card .form-section {
   padding: 0;
+}
+
+#directorCard #directorResultsPanel .director-results-summary {
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(116, 145, 216, 0.16);
+  background: rgba(18, 27, 49, 0.42);
 }
 
 #directorCard #directorResultsPanel #directorPackets {

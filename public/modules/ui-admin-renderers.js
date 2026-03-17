@@ -18,6 +18,9 @@ export function createAdminRenderers({
   mergeScheduleDayBreaks,
   formatPerformanceAt,
   getPacketData,
+  officializeRawAssessment,
+  excludeRawAssessment,
+  reassignRawAssessment,
   fetchDirectorPacketAssets,
   generateOpenPacketPrintAsset,
   regenerateDirectorPacketExport,
@@ -38,7 +41,7 @@ export function createAdminRenderers({
   repairOpenSubmissionAudioMetadata,
   deleteAllUnreleasedPackets,
   cleanupTestArtifacts,
-  renderSubmissionCard,
+  renderAssessmentCard,
   loadAdminPacketView,
   confirmUser,
   alertUser,
@@ -54,6 +57,13 @@ export function createAdminRenderers({
   scheduleAdminPreflightRefresh,
   refreshPreEventScheduleTimelineStarts,
 } = {}) {
+  const JUDGE_POSITION_LABELS = {
+    stage1: "Stage 1",
+    stage2: "Stage 2",
+    stage3: "Stage 3",
+    sight: "Sight",
+  };
+
   let adminSchoolDetailRenderInFlight = false;
   let adminSchoolDetailRenderQueued = false;
   let adminPacketsRenderInFlight = false;
@@ -76,6 +86,505 @@ export function createAdminRenderers({
     } catch (_error) {
       return "";
     }
+  }
+
+  function formatRawAssessmentStatus(value) {
+    const normalized = String(value || "").trim() || "draft";
+    return normalized.replace(/_/g, " ");
+  }
+
+  function formatJudgeRatingLabel(value) {
+    const label = String(value || "").trim();
+    return label || "N/A";
+  }
+
+  function formatCaptionKeyLabel(value) {
+    return String(value || "")
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase())
+      .trim() || "Caption";
+  }
+
+  function buildRawAssessmentQueue() {
+    const filter = String(state.admin.rawAssessmentFilter || "pending").trim();
+    const items = Array.isArray(state.admin.rawAssessments) ? state.admin.rawAssessments : [];
+    const eventId = String(state.event.active?.id || "").trim();
+    return items.filter((item) => {
+      if (eventId && item.eventId && String(item.eventId).trim() !== eventId) return false;
+      if (filter === "all") return true;
+      if (filter === "attached") return String(item.associationState || "") === "attached";
+      if (filter === "uncertain") return String(item.associationState || "") !== "attached";
+      if (filter === "officialized") return String(item.status || "") === "officialized";
+      if (filter === "excluded") return String(item.status || "") === "excluded";
+      return String(item.reviewState || "") === "pending" || String(item.status || "") === "submitted";
+    });
+  }
+
+  function getLiveSubmissionTargetCache(eventId) {
+    const activeEventId = String(eventId || "").trim();
+    if (!activeEventId) return [];
+    if (state.admin.liveSubmissionTargetsEventId !== activeEventId) {
+      state.admin.liveSubmissionTargetsEventId = activeEventId;
+      state.admin.liveSubmissionTargets = [];
+      state.admin.liveSubmissionTargetsLoading = false;
+    }
+    return Array.isArray(state.admin.liveSubmissionTargets) ? state.admin.liveSubmissionTargets : [];
+  }
+
+  async function ensureLiveSubmissionTargets(eventId) {
+    const activeEventId = String(eventId || "").trim();
+    if (!activeEventId || state.admin.liveSubmissionTargetsLoading) return;
+    const cachedTargets = getLiveSubmissionTargetCache(activeEventId);
+    if (cachedTargets.length) return;
+    state.admin.liveSubmissionTargetsLoading = true;
+    try {
+      const [scheduleEntries, registeredRaw] = await Promise.all([
+        fetchScheduleEntries(activeEventId).catch(() => []),
+        fetchRegisteredEnsembles(activeEventId).catch(() => []),
+      ]);
+      const { active: registered } = await resolveCurrentRegisteredEnsembles(activeEventId, registeredRaw);
+      const targetMap = new Map();
+      [...scheduleEntries, ...registered].forEach((entry) => {
+        const schoolId = String(entry.schoolId || "").trim();
+        const ensembleId = String(entry.ensembleId || entry.id || "").trim();
+        if (!schoolId || !ensembleId) return;
+        const key = `${schoolId}::${ensembleId}`;
+        const existing = targetMap.get(key) || {};
+        targetMap.set(key, {
+          schoolId,
+          ensembleId,
+          schoolName:
+            String(entry.schoolName || "").trim() ||
+            existing.schoolName ||
+            getSchoolNameById(state.admin.schoolsList, schoolId) ||
+            schoolId,
+          ensembleName:
+            String(entry.ensembleName || entry.name || "").trim() ||
+            existing.ensembleName ||
+            ensembleId,
+          eventId: String(entry.eventId || activeEventId).trim(),
+          orderIndex: Number.isFinite(Number(entry.orderIndex))
+            ? Number(entry.orderIndex)
+            : (Number.isFinite(Number(existing.orderIndex)) ? Number(existing.orderIndex) : Number.MAX_SAFE_INTEGER),
+        });
+      });
+      state.admin.liveSubmissionTargets = Array.from(targetMap.values()).sort((a, b) => {
+        const aOrder = Number(a.orderIndex);
+        const bOrder = Number(b.orderIndex);
+        if (Number.isFinite(aOrder) && Number.isFinite(bOrder) && aOrder !== bOrder) return aOrder - bOrder;
+        const aLabel = `${a.schoolName || ""} ${a.ensembleName || a.ensembleId || ""}`.toLowerCase();
+        const bLabel = `${b.schoolName || ""} ${b.ensembleName || b.ensembleId || ""}`.toLowerCase();
+        return aLabel.localeCompare(bLabel);
+      });
+      if (!state.event.rosterEntries?.length && scheduleEntries.length) {
+        state.event.rosterEntries = [...scheduleEntries];
+      }
+    } catch (error) {
+      console.warn("ensureLiveSubmissionTargets failed", { eventId: activeEventId, error });
+    } finally {
+      state.admin.liveSubmissionTargetsLoading = false;
+      if (state.admin.currentView === "submissions") {
+        renderAdminLiveSubmissions();
+      }
+    }
+  }
+
+  function resolveSubmissionTargetOptions(item) {
+    const eventId = String(state.event.active?.id || item?.eventId || "").trim();
+    const cachedTargets = getLiveSubmissionTargetCache(eventId);
+    if (!cachedTargets.length) {
+      ensureLiveSubmissionTargets(eventId);
+    }
+    const rosterFallback = (Array.isArray(state.event.rosterEntries) ? state.event.rosterEntries : [])
+      .filter((entry) => !eventId || String(entry.eventId || state.event.active?.id || "").trim() === eventId)
+      .map((entry) => ({
+        schoolId: String(entry.schoolId || "").trim(),
+        ensembleId: String(entry.ensembleId || entry.id || "").trim(),
+        schoolName:
+          String(entry.schoolName || "").trim() ||
+          getSchoolNameById(state.admin.schoolsList, entry.schoolId) ||
+          String(entry.schoolId || "").trim(),
+        ensembleName: String(entry.ensembleName || entry.name || "").trim(),
+        eventId,
+        orderIndex: Number.isFinite(Number(entry.orderIndex)) ? Number(entry.orderIndex) : Number.MAX_SAFE_INTEGER,
+      }))
+      .filter((entry) => entry.schoolId && entry.ensembleId);
+    const targetMap = new Map();
+    [...cachedTargets, ...rosterFallback].forEach((entry) => {
+      const key = `${entry.schoolId}::${entry.ensembleId}`;
+      if (!targetMap.has(key)) targetMap.set(key, entry);
+    });
+    const selectedSchoolId = String(item?.schoolId || "").trim();
+    const selectedEnsembleId = String(item?.ensembleId || "").trim();
+    if (selectedSchoolId && selectedEnsembleId) {
+      const key = `${selectedSchoolId}::${selectedEnsembleId}`;
+      if (!targetMap.has(key)) {
+        targetMap.set(key, {
+          schoolId: selectedSchoolId,
+          ensembleId: selectedEnsembleId,
+          schoolName: getSchoolNameById(state.admin.schoolsList, selectedSchoolId) || selectedSchoolId,
+          ensembleName: selectedEnsembleId,
+          eventId,
+          orderIndex: Number.MAX_SAFE_INTEGER,
+        });
+      }
+    }
+    return Array.from(targetMap.values()).sort((a, b) => {
+      const aOrder = Number(a.orderIndex);
+      const bOrder = Number(b.orderIndex);
+      if (Number.isFinite(aOrder) && Number.isFinite(bOrder) && aOrder !== bOrder) return aOrder - bOrder;
+      const aLabel = `${a.schoolName || ""} ${a.ensembleName || a.ensembleId || ""}`.toLowerCase();
+      const bLabel = `${b.schoolName || ""} ${b.ensembleName || b.ensembleId || ""}`.toLowerCase();
+      return aLabel.localeCompare(bLabel);
+    });
+  }
+
+  function renderAdminLiveSubmissions() {
+    if (!els.adminSubmissionsList || !els.adminSubmissionDetail) return;
+    const items = buildRawAssessmentQueue();
+    if (!state.admin.selectedRawAssessmentId || !items.some((item) => item.id === state.admin.selectedRawAssessmentId)) {
+      state.admin.selectedRawAssessmentId = items[0]?.id || "";
+    }
+    const selected = items.find((item) => item.id === state.admin.selectedRawAssessmentId) || null;
+    const totalCount = items.length;
+    const pendingCount = items.filter((item) => {
+      const reviewState = String(item.reviewState || "").trim();
+      const status = String(item.status || "").trim();
+      return reviewState === "pending" || status === "submitted";
+    }).length;
+    const officializedCount = items.filter((item) => String(item.status || "").trim() === "officialized").length;
+    renderAdminSubmissionsWorkflowGuidance({
+      hasActiveEvent: Boolean(state.event.active?.id),
+      totalCount,
+      pendingCount,
+      officializedCount,
+      hasSelection: Boolean(selected),
+    });
+    if (els.adminSubmissionsFilter && els.adminSubmissionsFilter.value !== (state.admin.rawAssessmentFilter || "pending")) {
+      els.adminSubmissionsFilter.value = state.admin.rawAssessmentFilter || "pending";
+    }
+    if (els.adminSubmissionsHint) {
+      els.adminSubmissionsHint.textContent = items.length
+        ? `${items.length} assessment${items.length === 1 ? "" : "s"} in queue.`
+        : "No assessments in this filter.";
+    }
+    els.adminSubmissionsList.innerHTML = "";
+    items.forEach((item) => {
+      const li = document.createElement("li");
+      li.className = "list-item";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "admin-school-row-btn";
+      const targetOptions = resolveSubmissionTargetOptions(item);
+      const matchedTarget = targetOptions.find(
+        (entry) =>
+          String(entry.schoolId || "") === String(item.schoolId || "") &&
+          String(entry.ensembleId || "") === String(item.ensembleId || "")
+      );
+      const schoolLabel =
+        matchedTarget?.schoolName ||
+        getSchoolNameById(state.admin.schoolsList, item.schoolId) ||
+        item.schoolId ||
+        "School";
+      const ensembleLabel = normalizeEnsembleDisplayName({
+        schoolName: schoolLabel,
+        ensembleName: matchedTarget?.ensembleName || item.ensembleName,
+        ensembleId: item.ensembleId,
+      }) || "Unassigned ensemble";
+      const title = document.createElement("strong");
+      title.textContent = `${schoolLabel} - ${ensembleLabel}`;
+      const meta = document.createElement("div");
+      meta.className = "note";
+      meta.textContent = [
+        item.judgeName || item.judgeEmail || "Unknown judge",
+        item.judgePosition || "No position",
+        formatRawAssessmentStatus(item.status),
+        String(item.associationState || "uncertain"),
+      ].filter(Boolean).join(" • ");
+      btn.appendChild(title);
+      btn.appendChild(meta);
+      btn.addEventListener("click", () => {
+        state.admin.selectedRawAssessmentId = item.id;
+        renderAdminLiveSubmissions();
+      });
+      li.appendChild(btn);
+      els.adminSubmissionsList.appendChild(li);
+    });
+
+    els.adminSubmissionDetail.innerHTML = "";
+    if (!selected) {
+      const empty = document.createElement("div");
+      empty.className = "stack";
+      const emptyNote = document.createElement("div");
+      emptyNote.className = "note";
+      emptyNote.textContent = items.length
+        ? "Select an assessment to review."
+        : state.event.active?.id
+          ? "No assessments are waiting in this queue."
+          : "Set an active event to begin reviewing assessments.";
+      empty.appendChild(emptyNote);
+      const actions = document.createElement("div");
+      actions.className = "row";
+      const primaryBtn = document.createElement("button");
+      primaryBtn.type = "button";
+      primaryBtn.className = "ghost";
+      if (state.event.active?.id) {
+        primaryBtn.textContent = "Open Judge Workspace";
+        primaryBtn.addEventListener("click", () => {
+          window.location.hash = "#judge-open";
+        });
+      } else {
+        primaryBtn.textContent = "Open Settings";
+        primaryBtn.addEventListener("click", () => {
+          window.location.hash = "#admin/settings";
+        });
+      }
+      actions.appendChild(primaryBtn);
+      if (state.event.active?.id) {
+        const packetsBtn = document.createElement("button");
+        packetsBtn.type = "button";
+        packetsBtn.className = "ghost";
+        packetsBtn.textContent = "Open Packets & Results";
+        packetsBtn.addEventListener("click", () => {
+          window.location.hash = "#admin/packets";
+        });
+        actions.appendChild(packetsBtn);
+      }
+      empty.appendChild(actions);
+      els.adminSubmissionDetail.appendChild(empty);
+      return;
+    }
+
+    const detailTargets = resolveSubmissionTargetOptions(selected);
+    const matchedDetailTarget = detailTargets.find(
+      (entry) =>
+        String(entry.schoolId || "") === String(selected.schoolId || "") &&
+        String(entry.ensembleId || "") === String(selected.ensembleId || "")
+    );
+    const detailSchoolLabel =
+      matchedDetailTarget?.schoolName ||
+      getSchoolNameById(state.admin.schoolsList, selected.schoolId) ||
+      selected.schoolId ||
+      "School";
+    const detailEnsembleLabel = normalizeEnsembleDisplayName({
+      schoolName: detailSchoolLabel,
+      ensembleName: matchedDetailTarget?.ensembleName || selected.ensembleName,
+      ensembleId: selected.ensembleId,
+    }) || selected.ensembleId || "No ensemble";
+
+    const title = document.createElement("h4");
+    title.textContent = selected.judgeName || selected.judgeEmail || selected.id;
+    const meta = document.createElement("div");
+    meta.className = "note";
+    meta.textContent = [
+      selected.eventId || state.event.active?.id || "No event",
+      `${detailSchoolLabel} - ${detailEnsembleLabel}`,
+      selected.judgePosition || "No position",
+      `Status ${formatRawAssessmentStatus(selected.status)}`,
+      `Association ${selected.associationState || "uncertain"}`,
+    ].join(" • ");
+    els.adminSubmissionDetail.appendChild(title);
+    els.adminSubmissionDetail.appendChild(meta);
+
+    if (selected.audioUrl) {
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.className = "audio";
+      audio.src = selected.audioUrl;
+      els.adminSubmissionDetail.appendChild(audio);
+    }
+
+    const commentsLabel = document.createElement("strong");
+    commentsLabel.textContent = "Transcript / Reference Notes";
+    els.adminSubmissionDetail.appendChild(commentsLabel);
+    const comments = document.createElement("div");
+    comments.className = "note";
+    comments.textContent =
+      selected.writtenComments || selected.transcript || "No transcript or reference notes saved.";
+    els.adminSubmissionDetail.appendChild(comments);
+
+    const scoringMeta = document.createElement("div");
+    scoringMeta.className = "note";
+    scoringMeta.textContent = [
+      `Judge Overall Rating ${formatJudgeRatingLabel(selected.computedFinalRatingLabel)}`,
+      Number.isFinite(Number(selected.captionScoreTotal))
+        ? `Caption Total ${Number(selected.captionScoreTotal)}`
+        : "Caption Total N/A",
+    ].join(" • ");
+    els.adminSubmissionDetail.appendChild(scoringMeta);
+
+    const captions = selected.captions && typeof selected.captions === "object"
+      ? selected.captions
+      : {};
+    const captionKeys = Object.keys(captions);
+    const captionSection = document.createElement("div");
+    captionSection.className = "stack";
+    const captionTitle = document.createElement("strong");
+    captionTitle.textContent = "Caption Scoring";
+    captionSection.appendChild(captionTitle);
+    if (!captionKeys.length) {
+      const emptyCaption = document.createElement("div");
+      emptyCaption.className = "note";
+      emptyCaption.textContent = "No caption scores saved on this raw assessment.";
+      captionSection.appendChild(emptyCaption);
+    } else {
+      captionKeys.forEach((key) => {
+        const caption = captions[key] || {};
+        const row = document.createElement("div");
+        row.className = "panel stack";
+        const title = document.createElement("strong");
+        title.textContent = formatCaptionKeyLabel(key);
+        const meta = document.createElement("div");
+        meta.className = "note";
+        meta.textContent = [
+          `Score ${String(caption.gradeLetter || "").trim() || "N/A"}${String(caption.gradeModifier || "").trim() || ""}`,
+        ].join(" • ");
+        const comment = document.createElement("div");
+        comment.className = "note";
+        comment.textContent = String(caption.comment || "").trim() || "No comment.";
+        row.appendChild(title);
+        row.appendChild(meta);
+        row.appendChild(comment);
+        captionSection.appendChild(row);
+      });
+    }
+    els.adminSubmissionDetail.appendChild(captionSection);
+
+    const eventId = String(state.event.active?.id || selected.eventId || "").trim();
+    const matchingRoster = resolveSubmissionTargetOptions(selected).filter(
+      (entry) => !eventId || String(entry.eventId || state.event.active?.id || "").trim() === eventId
+    );
+
+    const ensembleSelect = document.createElement("select");
+    if (!matchingRoster.length) {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "No event ensembles loaded";
+      placeholder.selected = true;
+      ensembleSelect.appendChild(placeholder);
+    }
+    matchingRoster.forEach((entry) => {
+      const option = document.createElement("option");
+      option.value = `${entry.schoolId || ""}::${entry.ensembleId || ""}`;
+      option.textContent = `${entry.schoolName || entry.schoolId || "School"} - ${
+        normalizeEnsembleDisplayName({
+          schoolName: entry.schoolName || entry.schoolId || "",
+          ensembleName: entry.ensembleName,
+          ensembleId: entry.ensembleId,
+        }) || entry.ensembleId || "Ensemble"
+      }`;
+      if ((entry.ensembleId || "") === (selected.ensembleId || "")) {
+        option.selected = true;
+      }
+      ensembleSelect.appendChild(option);
+    });
+    const positionSelect = document.createElement("select");
+    ["stage1", "stage2", "stage3", "sight"].forEach((position) => {
+      const option = document.createElement("option");
+      option.value = position;
+      option.textContent = position;
+      if (position === selected.judgePosition) option.selected = true;
+      positionSelect.appendChild(option);
+    });
+    const formTypeSelect = document.createElement("select");
+    ["stage", "sight"].forEach((formType) => {
+      const option = document.createElement("option");
+      option.value = formType;
+      option.textContent = formType;
+      if (formType === selected.formType) option.selected = true;
+      formTypeSelect.appendChild(option);
+    });
+
+    const controlWrap = document.createElement("div");
+    controlWrap.className = "stack";
+    const ensembleLabel = document.createElement("label");
+    ensembleLabel.textContent = "Target Ensemble";
+    ensembleLabel.appendChild(ensembleSelect);
+    const positionLabel = document.createElement("label");
+    positionLabel.textContent = "Judge Position";
+    positionLabel.appendChild(positionSelect);
+    const formLabel = document.createElement("label");
+    formLabel.textContent = "Form Type";
+    formLabel.appendChild(formTypeSelect);
+    controlWrap.appendChild(ensembleLabel);
+    controlWrap.appendChild(positionLabel);
+    controlWrap.appendChild(formLabel);
+    els.adminSubmissionDetail.appendChild(controlWrap);
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const reassignBtn = document.createElement("button");
+    reassignBtn.type = "button";
+    reassignBtn.textContent = "Reassign";
+    const officializeBtn = document.createElement("button");
+    officializeBtn.type = "button";
+    officializeBtn.textContent = "Officialize";
+    const excludeBtn = document.createElement("button");
+    excludeBtn.type = "button";
+    excludeBtn.className = "ghost";
+    excludeBtn.textContent = "Exclude";
+    actions.appendChild(reassignBtn);
+    actions.appendChild(officializeBtn);
+    actions.appendChild(excludeBtn);
+    els.adminSubmissionDetail.appendChild(actions);
+
+    const status = document.createElement("div");
+    status.className = "note";
+    els.adminSubmissionDetail.appendChild(status);
+
+    const getSelection = () => {
+      const [schoolId = "", ensembleId = ""] = String(ensembleSelect.value || "").split("::");
+      return {
+        schoolId,
+        ensembleId,
+        eventId,
+        judgePosition: positionSelect.value || selected.judgePosition || "",
+        formType: formTypeSelect.value || selected.formType || "stage",
+      };
+    };
+
+    reassignBtn.addEventListener("click", async () => {
+      const next = getSelection();
+      status.textContent = "Reassigning...";
+      try {
+        await reassignRawAssessment({
+          rawAssessmentId: selected.id,
+          ...next,
+        });
+        status.textContent = "Reassigned.";
+      } catch (error) {
+        status.textContent = error?.message || "Unable to reassign.";
+      }
+    });
+
+    officializeBtn.addEventListener("click", async () => {
+      const next = getSelection();
+      status.textContent = "Officializing...";
+      try {
+        await officializeRawAssessment({
+          rawAssessmentId: selected.id,
+          ...next,
+        });
+        status.textContent = "Officialized.";
+      } catch (error) {
+        status.textContent = error?.message || "Unable to officialize.";
+      }
+    });
+
+    excludeBtn.addEventListener("click", async () => {
+      status.textContent = "Excluding...";
+      try {
+        await excludeRawAssessment({
+          rawAssessmentId: selected.id,
+          reason: "Excluded from live review queue.",
+        });
+        status.textContent = "Excluded.";
+      } catch (error) {
+        status.textContent = error?.message || "Unable to exclude.";
+      }
+    });
   }
 
   function normalizeOpenPacketStatus(value) {
@@ -115,11 +624,11 @@ export function createAdminRenderers({
     const section = document.createElement("div");
     section.className = "panel stack";
     const title = document.createElement("strong");
-    title.textContent = "Printable Judge Sheets";
+    title.textContent = "Printable Results Packet Files";
     const hint = document.createElement("div");
     hint.className = "note";
     hint.textContent =
-      "Generate or load the exact-match stage form PDFs for pre-printing and packet review.";
+      "Generate or load the exact-match stage form PDFs and audio files for results review and release.";
     section.appendChild(title);
     section.appendChild(hint);
 
@@ -161,13 +670,13 @@ export function createAdminRenderers({
         openCombined.href = assets.combined.url;
         openCombined.target = "_blank";
         openCombined.rel = "noopener";
-        openCombined.textContent = "Open Full Packet PDF";
+        openCombined.textContent = "Open Full Results Packet PDF";
         const printCombined = document.createElement("a");
         printCombined.className = "ghost";
         printCombined.href = assets.combined.url;
         printCombined.target = "_blank";
         printCombined.rel = "noopener";
-        printCombined.textContent = "Print Full Packet PDF";
+        printCombined.textContent = "Print Full Results Packet PDF";
         combinedRow.appendChild(openCombined);
         combinedRow.appendChild(printCombined);
         output.appendChild(combinedRow);
@@ -213,7 +722,7 @@ export function createAdminRenderers({
         if (!item.pdfUrl && !item.audioUrl) {
           const unavailable = document.createElement("div");
           unavailable.className = "note";
-          unavailable.textContent = "No packet files available for this judge yet.";
+          unavailable.textContent = "No results packet files available for this judge yet.";
           row.appendChild(unavailable);
         }
         row.appendChild(fileActions);
@@ -288,11 +797,11 @@ export function createAdminRenderers({
     const section = document.createElement("div");
     section.className = "panel stack";
     const title = document.createElement("strong");
-    title.textContent = "Printable Open Sheet";
+    title.textContent = "Printable Open Judge Sheet";
     const hint = document.createElement("div");
     hint.className = "note";
     hint.textContent =
-      "Generate a printable PDF for this Open Judge sheet. Stage packets use the exact-match stage form template.";
+      "Generate a printable PDF for this Open Judge sheet. Stage assessments use the exact-match stage form template.";
     section.appendChild(title);
     section.appendChild(hint);
 
@@ -427,6 +936,97 @@ export function createAdminRenderers({
     el.classList.toggle("is-active", Boolean(active));
   }
 
+  function renderAdminSubmissionsWorkflowGuidance({
+    hasActiveEvent = false,
+    totalCount = 0,
+    pendingCount = 0,
+    officializedCount = 0,
+    hasSelection = false,
+  } = {}) {
+    if (!els.adminSubmissionsWorkflowCard) return;
+    let step = "Start";
+    let nextTitle = "Set an active event to begin.";
+    let nextHint = "Then review incoming assessments and officialize approved records.";
+    let nextActionLabel = "Open Settings";
+    let nextAction = () => {
+      window.location.hash = "#admin/settings";
+    };
+
+    if (hasActiveEvent && totalCount === 0) {
+      step = "Queue";
+      nextTitle = "No assessments are waiting in the queue.";
+      nextHint = "Use the judge workspace to submit a fresh assessment, then return here for review.";
+      nextActionLabel = "Open Judge Workspace";
+      nextAction = () => {
+        window.location.hash = "#judge-open";
+      };
+    } else if (hasActiveEvent && pendingCount > 0 && !hasSelection) {
+      step = "Queue";
+      nextTitle = "Select an assessment to review.";
+      nextHint = `${pendingCount}/${totalCount} assessments currently need review.`;
+      nextActionLabel = "Open Review Queue";
+      nextAction = () => {
+        els.adminSubmissionsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    } else if (hasActiveEvent && pendingCount > 0 && hasSelection) {
+      step = "Review";
+      nextTitle = "Review the selected assessment and fix association if needed.";
+      nextHint = "Confirm ensemble, judge position, caption scoring, and audio before officializing.";
+      nextActionLabel = "Open Assessment Detail";
+      nextAction = () => {
+        els.adminSubmissionDetail?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    } else if (hasActiveEvent && totalCount > 0 && officializedCount < totalCount) {
+      step = "Officialize";
+      nextTitle = "Officialize approved assessments from the review queue.";
+      nextHint = `${officializedCount}/${totalCount} assessments already officialized.`;
+      nextActionLabel = "Open Review Queue";
+      nextAction = () => {
+        els.adminSubmissionsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    } else if (hasActiveEvent && totalCount > 0 && officializedCount >= totalCount) {
+      step = "Done";
+      nextTitle = "All queued assessments are officialized.";
+      nextHint = "Move to Packets & Results to manage release-ready results packets.";
+      nextActionLabel = "Open Packets & Results";
+      nextAction = () => {
+        window.location.hash = "#admin/packets";
+      };
+    }
+
+    if (els.adminSubmissionsCurrentStepPill) els.adminSubmissionsCurrentStepPill.textContent = step;
+    if (els.adminSubmissionsNextStepTitle) els.adminSubmissionsNextStepTitle.textContent = nextTitle;
+    if (els.adminSubmissionsNextStepHint) els.adminSubmissionsNextStepHint.textContent = nextHint;
+    if (els.adminSubmissionsWorkflowActionBtn) {
+      els.adminSubmissionsWorkflowActionBtn.textContent = nextActionLabel;
+      els.adminSubmissionsWorkflowActionBtn.onclick = (event) => {
+        event.preventDefault();
+        nextAction?.();
+      };
+    }
+
+    setAdminStepChip(els.adminSubmissionsStepChipEvent, {
+      label: "Event",
+      done: hasActiveEvent,
+      active: !hasActiveEvent,
+    });
+    setAdminStepChip(els.adminSubmissionsStepChipQueue, {
+      label: "Queue",
+      done: hasActiveEvent && totalCount > 0,
+      active: hasActiveEvent && totalCount > 0 && pendingCount > 0 && !hasSelection,
+    });
+    setAdminStepChip(els.adminSubmissionsStepChipReview, {
+      label: "Review",
+      done: hasActiveEvent && totalCount > 0 && pendingCount === 0,
+      active: hasActiveEvent && pendingCount > 0 && hasSelection,
+    });
+    setAdminStepChip(els.adminSubmissionsStepChipOfficialize, {
+      label: "Officialize",
+      done: hasActiveEvent && totalCount > 0 && officializedCount >= totalCount,
+      active: hasActiveEvent && totalCount > 0 && pendingCount === 0 && officializedCount < totalCount,
+    });
+  }
+
   function renderAdminPacketsWorkflowGuidance({
     hasActiveEvent = false,
     hasSchoolSelected = false,
@@ -438,33 +1038,64 @@ export function createAdminRenderers({
     if (!els.adminPacketsWorkflowCard) return;
     let step = "Start";
     let nextTitle = "Set an active event to begin.";
-    let nextHint = "Then select a school and review packet completion before release.";
+    let nextHint = "Then select a school and review official results readiness before release.";
+    let nextActionLabel = "Open Settings";
+    let nextAction = () => {
+      window.location.hash = "#admin/settings";
+    };
 
     if (hasActiveEvent && !hasSchoolSelected) {
       step = "Select School";
-      nextTitle = "Select a school to load packet review.";
-      nextHint = "Packets are grouped by school to reduce noise and keep release review focused.";
+      nextTitle = "Select a school to load official results packets.";
+      nextHint = "Results packets are grouped by school to reduce noise and keep release review focused.";
+      nextActionLabel = "Choose School";
+      nextAction = () => {
+        els.adminPacketsSchoolSelect?.focus();
+      };
     } else if (hasActiveEvent && hasSchoolSelected && totalCount === 0) {
       step = "Review";
-      nextTitle = "No scheduled packets found for this school.";
-      nextHint = "Confirm schedules and submissions, then return to packet release.";
+      nextTitle = "No official results packets found for this school.";
+      nextHint = "Confirm schedules and officialized assessments, then return to results release.";
+      nextActionLabel = "Open Live Submissions";
+      nextAction = () => {
+        window.location.hash = "#admin/submissions";
+      };
     } else if (hasActiveEvent && hasSchoolSelected && releaseReadyCount < totalCount) {
       step = "Review";
-      nextTitle = "Review incomplete packets before release.";
-      nextHint = `${releaseReadyCount}/${totalCount} packet(s) are ready to release.`;
+      nextTitle = "Review incomplete results packets before release.";
+      nextHint = `${releaseReadyCount}/${totalCount} results packets are ready to release.`;
+      nextActionLabel = "Review Results";
+      nextAction = () => {
+        els.adminPacketsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
     } else if (hasActiveEvent && hasSchoolSelected && releasedCount < totalCount) {
       step = "Release";
-      nextTitle = "Release ready packets for the selected school.";
-      nextHint = `${releasedCount}/${totalCount} packet(s) currently released.`;
+      nextTitle = "Release ready results packets for the selected school.";
+      nextHint = `${releasedCount}/${totalCount} results packets currently released.`;
+      nextActionLabel = "Open Release Queue";
+      nextAction = () => {
+        els.adminPacketsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
     } else if (hasActiveEvent && hasSchoolSelected && totalCount > 0 && releasedCount >= totalCount) {
       step = "Done";
-      nextTitle = "All packets for this school are released.";
-      nextHint = "Use View Packet to spot-check content or manage Open Judge sheets.";
+      nextTitle = "All results packets for this school are released.";
+      nextHint = "Use View Results Packet to spot-check content or manage Open Judge sheets.";
+      nextActionLabel = "Review Released Results";
+      nextAction = () => {
+        els.adminPacketsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
     }
 
     if (els.adminPacketsCurrentStepPill) els.adminPacketsCurrentStepPill.textContent = step;
     if (els.adminPacketsNextStepTitle) els.adminPacketsNextStepTitle.textContent = nextTitle;
     if (els.adminPacketsNextStepHint) els.adminPacketsNextStepHint.textContent = nextHint;
+    if (els.adminPacketsWorkflowActionBtn) {
+      els.adminPacketsWorkflowActionBtn.textContent = nextActionLabel;
+      els.adminPacketsWorkflowActionBtn.onclick = (event) => {
+        event.preventDefault();
+        nextAction?.();
+      };
+    }
 
     setAdminStepChip(els.adminPacketsStepChipEvent, {
       label: "Event",
@@ -532,9 +1163,9 @@ export function createAdminRenderers({
       }
 
       const schoolName = state.admin.selectedSchoolName || getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
-      els.adminSchoolDetailTitle.textContent = `${schoolName} - Scheduling & Day-of`;
-      els.adminSchoolDetailMeta.textContent = `Event: ${state.event.active?.name || "Active Event"}`;
-      els.adminSchoolDetailHint.textContent = "Read-only day-of snapshot appears below each ensemble. Use \"Open in Director\" to edit.";
+      els.adminSchoolDetailTitle.textContent = `${schoolName} - Registrations`;
+      els.adminSchoolDetailMeta.textContent = `Event: ${state.event.active?.name || "Active Event"} • Review ensemble readiness, scheduling, and director workspace state for this school.`;
+      els.adminSchoolDetailHint.textContent = "Use this workspace to confirm scheduling, director workspace readiness, and director-entered data before results release.";
       els.adminSchoolDetailList.innerHTML = "";
 
       const [registered, scheduleEntries, entriesSnap] = await Promise.all([
@@ -631,6 +1262,23 @@ export function createAdminRenderers({
         header.appendChild(title);
         header.appendChild(meta);
         li.appendChild(header);
+
+        const statusRow = document.createElement("div");
+        statusRow.className = "row";
+        const registeredBadge = document.createElement("span");
+        registeredBadge.className = "badge";
+        registeredBadge.textContent = "Registered";
+        const scheduleBadge = document.createElement("span");
+        scheduleBadge.className = "badge";
+        scheduleBadge.textContent = performanceAt ? "Scheduled" : "Needs Schedule";
+        const readyBadge = document.createElement("span");
+        readyBadge.className = "badge";
+        readyBadge.textContent =
+          String(entryData?.status || "").trim().toLowerCase() === "ready" ? "Director Ready" : "Director In Progress";
+        statusRow.appendChild(registeredBadge);
+        statusRow.appendChild(scheduleBadge);
+        statusRow.appendChild(readyBadge);
+        li.appendChild(statusRow);
 
         const scheduleRow = document.createElement("div");
         scheduleRow.className = "row";
@@ -737,6 +1385,13 @@ export function createAdminRenderers({
         scheduleRow.appendChild(scheduleDelete);
         li.appendChild(scheduleRow);
 
+        const scheduleMeta = document.createElement("div");
+        scheduleMeta.className = "note";
+        scheduleMeta.textContent = performanceAt
+          ? `Performance time set for ${formatStartTime(performanceAt)}.`
+          : "No performance time assigned yet.";
+        li.appendChild(scheduleMeta);
+
         const readOnly = document.createElement("div");
         readOnly.className = "note";
         readOnly.textContent = formatAdminDayOfReadOnly(entryData);
@@ -797,19 +1452,19 @@ export function createAdminRenderers({
         const cleanupRow = document.createElement("li");
         cleanupRow.className = "panel";
         const cleanupTitle = document.createElement("h4");
-        cleanupTitle.textContent = "Packet Cleanup";
+        cleanupTitle.textContent = "Results Packet Cleanup";
         cleanupRow.appendChild(cleanupTitle);
         const cleanupHint = document.createElement("p");
         cleanupHint.className = "hint";
-        cleanupHint.textContent = "Delete all unreleased scheduled packets and Open Judge sheets across the entire database.";
+        cleanupHint.textContent = "Delete all unreleased scheduled results packets and Open Judge sheets across the entire database.";
         cleanupRow.appendChild(cleanupHint);
         const cleanupBtn = document.createElement("button");
         cleanupBtn.type = "button";
         cleanupBtn.className = "ghost";
-        cleanupBtn.textContent = "Delete All Unreleased Packets";
+        cleanupBtn.textContent = "Delete All Unreleased Results Packets";
         cleanupBtn.addEventListener("click", async () => {
           const confirmed = confirmUser(
-            "Delete all unreleased packets across the entire database? Released packets will be skipped."
+            "Delete all unreleased results packets across the entire database? Released packets will be skipped."
           );
           if (!confirmed) return;
           const phrase = window.prompt("Type DELETE UNRELEASED to confirm bulk cleanup.");
@@ -846,7 +1501,8 @@ export function createAdminRenderers({
             const suggestedSchoolCount = Number(preview.suggestedSchoolMatches?.length || 0);
             const packetCount = Number(preview.packetCandidates || 0);
             const submissionCount = Number(preview.submissionCandidates || 0);
-            if (!eventCount && !schoolCount && !packetCount && !submissionCount) {
+            const officialAssessmentCount = Number(preview.officialAssessmentCandidates || 0);
+            if (!eventCount && !schoolCount && !packetCount && !submissionCount && !officialAssessmentCount) {
               if (suggestedEventCount || suggestedSchoolCount) {
                 alertUser(
                   `No explicitly tagged test artifacts found.\n` +
@@ -863,7 +1519,8 @@ export function createAdminRenderers({
               `Events: ${eventCount}\n` +
               `Schools: ${schoolCount}\n` +
               `Open packets: ${packetCount}\n` +
-              `Scheduled submissions: ${submissionCount}\n` +
+              `Scheduled assessment mirrors: ${submissionCount}\n` +
+              `Official assessments: ${officialAssessmentCount}\n` +
               `Strict mode: ${preview.strictMode === true ? "on" : "off"}\n` +
               `Active event skipped: ${Number(preview.activeEventSkipped?.length || 0)}\n\n` +
               "Proceed with permanent deletion?"
@@ -881,7 +1538,8 @@ export function createAdminRenderers({
               `Deleted events: ${result.deletedEvents || 0}\n` +
               `Deleted schools: ${result.deletedSchools || 0}\n` +
               `Deleted open packets: ${result.deletedOpenPackets || 0}\n` +
-              `Deleted scheduled submissions: ${result.deletedSubmissions || 0}\n` +
+              `Deleted scheduled assessment mirrors: ${result.deletedSubmissions || 0}\n` +
+              `Deleted official assessments: ${result.deletedOfficialAssessments || 0}\n` +
               `Deleted audio-only rows: ${result.deletedAudioResults || 0}`
             );
           } catch (error) {
@@ -906,7 +1564,7 @@ export function createAdminRenderers({
             await renderAdminPacketsBySchedule();
             alertUser(
               `${runDry ? "Dry run complete" : "Audio repair complete"}.\n` +
-              `Submissions updated: ${result.submissionsUpdated || 0}\n` +
+              `Assessment mirrors updated: ${result.submissionsUpdated || 0}\n` +
               `Open packets updated: ${result.packetsUpdated || 0}\n` +
               `Skipped (no canonical tape found): ${result.skippedNoCanonical || 0}`
             );
@@ -933,10 +1591,10 @@ export function createAdminRenderers({
             alertUser(
               `${runDry ? "Dry run complete" : "Open tape metadata repair complete"}.\n` +
               `Open packets updated: ${result.packetsUpdated || 0}\n` +
-              `Official submissions updated: ${result.submissionsUpdated || 0}\n` +
-              `Packet exports updated: ${result.exportsUpdated || 0}\n` +
+              `Official assessments updated: ${result.submissionsUpdated || 0}\n` +
+              `Results packet exports updated: ${result.exportsUpdated || 0}\n` +
               `Skipped (no sessions): ${result.skippedNoSessions || 0}\n` +
-              `Skipped (no official submission): ${result.skippedNoSubmission || 0}`
+              `Skipped (no official assessment): ${result.skippedNoSubmission || 0}`
             );
           } catch (error) {
             console.error("repairOpenSubmissionAudioMetadata failed", error);
@@ -1016,7 +1674,7 @@ export function createAdminRenderers({
       }
 
       if (!state.admin.packetsSchoolId) {
-        els.adminPacketsHint.textContent = "Select a school to load packet review.";
+        els.adminPacketsHint.textContent = "Select a school to load official results review.";
         renderAdminPacketsWorkflowGuidance({
           hasActiveEvent: true,
           hasSchoolSelected: false,
@@ -1028,7 +1686,7 @@ export function createAdminRenderers({
         els.adminPacketsHint.textContent =
           "No scheduled ensembles found for this school. Loading Open Judge sheets...";
       } else {
-        els.adminPacketsHint.textContent = "Loading packet status for selected school...";
+        els.adminPacketsHint.textContent = "Loading results packet status for selected school...";
       }
       const packetDataByEntryId = new Map();
       if (filtered.length) {
@@ -1072,7 +1730,7 @@ export function createAdminRenderers({
           ensembleName: entry.ensembleName || "",
           ensembleId,
         });
-        const performLabel = formatPerformanceAt(entry.performanceAt);
+        const performLabel = formatPerformanceAt(entry.performanceAt) || String(entry.stageTime || "").trim();
         const packetData = packetDataByEntryId.get(entry.id) || null;
         const summary = packetData?.summary || null;
         reviewedCount += 1;
@@ -1111,12 +1769,24 @@ export function createAdminRenderers({
         meta.textContent = `Director: ${packetData?.directorName || "Unknown"} - Grade: ${packetData?.grade || "Unknown"} - Overall: ${summary?.overall?.label || "N/A"}`;
         li.appendChild(meta);
 
+        if (summary && !summary.requiredComplete) {
+          const blockerNote = document.createElement("div");
+          blockerNote.className = "note";
+          const blockers = Array.isArray(summary.blockingPositions) ? summary.blockingPositions : [];
+          blockerNote.textContent = blockers.length
+            ? `Blocking positions: ${
+              blockers.map((position) => JUDGE_POSITION_LABELS[position] || position).join(", ")
+            }`
+            : "Blocking positions: Results packet is incomplete.";
+          li.appendChild(blockerNote);
+        }
+
         const actions = document.createElement("div");
         actions.className = "row";
         const releaseBtn = document.createElement("button");
         releaseBtn.type = "button";
         const shouldRelease = !summary?.requiredReleased;
-        releaseBtn.textContent = shouldRelease ? "Release Packet" : "Unrelease Packet";
+        releaseBtn.textContent = shouldRelease ? "Release Results Packet" : "Unrelease Results Packet";
         releaseBtn.disabled = shouldRelease ? !summary?.requiredComplete : false;
 
         releaseBtn.addEventListener("click", async () => {
@@ -1130,8 +1800,8 @@ export function createAdminRenderers({
             scheduleAdminPreflightRefresh?.({ immediate: true });
             await renderAdminPacketsBySchedule();
           } catch (error) {
-            console.error("Update packet release failed", error);
-            alertUser(formatBlockerError(error, "Unable to update packet release state."));
+            console.error("Update results release failed", error);
+            alertUser(formatBlockerError(error, "Unable to update results release state."));
           } finally {
             releaseBtn.disabled = false;
           }
@@ -1141,14 +1811,14 @@ export function createAdminRenderers({
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
         deleteBtn.className = "ghost";
-        deleteBtn.textContent = "Delete Packet";
+        deleteBtn.textContent = "Delete Results Packet";
         if (summary?.requiredReleased) {
           deleteBtn.disabled = true;
-          deleteBtn.title = "Unrelease packet first.";
+          deleteBtn.title = "Unrelease results packet first.";
         }
         deleteBtn.addEventListener("click", async () => {
           const ok = confirmUser(
-            `Delete scheduled packet for ${schoolName} - ${ensembleName}? This removes all judge submissions and packet export.`
+            `Delete scheduled results packet for ${schoolName} - ${ensembleName}? This removes official assessments, supporting release records, and the packet export.`
           );
           if (!ok) return;
           deleteBtn.disabled = true;
@@ -1157,8 +1827,8 @@ export function createAdminRenderers({
             scheduleAdminPreflightRefresh?.({ immediate: true });
             await renderAdminPacketsBySchedule();
           } catch (error) {
-            console.error("Delete scheduled packet failed", error);
-            alertUser(error?.message || "Unable to delete scheduled packet.");
+            console.error("Delete scheduled results packet failed", error);
+            alertUser(error?.message || "Unable to delete scheduled results packet.");
           } finally {
             deleteBtn.disabled = false;
           }
@@ -1170,17 +1840,17 @@ export function createAdminRenderers({
         const viewBtn = document.createElement("button");
         viewBtn.type = "button";
         viewBtn.className = "ghost";
-        viewBtn.textContent = "View Packet";
+        viewBtn.textContent = "View Results Packet";
         viewBtn.addEventListener("click", async () => {
           const isHidden = panel.classList.contains("is-hidden");
           if (isHidden) {
             panel.classList.remove("is-hidden");
-            viewBtn.textContent = "Hide Packet";
+            viewBtn.textContent = "Hide Results Packet";
             await loadAdminPacketView(entry, panel, eventId);
             renderAdminPacketAssetsSection({ eventId, ensembleId }, panel);
           } else {
             panel.classList.add("is-hidden");
-            viewBtn.textContent = "View Packet";
+            viewBtn.textContent = "View Results Packet";
           }
         });
         actions.appendChild(viewBtn);
@@ -1414,7 +2084,7 @@ export function createAdminRenderers({
             "Unknown judge";
           const ratingLabel = packet.computedFinalRatingLabel || "N/A";
           const updatedLabel = formatPacketTimestamp(packet.updatedAt) || "Recently updated";
-          meta.textContent = `Judge: ${judgeLabel} - Rating: ${ratingLabel} - Updated: ${updatedLabel}`;
+          meta.textContent = `Judge: ${judgeLabel} - Judge Overall Rating: ${ratingLabel} - Updated: ${updatedLabel}`;
           row.appendChild(meta);
 
           const actions = document.createElement("div");
@@ -1433,9 +2103,9 @@ export function createAdminRenderers({
               detail.innerHTML = "";
               const topMeta = document.createElement("div");
               topMeta.className = "note";
-              topMeta.textContent = `Packet ID: ${packet.id} - Updated: ${formatPacketTimestamp(packet.updatedAt) || "Recently updated"}`;
+              topMeta.textContent = `Open Sheet ID: ${packet.id} - Updated: ${formatPacketTimestamp(packet.updatedAt) || "Recently updated"}`;
               detail.appendChild(topMeta);
-              const summaryCard = renderSubmissionCard(
+              const summaryCard = renderAssessmentCard(
                 toOpenSubmission(packet),
                 packet.judgePosition || (packet.formType === "sight" ? "sight" : "stage1"),
                 { showTranscript: true }
@@ -1460,7 +2130,7 @@ export function createAdminRenderers({
                   scheduleAdminPreflightRefresh?.({ immediate: true });
                   await renderAdminPacketsBySchedule();
                 } catch (error) {
-                  console.error("Open packet lock/unlock failed", error);
+                  console.error("Open sheet lock/unlock failed", error);
                   alertUser(error?.message || "Unable to update open sheet lock state.");
                 } finally {
                   lockBtn.disabled = false;
@@ -1484,7 +2154,7 @@ export function createAdminRenderers({
                   scheduleAdminPreflightRefresh?.({ immediate: true });
                   await renderAdminPacketsBySchedule();
                 } catch (error) {
-                  console.error("Open packet release/unrelease failed", error);
+                  console.error("Open sheet release/unrelease failed", error);
                   alertUser(formatBlockerError(error, "Unable to update open sheet release state."));
                 } finally {
                   releaseBtn.disabled = false;
@@ -1522,7 +2192,7 @@ export function createAdminRenderers({
               setManualAudioStatus(openStatusKey, "Upload complete. Audio attached to open sheet.");
               await renderAdminPacketsBySchedule();
             } catch (error) {
-              console.error("Attach open packet audio failed", error);
+              console.error("Attach open sheet audio failed", error);
               setManualAudioStatus(
                 openStatusKey,
                 `Upload failed: ${error?.message || "Unable to attach open sheet audio."}`,
@@ -1547,7 +2217,7 @@ export function createAdminRenderers({
           deleteBtn.addEventListener("click", async () => {
             const label = `${packet.schoolName || "School"} - ${packet.ensembleName || "Ensemble"}`;
             const ok = confirmUser(
-              `Delete Open Judge sheet for ${label}? This removes packet audio and sessions.`
+              `Delete Open Judge sheet for ${label}? This removes recorded audio and sessions.`
             );
             if (!ok) return;
             deleteBtn.disabled = true;
@@ -1556,7 +2226,7 @@ export function createAdminRenderers({
               scheduleAdminPreflightRefresh?.({ immediate: true });
               await renderAdminPacketsBySchedule();
             } catch (error) {
-              console.error("Delete open packet failed", error);
+              console.error("Delete open sheet failed", error);
               alertUser(error?.message || "Unable to delete open sheet.");
             } finally {
               deleteBtn.disabled = false;
@@ -1589,7 +2259,7 @@ export function createAdminRenderers({
     } catch (error) {
       console.error("renderAdminPacketsBySchedule failed", error);
       if (els.adminPacketsHint) {
-        els.adminPacketsHint.textContent = "Unable to load packet review right now.";
+        els.adminPacketsHint.textContent = "Unable to load results review right now.";
       }
       renderAdminPacketsWorkflowGuidance({
         hasActiveEvent: Boolean(state.event.active?.id),
@@ -1679,6 +2349,7 @@ export function createAdminRenderers({
         const button = document.createElement("button");
         button.type = "button";
         button.className = "admin-school-row-btn";
+        button.setAttribute("aria-label", `Open registrations for ${schoolName}`);
         const row = document.createElement("div");
         row.className = "row";
         const title = document.createElement("strong");
@@ -1700,6 +2371,13 @@ export function createAdminRenderers({
         row.appendChild(title);
         row.appendChild(meta);
         button.appendChild(row);
+        const summary = document.createElement("div");
+        summary.className = "note";
+        summary.textContent =
+          scheduledCount === 0
+            ? "No scheduled ensembles yet. Open to assign times and review director data."
+            : `${scheduledCount} scheduled ensemble${scheduledCount === 1 ? "" : "s"} • ${readyCount} director-ready • open to manage registrations and check-in readiness.`;
+        button.appendChild(summary);
         button.addEventListener("click", () => {
           state.admin.selectedSchoolId = schoolId;
           state.admin.selectedSchoolName = schoolName;
@@ -1723,6 +2401,7 @@ export function createAdminRenderers({
 
   return {
     renderAdminSchoolDetail,
+    renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
     renderRegisteredEnsemblesList,
   };

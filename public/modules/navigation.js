@@ -77,15 +77,15 @@ export function resolveHash(hash) {
   }
   if (value === "#director") return { type: "tab", tab: "director" };
   if (value === "#judge" || value === "#judge-open") {
-    if (!judgeEnabled) return { type: "tab", tab: "admin", adminView: "preEvent" };
+    if (!judgeEnabled) return { type: "tab", tab: "admin", adminView: "dashboard" };
     return { type: "tab", tab: "judge-open" };
   }
   if (value === "#admin" || value.startsWith("#admin/")) {
-    const segment = value.slice("#admin".length).replace(/^\//, "") || "pre-event";
+    const segment = value.slice("#admin".length).replace(/^\//, "") || "";
     const adminView = resolveAdminViewFromHashSegment(segment, {
       liveEnabled,
       settingsEnabled,
-      fallback: "preEvent",
+      fallback: "dashboard",
     });
     return { type: "tab", tab: "admin", adminView };
   }

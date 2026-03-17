@@ -102,6 +102,77 @@ export function createJudgeOpenHandlerBinder({
     if (judgeOpenHandlersBound) return;
     judgeOpenHandlersBound = true;
 
+    const handleOpenRecordStart = async (buttonEl = els.judgeOpenRecordBtn) => {
+      if (!buttonEl) return;
+      buttonEl.dataset.loadingLabel = "Starting...";
+      buttonEl.dataset.spinner = "true";
+      if (els.judgeOpenRecordingStatus) {
+        els.judgeOpenRecordingStatus.textContent = "Starting microphone...";
+      }
+      await withLoading(buttonEl, async () => {
+        const result = await startOpenRecording({
+          getPacketMeta: gatherOpenPacketMeta,
+          onSessions: renderOpenSegments,
+          onStatus: updateOpenRecordingStatus,
+        });
+        if (!result?.ok) {
+          setOpenPacketHint(result?.message || "Unable to start recording.");
+          if (els.judgeOpenRecordingStatus) {
+            els.judgeOpenRecordingStatus.textContent = "Unable to start recording.";
+          }
+          return;
+        }
+      });
+      updateOpenRecordingStatus();
+    };
+
+    const handleJudgeOpenWorkflowAction = async (action, buttonEl) => {
+      if (!action) return;
+      if (action === "back-to-landing") {
+        await backToJudgeOpenLanding();
+        return;
+      }
+      if (action === "open-setup") {
+        showOpenDetailView();
+        if (els.judgeOpenExistingSelect) {
+          try {
+            els.judgeOpenExistingSelect.focus();
+          } catch {
+            // no-op
+          }
+        }
+        setOpenPacketHint("Select an existing school and ensemble to continue.");
+        return;
+      }
+      if (action === "start-recording") {
+        showOpenDetailView();
+        if (!hasLinkedOpenEnsemble()) {
+          setOpenPacketHint("Select an existing school and ensemble first.");
+          if (els.judgeOpenExistingSelect) {
+            try {
+              els.judgeOpenExistingSelect.focus();
+            } catch {
+              // no-op
+            }
+          }
+          return;
+        }
+        await handleOpenRecordStart(buttonEl || els.judgeOpenRecordBtn);
+      }
+    };
+
+    [
+      els.judgeOpenEmptyPrimaryBtn,
+      els.judgeOpenEmptySecondaryBtn,
+      els.judgeOpenTapeEmptyPrimaryBtn,
+      els.judgeOpenTapeEmptySecondaryBtn,
+    ].forEach((buttonEl) => {
+      if (!buttonEl) return;
+      buttonEl.addEventListener("click", async () => {
+        await handleJudgeOpenWorkflowAction(buttonEl.dataset.action || "", buttonEl);
+      });
+    });
+
     if (els.judgeOpenPacketSelect) {
       els.judgeOpenPacketSelect.addEventListener("change", async () => {
         if (state.judgeOpen.packetMutationInFlight) return;
@@ -117,7 +188,7 @@ export function createJudgeOpenHandlerBinder({
           await chooseJudgeOpenMode("practice");
           await refreshAndRenderOpenMicrophones();
           setOpenPacketHint(
-            "Practice workspace open. Resume a draft or choose New Adjudication to create another one."
+            "Practice workspace open. Resume a draft or choose New Assessment to create another one."
           );
         });
       });
@@ -129,7 +200,7 @@ export function createJudgeOpenHandlerBinder({
           await chooseJudgeOpenMode("official");
           await refreshAndRenderOpenMicrophones();
           setOpenPacketHint(
-            "Official workspace open. Resume a draft or choose New Adjudication to create another one."
+            "Official workspace open. Resume a draft or choose New Assessment to create another one."
           );
         });
       });
@@ -196,11 +267,11 @@ export function createJudgeOpenHandlerBinder({
     if (els.judgeOpenNewPacketBtn) {
       els.judgeOpenNewPacketBtn.addEventListener("click", async () => {
         if (!state.judgeOpen.mode) {
-          setOpenPacketHint("Choose Practice or Official before starting an adjudication.");
+          setOpenPacketHint("Choose Practice or Official before starting an assessment.");
           return;
         }
         if (state.judgeOpen.packetMutationInFlight) {
-          setOpenPacketHint("Please wait for the current adjudication action to complete.");
+          setOpenPacketHint("Please wait for the current assessment action to complete.");
           return;
         }
         if (!hasLinkedOpenEnsemble()) {
@@ -223,7 +294,7 @@ export function createJudgeOpenHandlerBinder({
         state.judgeOpen.packetMutationInFlight = true;
         try {
           await withLoading(els.judgeOpenNewPacketBtn, async () => {
-            setOpenPacketHint("Creating draft adjudication...");
+            setOpenPacketHint("Creating draft assessment...");
             const payload = gatherOpenPacketMeta();
             const result = await createOpenPacket({
               ...payload,
@@ -231,7 +302,7 @@ export function createJudgeOpenHandlerBinder({
             });
             if (state.judgeOpen.packetMutationToken !== mutationToken) return;
             if (!result?.ok) {
-              setOpenPacketHint(result?.message || "Unable to create adjudication.");
+              setOpenPacketHint(result?.message || "Unable to create assessment.");
               return;
             }
             state.judgeOpen.tapePlaylistIndex = 0;
@@ -249,7 +320,7 @@ export function createJudgeOpenHandlerBinder({
                 lastJudgeOpenFormType: state.judgeOpen.formType || "stage",
               };
             }
-            setOpenPacketHint("Draft adjudication created.");
+            setOpenPacketHint("Draft assessment created.");
             if (state.judgeOpen.detailViewIntent === "detail") {
               await openJudgeOpenPacket(result.packetId);
               if (state.judgeOpen.packetMutationToken !== mutationToken) return;
@@ -414,7 +485,7 @@ export function createJudgeOpenHandlerBinder({
         const transcript = state.judgeOpen.transcriptText || "";
         if (!transcript.trim()) {
           if (els.judgeOpenDraftStatus) {
-            els.judgeOpenDraftStatus.textContent = "Add a transcript before drafting captions.";
+            els.judgeOpenDraftStatus.textContent = "Add tape transcript text before drafting caption notes.";
           }
           return;
         }
@@ -460,7 +531,7 @@ export function createJudgeOpenHandlerBinder({
         els.judgeOpenDraftBtn.dataset.spinner = "true";
         await withLoading(els.judgeOpenDraftBtn, async () => {
           if (els.judgeOpenDraftStatus) {
-            els.judgeOpenDraftStatus.textContent = "Drafting captions. Please wait...";
+            els.judgeOpenDraftStatus.textContent = "Drafting optional caption notes. Please wait...";
           }
           const result = await draftCaptionsFromTranscript({
             transcript,
@@ -470,7 +541,7 @@ export function createJudgeOpenHandlerBinder({
           if (!result?.ok) {
             if (els.judgeOpenDraftStatus) {
               els.judgeOpenDraftStatus.textContent =
-                result?.message || "Unable to draft captions.";
+                result?.message || "Unable to draft optional caption notes.";
             }
             return;
           }
@@ -482,18 +553,18 @@ export function createJudgeOpenHandlerBinder({
                 meta.message || "Drafting failed before captions were generated.";
             } else if (applyResult.appliedCount > 0 && applyResult.skippedExistingCount > 0 && !overwrite) {
               els.judgeOpenDraftStatus.textContent =
-                `Drafted ${applyResult.appliedCount} caption${applyResult.appliedCount === 1 ? "" : "s"}. Skipped ${applyResult.skippedExistingCount} existing caption${applyResult.skippedExistingCount === 1 ? "" : "s"} because overwrite is off.`;
+                `Drafted ${applyResult.appliedCount} caption note${applyResult.appliedCount === 1 ? "" : "s"}. Skipped ${applyResult.skippedExistingCount} existing caption note${applyResult.skippedExistingCount === 1 ? "" : "s"} because overwrite is off.`;
             } else if (applyResult.appliedCount > 0) {
               els.judgeOpenDraftStatus.textContent =
-                `Drafted ${applyResult.appliedCount} caption${applyResult.appliedCount === 1 ? "" : "s"}.`;
+                `Drafted ${applyResult.appliedCount} caption note${applyResult.appliedCount === 1 ? "" : "s"}.`;
             } else if (!overwrite && applyResult.skippedExistingCount > 0) {
               els.judgeOpenDraftStatus.textContent =
-                "No captions were inserted because overwrite is off.";
+                "No caption notes were inserted because overwrite is off.";
             } else if (meta.status === "no_supported_captions" || meta.generatedCount === 0) {
               els.judgeOpenDraftStatus.textContent =
-                meta.message || "Drafting returned no usable captions.";
+                meta.message || "Drafting returned no usable caption notes.";
             } else {
-              els.judgeOpenDraftStatus.textContent = "No captions were inserted.";
+              els.judgeOpenDraftStatus.textContent = "No caption notes were inserted.";
             }
           }
         });
@@ -501,20 +572,20 @@ export function createJudgeOpenHandlerBinder({
     }
 
     if (els.judgeOpenTranscribeBtn) {
-      els.judgeOpenTranscribeBtn.textContent = "Refresh Transcript";
+      els.judgeOpenTranscribeBtn.textContent = "Refresh Auto Transcript";
       els.judgeOpenTranscribeBtn.addEventListener("click", async () => {
         if (els.judgeOpenTranscribeBtn.disabled) return;
         els.judgeOpenTranscribeBtn.dataset.loadingLabel = "Refreshing...";
         els.judgeOpenTranscribeBtn.dataset.spinner = "true";
         await withLoading(els.judgeOpenTranscribeBtn, async () => {
           if (els.judgeOpenRecordingStatus) {
-            els.judgeOpenRecordingStatus.textContent = "Refreshing transcript...";
+            els.judgeOpenRecordingStatus.textContent = "Refreshing auto transcript reference...";
           }
           const result = await transcribeOpenTape();
           if (!result?.ok) {
-            setOpenPacketHint(result?.message || "Transcription failed.");
+            setOpenPacketHint(result?.message || "Auto transcript failed.");
             if (els.judgeOpenRecordingStatus) {
-              els.judgeOpenRecordingStatus.textContent = "Transcription failed.";
+              els.judgeOpenRecordingStatus.textContent = "Auto transcript failed.";
             }
             return;
           }
@@ -523,9 +594,9 @@ export function createJudgeOpenHandlerBinder({
           }
           state.judgeOpen.transcriptText = result.transcript || "";
           updateOpenSubmitState();
-          setOpenPacketHint("Transcript refreshed.");
+          setOpenPacketHint("Auto transcript refreshed. Complete caption comments and scores before submitting.");
           if (els.judgeOpenRecordingStatus) {
-            els.judgeOpenRecordingStatus.textContent = "Transcript ready.";
+            els.judgeOpenRecordingStatus.textContent = "Auto transcript reference ready.";
           }
         });
         updateOpenRecordingStatus();
@@ -534,26 +605,7 @@ export function createJudgeOpenHandlerBinder({
 
     if (els.judgeOpenRecordBtn) {
       els.judgeOpenRecordBtn.addEventListener("click", async () => {
-        els.judgeOpenRecordBtn.dataset.loadingLabel = "Starting...";
-        els.judgeOpenRecordBtn.dataset.spinner = "true";
-        if (els.judgeOpenRecordingStatus) {
-          els.judgeOpenRecordingStatus.textContent = "Starting microphone...";
-        }
-        await withLoading(els.judgeOpenRecordBtn, async () => {
-          const result = await startOpenRecording({
-            getPacketMeta: gatherOpenPacketMeta,
-            onSessions: renderOpenSegments,
-            onStatus: updateOpenRecordingStatus,
-          });
-          if (!result?.ok) {
-            setOpenPacketHint(result?.message || "Unable to start recording.");
-            if (els.judgeOpenRecordingStatus) {
-              els.judgeOpenRecordingStatus.textContent = "Unable to start recording.";
-            }
-            return;
-          }
-        });
-        updateOpenRecordingStatus();
+        await handleOpenRecordStart(els.judgeOpenRecordBtn);
       });
     }
 
@@ -581,15 +633,15 @@ export function createJudgeOpenHandlerBinder({
         }
         const settled = await waitForOpenRecordingSettle();
         if (!settled) {
-          setOpenPacketHint("Recording stopped. Transcript finalization is still catching up.");
+          setOpenPacketHint("Recording stopped. Auto transcript finalization is still catching up.");
           return;
         }
         if (els.judgeOpenRecordingStatus) {
-          els.judgeOpenRecordingStatus.textContent = "Finalizing transcript...";
+          els.judgeOpenRecordingStatus.textContent = "Finalizing auto transcript reference...";
         }
         const finalResult = await finalizeOpenTapeAutoTranscription();
         if (!finalResult?.ok) {
-          setOpenPacketHint(finalResult?.message || "Final transcript check failed.");
+          setOpenPacketHint(finalResult?.message || "Final auto transcript check failed.");
           return;
         }
         if (els.judgeOpenTranscriptInput) {
@@ -597,7 +649,10 @@ export function createJudgeOpenHandlerBinder({
         }
         state.judgeOpen.transcriptText = finalResult.transcript || "";
         updateOpenSubmitState();
-        setOpenPacketHint("Transcript ready.");
+        setOpenPacketHint("Auto transcript ready. Complete caption comments and scores before submitting.");
+        if (els.judgeOpenRecordingStatus) {
+          els.judgeOpenRecordingStatus.textContent = "Auto transcript reference ready.";
+        }
       });
       updateOpenRecordingStatus();
     };
@@ -684,7 +739,7 @@ export function createJudgeOpenHandlerBinder({
           const ensemble =
             state.judgeOpen.selectedExisting?.ensembleName || packet.ensembleName || "Ensemble";
           const ok = window.confirm(
-            `Submit OFFICIAL adjudication for ${school} - ${ensemble}${
+            `Submit OFFICIAL assessment for ${school} - ${ensemble}${
               eventId ? ` in ${eventId}` : ""
             }?`
           );
@@ -693,26 +748,17 @@ export function createJudgeOpenHandlerBinder({
         els.judgeOpenSubmitBtn.dataset.loadingLabel = "Submitting...";
         els.judgeOpenSubmitBtn.dataset.spinner = "true";
         await withLoading(els.judgeOpenSubmitBtn, async () => {
-          setOpenPacketHint("Submitting adjudication...");
+          setOpenPacketHint("Submitting assessment...");
           const result = await submitOpenPacket();
           if (!result?.ok) {
-            setOpenPacketHint(result?.message || "Unable to submit adjudication.");
+            setOpenPacketHint(result?.message || "Unable to submit assessment.");
             return;
           }
-          if (state.judgeOpen.mode === "official") {
-            setOpenPacketHint("Official adjudication submitted and locked.");
-          } else {
-            setOpenPacketHint("Practice adjudication submitted and locked.");
-          }
-          const refreshed = await selectOpenPacket(state.judgeOpen.currentPacketId, {
-            onSessions: renderOpenSegments,
-          });
-          if (refreshed?.ok) {
-            renderOpenCaptionForm();
-            updateOpenHeader();
-            showOpenDetailView();
-            updateOpenSubmitState();
-          }
+          setOpenPacketHint("Assessment saved for admin review.");
+          renderOpenCaptionForm();
+          updateOpenHeader();
+          showOpenDetailView();
+          updateOpenSubmitState();
         });
       });
     }

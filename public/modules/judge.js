@@ -32,6 +32,17 @@ import {
   computeFinalRating,
 } from "./judge-shared.js";
 
+function isLegacyJudgeFallbackAllowed(profile) {
+  if (!profile || typeof profile !== "object") return false;
+  const rawRole = String(profile.role || "").trim();
+  const roles = profile.roles && typeof profile.roles === "object" ? profile.roles : {};
+  return rawRole === "admin" || roles.admin === true || roles.superAdmin === true;
+}
+
+function getLegacyJudgeFallbackBlockedMessage() {
+  return "Legacy judge fallback is restricted. Use the Judge workspace instead.";
+}
+
 export function markJudgeDirty() {
   state.judge.draftDirty = true;
   state.judge.draftVersion += 1;
@@ -148,8 +159,11 @@ async function transcribeAudioBlobForTranscript(blob) {
 }
 
 export async function transcribeSubmissionAudio() {
-  if (!state.auth.currentUser || !state.auth.userProfile || state.auth.userProfile.role !== "judge") {
-    return { ok: false, message: "Sign in as a judge to transcribe." };
+  if (!state.auth.currentUser || !state.auth.userProfile) {
+    return { ok: false, message: "Sign in to continue." };
+  }
+  if (!isLegacyJudgeFallbackAllowed(state.auth.userProfile)) {
+    return { ok: false, message: getLegacyJudgeFallbackBlockedMessage() };
   }
   if (!state.event.active || !state.judge.selectedRosterEntry || !state.judge.position) {
     return { ok: false, message: "Select an ensemble to transcribe." };
@@ -316,7 +330,12 @@ export async function selectRosterEntry(entry) {
 
 export async function handleSubmit(event) {
   event?.preventDefault?.();
-  if (!state.auth.currentUser || !state.auth.userProfile || state.auth.userProfile.role !== "judge") return;
+  if (!state.auth.currentUser || !state.auth.userProfile) {
+    return { ok: false, message: "Sign in to continue." };
+  }
+  if (!isLegacyJudgeFallbackAllowed(state.auth.userProfile)) {
+    return { ok: false, message: getLegacyJudgeFallbackBlockedMessage() };
+  }
   if (state.judge.isTestMode) {
     return { ok: false, message: "Test mode active. Submissions are disabled." };
   }

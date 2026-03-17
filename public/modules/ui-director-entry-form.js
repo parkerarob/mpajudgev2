@@ -9,6 +9,7 @@ export function createDirectorEntryFormRenderers({
   normalizeGrade,
   getMpaRepertoireForGrade,
   applyDirectorDirty,
+  validateEntryReady,
   setDirectorPerformanceGradeValue,
   setPerformanceGradeError,
   updateLunchTotalCost,
@@ -806,26 +807,42 @@ export function createDirectorEntryFormRenderers({
   function renderDirectorChecklist(_entry, completionState) {
     if (!els.directorChecklist) return;
     const s = completionState || {};
+    const panelKeyByItemKey = {
+      repertoire: "repertoire",
+      instrumentation: "instrumentation",
+      seating: "seating",
+      percussion: "percussion",
+      lunch: "lunch",
+      grade: "repertoire",
+    };
+    const openPanelByKey = (panelKey) => {
+      if (!panelKey) return;
+      const panel = document.querySelector(`#directorEntryForm details[data-director-panel="${panelKey}"]`);
+      if (!panel) return;
+      panel.open = true;
+      panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
     const items = [
-      { key: "ensemble", label: "Ensemble" },
-      { key: "repertoire", label: "Repertoire" },
-      { key: "instrumentation", label: "Instrumentation" },
-      { key: "seating", label: "Seating" },
-      { key: "percussion", label: "Percussion" },
-      { key: "lunch", label: "Pizza Order" },
-      { key: "grade", label: "Grade" },
+      { key: "ensemble", label: "Active Ensemble" },
+      { key: "repertoire", label: "Program & Repertoire" },
+      { key: "instrumentation", label: "Instrumentation Overview" },
+      { key: "seating", label: "Seating & Setup" },
+      { key: "percussion", label: "Percussion & Equipment" },
+      { key: "lunch", label: "Lunch Order" },
+      { key: "grade", label: "Performance Grade" },
     ];
+    const nextIncomplete = items.find((item) => !Boolean(s[item.key])) || null;
 
     const total = items.length;
     const done = items.filter((item) => Boolean(s[item.key])).length;
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     renderStatusSummary({
       rootId: "directorChecklistPanel",
-      title: done === total ? "Ready to submit" : "Not ready yet",
+      title: done === total ? "Ensemble Workspace Ready" : "Ensemble Workspace In Progress",
       done,
       total,
       pillText: done === total ? "Complete" : "Incomplete",
-      hintText: done === total ? "" : `${total - done} missing`,
+      hintText: done === total ? "All required ensemble sections are complete." : `${total - done} required section(s) still missing.`,
     });
 
     if (els.directorSummaryStatus) {
@@ -837,8 +854,126 @@ export function createDirectorEntryFormRenderers({
     if (els.directorSummaryProgressBar) {
       els.directorSummaryProgressBar.style.width = `${pct}%`;
     }
+    if (els.directorWorkspaceFocusLabel) {
+      els.directorWorkspaceFocusLabel.textContent = nextIncomplete
+        ? nextIncomplete.label
+        : "Workspace review and ready check";
+    }
+    if (els.directorWorkspaceFocusHint) {
+      els.directorWorkspaceFocusHint.textContent = nextIncomplete
+        ? `Complete ${nextIncomplete.label.toLowerCase()} next to keep this ensemble moving toward ready.`
+        : "All required sections are complete. Review details, then mark the workspace ready.";
+    }
+    const sectionStatusMap = {
+      repertoire: s.repertoire ? "Complete" : nextIncomplete?.key === "repertoire" ? "Next" : "Missing",
+      instrumentation: s.instrumentation ? "Complete" : nextIncomplete?.key === "instrumentation" ? "Next" : "Missing",
+      "instrumentation-notes": "Optional",
+      rule3c: "Review",
+      seating: s.seating ? "Complete" : nextIncomplete?.key === "seating" ? "Next" : "Missing",
+      percussion: s.percussion ? "Complete" : nextIncomplete?.key === "percussion" ? "Next" : "Missing",
+      lunch: s.lunch ? "Complete" : nextIncomplete?.key === "lunch" ? "Next" : "Missing",
+    };
+    Object.entries(sectionStatusMap).forEach(([key, value]) => {
+      const chip = document.querySelector(`[data-director-section-status="${key}"]`);
+      if (!chip) return;
+      chip.textContent = value;
+      chip.className = "director-section-status";
+      chip.classList.add(`is-${String(value).toLowerCase().replace(/\s+/g, "-")}`);
+    });
+    const nextPanelKey = nextIncomplete
+      ? ({
+          ensemble: "rule3c",
+          repertoire: "repertoire",
+          instrumentation: "instrumentation",
+          seating: "seating",
+          percussion: "percussion",
+          lunch: "lunch",
+          grade: "repertoire",
+        })[nextIncomplete.key] || "repertoire"
+      : "repertoire";
+    if (els.directorWorkspaceFocusBtn) {
+      els.directorWorkspaceFocusBtn.disabled = !nextPanelKey;
+      els.directorWorkspaceFocusBtn.textContent = nextIncomplete
+        ? `Open ${nextIncomplete.label}`
+        : "Review Workspace";
+      els.directorWorkspaceFocusBtn.onclick = () => openPanelByKey(nextPanelKey);
+    }
+    const workspaceContextKey = `${state.director.selectedEventId || ""}:${state.director.selectedEnsembleId || ""}`;
+    if (state.director.lastWorkspaceAutoOpenContext !== workspaceContextKey) {
+      document
+        .querySelectorAll("#directorEntryForm details[data-director-panel]")
+        .forEach((panel) => {
+          const panelKey = panel.getAttribute("data-director-panel");
+          panel.open = panelKey === nextPanelKey;
+        });
+      state.director.lastWorkspaceAutoOpenContext = workspaceContextKey;
+    }
+    if (els.directorWorkspaceBlockers) {
+      els.directorWorkspaceBlockers.innerHTML = "";
+      const blockers = validateEntryReady ? validateEntryReady(state.director.entryDraft) : [];
+      const visibleBlockers = Array.from(new Set(blockers));
+      const blockerPanelForMessage = (message) => {
+        const text = String(message || "").toLowerCase();
+        if (text.includes("march") || text.includes("selection #1") || text.includes("selection #2") || text.includes("masterwork")) {
+          return "repertoire";
+        }
+        if (text.includes("instrumentation") || text.includes("seating")) {
+          return "instrumentation";
+        }
+        if (text.includes("percussion")) {
+          return "percussion";
+        }
+        if (text.includes("pizza") || text.includes("performance time")) {
+          return "lunch";
+        }
+        return "";
+      };
+      if (!visibleBlockers.length) {
+        const li = document.createElement("li");
+        li.className = "checklist-item";
+        li.innerHTML = `<span>All required ready checks are currently satisfied.</span><span class="check">Ready</span>`;
+        els.directorWorkspaceBlockers.appendChild(li);
+      } else {
+        visibleBlockers.forEach((message) => {
+          const li = document.createElement("li");
+          li.className = "checklist-item";
+          li.innerHTML = `<span>${message}</span><span class="check is-missing">Open</span>`;
+          const panelKey = blockerPanelForMessage(message);
+          if (panelKey) {
+            li.classList.add("is-clickable");
+            li.tabIndex = 0;
+            li.setAttribute("role", "button");
+            li.setAttribute("aria-label", `Open section for ${message}`);
+            li.addEventListener("click", () => openPanelByKey(panelKey));
+            li.addEventListener("keydown", (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openPanelByKey(panelKey);
+              }
+            });
+          }
+          els.directorWorkspaceBlockers.appendChild(li);
+        });
+      }
+    }
 
     renderChecklist(els.directorChecklist, items, s);
+    Array.from(els.directorChecklist.children).forEach((row, index) => {
+      const item = items[index];
+      const panelKey = panelKeyByItemKey[item?.key] || "";
+      if (!panelKey) return;
+      row.classList.add("is-clickable");
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.setAttribute("aria-label", `Open ${item.label}`);
+      row.addEventListener("click", () => openPanelByKey(panelKey));
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openPanelByKey(panelKey);
+        }
+      });
+    });
 
     const parent = els.directorChecklist?.parentElement;
     if (parent) {
@@ -848,7 +983,7 @@ export function createDirectorEntryFormRenderers({
         reminder.className = "registration-paper-reminder hint";
         parent.appendChild(reminder);
       }
-      reminder.textContent = "Paper scores (3 per piece) - bring to Registration.";
+      reminder.textContent = "Paper scores (3 per piece) - bring to registration check-in.";
     }
   }
 

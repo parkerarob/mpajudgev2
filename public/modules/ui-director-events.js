@@ -32,9 +32,7 @@ export function createDirectorEventRenderers({
       startDate && endDate && startDate !== endDate
         ? `${startDate} - ${endDate}`
         : startDate || endDate || "";
-    const detailLabel = event.pizzaOrdersClosed
-      ? [dateLabel, "Pizza orders closed"].filter(Boolean).join(" · ")
-      : dateLabel;
+    const detailLabel = dateLabel;
     if (els.directorEventName) {
       els.directorEventName.textContent = name;
     } else {

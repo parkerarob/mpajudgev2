@@ -4,13 +4,30 @@ function createCell(tag = "td", text = "") {
   return el;
 }
 
+function createStepButton(label, onClick, { disabled = false } = {}) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost btn--sm";
+  btn.textContent = label;
+  btn.disabled = Boolean(disabled);
+  if (typeof onClick === "function" && !disabled) {
+    btn.addEventListener("click", onClick);
+  }
+  return btn;
+}
+
 export function renderDirectorEnsembleTable({
   container,
   ensembles = [],
   selectedEnsembleId = null,
+  selectedEventId = null,
+  activeEntryStatus = "",
+  activeCompletionState = null,
+  statusByEnsembleId = new Map(),
   onEdit,
   onSetActive,
   onOpenForms,
+  onCreate,
   onDelete,
   withLoading,
 } = {}) {
@@ -26,8 +43,15 @@ export function renderDirectorEnsembleTable({
 
   if (!ordered.length) {
     const empty = document.createElement("div");
-    empty.className = "hint";
-    empty.textContent = "No ensembles yet. Add one to begin.";
+    empty.className = "empty stack";
+    empty.innerHTML = `
+      <div>No ensembles yet.</div>
+      <div class="hint">Add your first ensemble, then open its workspace to complete event details.</div>
+    `;
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    actions.appendChild(createStepButton("Add Ensemble", () => onCreate?.()));
+    empty.appendChild(actions);
     container.appendChild(empty);
     return;
   }
@@ -40,7 +64,8 @@ export function renderDirectorEnsembleTable({
     <thead>
       <tr>
         <th>Name</th>
-        <th>Status</th>
+        <th>Workspace Status</th>
+        <th>Next Step</th>
         <th>Actions</th>
       </tr>
     </thead>
@@ -56,9 +81,50 @@ export function renderDirectorEnsembleTable({
     if (isActive) nameCell.classList.add("is-active");
     tr.appendChild(nameCell);
 
-    const statusCell = createCell("td", isActive ? "Active" : "Draft");
+    let workspaceStatus = "Available";
+    let nextStep = selectedEventId ? "Open workspace" : "Select event";
+    const savedStatus = statusByEnsembleId instanceof Map ? statusByEnsembleId.get(ensemble.id) || "" : "";
+    if (isActive && selectedEventId) {
+      if (activeCompletionState?.ready || activeEntryStatus === "ready") {
+        workspaceStatus = "Ready";
+        nextStep = "Review or update details";
+      } else if (activeEntryStatus || activeCompletionState) {
+        workspaceStatus = "In Progress";
+        nextStep = "Finish required sections";
+      } else {
+        workspaceStatus = "Active Workspace";
+        nextStep = "Open workspace";
+      }
+    } else if (isActive) {
+      workspaceStatus = "Active";
+      nextStep = "Choose event";
+    } else if (selectedEventId && savedStatus === "ready") {
+      workspaceStatus = "Ready";
+      nextStep = "Review or update details";
+    } else if (selectedEventId && savedStatus) {
+      workspaceStatus = "In Progress";
+      nextStep = "Finish required sections";
+    } else if (selectedEventId) {
+      workspaceStatus = "Not Started";
+      nextStep = "Open workspace";
+    }
+
+    const statusCell = createCell("td", workspaceStatus);
     statusCell.className = "muted";
     tr.appendChild(statusCell);
+
+    const nextCell = document.createElement("td");
+    nextCell.className = "muted";
+    if (!selectedEventId) {
+      nextCell.textContent = nextStep;
+    } else {
+      const nextActionLabel =
+        workspaceStatus === "Ready" ? "Review Workspace" : "Open Workspace";
+      nextCell.appendChild(
+        createStepButton(nextActionLabel, () => onOpenForms?.(ensemble.id))
+      );
+    }
+    tr.appendChild(nextCell);
 
     const actionsCell = document.createElement("td");
     const actions = document.createElement("div");
@@ -78,13 +144,6 @@ export function renderDirectorEnsembleTable({
       activeBtn.addEventListener("click", () => onSetActive?.(ensemble.id));
       actions.appendChild(activeBtn);
     }
-
-    const formsBtn = document.createElement("button");
-    formsBtn.type = "button";
-    formsBtn.className = "ghost";
-    formsBtn.textContent = "Event Forms";
-    formsBtn.addEventListener("click", () => onOpenForms?.(ensemble.id));
-    actions.appendChild(formsBtn);
 
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";

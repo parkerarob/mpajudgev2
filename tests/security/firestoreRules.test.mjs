@@ -6,7 +6,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import {doc, setDoc, updateDoc} from "firebase/firestore";
+import {doc, setDoc, updateDoc, getDoc} from "firebase/firestore";
 
 const PROJECT_ID = "mpa-judge-v2";
 
@@ -43,6 +43,11 @@ async function seedFirestoreDocs() {
       email: "judge@example.com",
       roles: {judge: true},
     });
+    await setDoc(doc(db, "users/admin-1"), {
+      role: "admin",
+      email: "admin@example.com",
+      roles: {admin: true},
+    });
 
     await setDoc(doc(db, "events/event-open"), {
       isActive: true,
@@ -65,6 +70,26 @@ async function seedFirestoreDocs() {
       },
       registrationNote: "",
     });
+
+    await setDoc(doc(db, "rawAssessments/raw-1"), {
+      judgeUid: "judge-1",
+      schoolId: "school-1",
+      eventId: "event-open",
+      ensembleId: "ensemble-1",
+      status: "submitted",
+      associationState: "attached",
+      reviewState: "pending",
+      packetId: "packet-1",
+      writtenComments: "Keep the line moving and clean up the release.",
+    });
+    await setDoc(doc(db, "officialAssessments/event-open_ensemble-1_stage1"), {
+      schoolId: "school-1",
+      eventId: "event-open",
+      ensembleId: "ensemble-1",
+      judgePosition: "stage1",
+      status: "released",
+      writtenComments: "Good tone center.",
+    });
   });
 }
 
@@ -85,7 +110,7 @@ afterAll(async () => {
   await testEnv.cleanup();
 });
 
-describe("firestore pizza order lock", () => {
+describe("director lunch order writes", () => {
   it("allows a director to write lunch orders while the event window is open", async () => {
     const ctx = testEnv.authenticatedContext("director-1");
     const db = ctx.firestore();
@@ -103,11 +128,11 @@ describe("firestore pizza order lock", () => {
     }, {merge: true}));
   });
 
-  it("blocks a director from changing lunch orders after the window closes", async () => {
+  it("still allows a director to change lunch orders after the old closed flag is set", async () => {
     const ctx = testEnv.authenticatedContext("director-1");
     const db = ctx.firestore();
 
-    await assertFails(updateDoc(doc(db, "events/event-closed/entries/ensemble-1"), {
+    await assertSucceeds(updateDoc(doc(db, "events/event-closed/entries/ensemble-1"), {
       lunchOrder: {
         pepperoniQty: 4,
         cheeseQty: 1,
@@ -117,7 +142,7 @@ describe("firestore pizza order lock", () => {
     }));
   });
 
-  it("still allows a director to update non-lunch fields after the window closes", async () => {
+  it("still allows a director to update non-lunch fields after the old closed flag is set", async () => {
     const ctx = testEnv.authenticatedContext("director-1");
     const db = ctx.firestore();
 
@@ -184,5 +209,37 @@ describe("director school attachment", () => {
         notes: "",
       },
     }, {merge: true}));
+  });
+});
+
+describe("raw assessment access", () => {
+  it("allows a judge to read their own raw assessments", async () => {
+    const ctx = testEnv.authenticatedContext("judge-1");
+    const db = ctx.firestore();
+
+    await assertSucceeds(getDoc(doc(db, "rawAssessments/raw-1")));
+  });
+
+  it("blocks a director from reading raw assessments", async () => {
+    const ctx = testEnv.authenticatedContext("director-1");
+    const db = ctx.firestore();
+
+    await assertFails(getDoc(doc(db, "rawAssessments/raw-1")));
+  });
+});
+
+describe("official assessment access", () => {
+  it("allows a director to read released official assessments for their school", async () => {
+    const ctx = testEnv.authenticatedContext("director-1");
+    const db = ctx.firestore();
+
+    await assertSucceeds(getDoc(doc(db, "officialAssessments/event-open_ensemble-1_stage1")));
+  });
+
+  it("blocks a judge from reading other schools' released official assessments by default", async () => {
+    const ctx = testEnv.authenticatedContext("judge-1");
+    const db = ctx.firestore();
+
+    await assertFails(getDoc(doc(db, "officialAssessments/event-open_ensemble-1_stage1")));
   });
 });

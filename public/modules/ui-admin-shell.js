@@ -14,6 +14,7 @@ export function createAdminViewController({
   renderLiveEventCheckinQueue,
   renderAdminSchoolDetail,
   renderRegisteredEnsemblesList,
+  renderAdminLiveSubmissions,
   renderAdminPacketsBySchedule,
   renderAdminAnnouncerView,
   renderAdminReadinessView,
@@ -56,6 +57,61 @@ export function createAdminViewController({
     renderAdminReadinessView,
   });
 
+  function renderDashboardView() {
+    if (!els.adminViewDashboard) return;
+    const activeEvent = state.event.active || null;
+    const rosterEntries = Array.isArray(state.event.rosterEntries) ? state.event.rosterEntries : [];
+    const rawAssessments = Array.isArray(state.admin.rawAssessments) ? state.admin.rawAssessments : [];
+    const readyCount = state.event.readyEnsembles instanceof Set ? state.event.readyEnsembles.size : 0;
+    const scheduledCount = rosterEntries.length;
+    const pendingCount = rawAssessments.filter((item) => {
+      const reviewState = String(item?.reviewState || "").trim().toLowerCase();
+      const status = String(item?.status || "").trim().toLowerCase();
+      return status !== "excluded" && status !== "officialized" && reviewState !== "excluded";
+    }).length;
+
+    if (els.adminDashboardEventBadge) {
+      els.adminDashboardEventBadge.textContent = activeEvent?.name || "No active event";
+    }
+    if (els.adminDashboardEventMeta) {
+      els.adminDashboardEventMeta.textContent = activeEvent
+        ? `${activeEvent.eventMode === "rehearsal" ? "Rehearsal" : "Live event"} • ${scheduledCount} scheduled ensemble${scheduledCount === 1 ? "" : "s"} • ${pendingCount} assessment${pendingCount === 1 ? "" : "s"} pending review`
+        : "Set an active event to begin.";
+    }
+    if (els.adminDashboardRegistrationsValue) {
+      els.adminDashboardRegistrationsValue.textContent = String(readyCount);
+    }
+    if (els.adminDashboardRegistrationsHint) {
+      els.adminDashboardRegistrationsHint.textContent = activeEvent
+        ? `${readyCount} ensemble${readyCount === 1 ? "" : "s"} currently marked ready in registrations.`
+        : "No active event.";
+    }
+    if (els.adminDashboardScheduleValue) {
+      els.adminDashboardScheduleValue.textContent = String(scheduledCount);
+    }
+    if (els.adminDashboardScheduleHint) {
+      els.adminDashboardScheduleHint.textContent = activeEvent
+        ? `${scheduledCount} ensemble${scheduledCount === 1 ? "" : "s"} currently on the active schedule.`
+        : "No scheduled ensembles.";
+    }
+    if (els.adminDashboardSubmissionsValue) {
+      els.adminDashboardSubmissionsValue.textContent = String(pendingCount);
+    }
+    if (els.adminDashboardSubmissionsHint) {
+      els.adminDashboardSubmissionsHint.textContent = pendingCount
+        ? `${pendingCount} assessment${pendingCount === 1 ? "" : "s"} need review or officialization.`
+        : "No assessments waiting for review.";
+    }
+    if (els.adminDashboardReadyValue) {
+      els.adminDashboardReadyValue.textContent = String(readyCount);
+    }
+    if (els.adminDashboardReadyHint) {
+      els.adminDashboardReadyHint.textContent = activeEvent
+        ? `${readyCount} ensemble${readyCount === 1 ? "" : "s"} currently ready in director/admin intake.`
+        : "No active event.";
+    }
+  }
+
   function isAdminHeavyViewLoaded(view) {
     if (!state.admin.safeMode) return true;
     if (view === "preEvent") return Boolean(state.admin.preEventHeavyLoaded);
@@ -73,10 +129,10 @@ export function createAdminViewController({
     if (!needsManualLoad) return;
     if (view === "preEvent") {
       els.adminSafeModeMessage.textContent =
-        "Admin safe mode is on. Pre-Event heavy data is paused to prevent browser crashes.";
+        "Admin safe mode is on. Registrations data is paused to prevent browser crashes.";
     } else {
       els.adminSafeModeMessage.textContent =
-        "Admin safe mode is on. Live Event heavy data is paused to prevent browser crashes.";
+        "Admin safe mode is on. Schedule & Flow data is paused to prevent browser crashes.";
     }
   }
 
@@ -88,11 +144,13 @@ export function createAdminViewController({
     const resolvedView = resolveAdminView(view, {
       liveEnabled: isAdminLiveEventEnabled(),
       settingsEnabled: isAdminSettingsEnabled(),
-      fallback: "preEvent",
+      fallback: "dashboard",
     });
     state.admin.currentView = resolvedView;
+    const showDashboard = resolvedView === "dashboard";
     const showPreEvent = resolvedView === "preEvent";
     const showPackets = resolvedView === "packets";
+    const showSubmissions = resolvedView === "submissions";
     const showAnnouncer = resolvedView === "announcer";
     const showLiveEvent = resolvedView === "liveEvent" && isAdminLiveEventEnabled();
     const showSettings = resolvedView === "settings" && isAdminSettingsEnabled();
@@ -101,8 +159,10 @@ export function createAdminViewController({
     const heavyLoaded = isAdminHeavyViewLoaded(resolvedView);
     setAdminSafeModePanel(resolvedView);
 
+    setSectionVisible(els.adminViewDashboard, showDashboard);
     setSectionVisible(els.adminViewEvents, showPreEvent);
     setSectionVisible(els.adminViewChair, showLiveEvent);
+    setSectionVisible(els.adminViewSubmissions, showSubmissions);
     setSectionVisible(els.adminViewPackets, showPackets);
     setSectionVisible(els.adminViewAnnouncer, showAnnouncer);
     setSectionVisible(els.adminViewSettings, showSettings);
@@ -115,12 +175,21 @@ export function createAdminViewController({
     packetsController.syncActions();
     liveController.render({ visible: showLiveEvent, heavyLoaded });
     preEventController.render({ showSchoolDetail, heavyLoaded });
+    if (showDashboard) {
+      renderDashboardView();
+    }
+    if (showSubmissions) {
+      renderAdminLiveSubmissions();
+    }
     packetsController.render({ visible: showPackets });
     if (showAnnouncer) {
       renderAdminAnnouncerView();
     }
     settingsController.render({ visible: showSettings });
     readinessController.render({ visible: showReadiness });
+    if (els.adminSubnavDashboardBtn) {
+      els.adminSubnavDashboardBtn.setAttribute("aria-selected", showDashboard ? "true" : "false");
+    }
     if (els.adminSubnavChairBtn) {
       els.adminSubnavChairBtn.classList.toggle("is-hidden", !isAdminLiveEventEnabled());
       els.adminSubnavChairBtn.setAttribute("aria-selected", showLiveEvent ? "true" : "false");
@@ -130,6 +199,9 @@ export function createAdminViewController({
     }
     if (els.adminSubnavPacketsBtn) {
       els.adminSubnavPacketsBtn.setAttribute("aria-selected", showPackets ? "true" : "false");
+    }
+    if (els.adminSubnavSubmissionsBtn) {
+      els.adminSubnavSubmissionsBtn.setAttribute("aria-selected", showSubmissions ? "true" : "false");
     }
     if (els.adminSubnavAnnouncerBtn) {
       els.adminSubnavAnnouncerBtn.setAttribute("aria-selected", showAnnouncer ? "true" : "false");
@@ -155,5 +227,6 @@ export function createAdminViewController({
     isAdminSchoolDetailOpen,
     closeAdminSchoolDetail,
     applyAdminView,
+    renderDashboardView,
   };
 }

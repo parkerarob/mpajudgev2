@@ -14,6 +14,21 @@ export function createAdminAnnouncerController({
   escapeHtml,
   formatStartTime,
 } = {}) {
+  function bindAnnouncerWorkflowActions() {
+    els.adminAnnouncerContent?.querySelectorAll?.("[data-announcer-nav]")?.forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = String(button.getAttribute("data-announcer-nav") || "").trim();
+        if (!target) return;
+        window.location.hash = target;
+      });
+    });
+    els.adminAnnouncerContent?.querySelectorAll?.("[data-announcer-retry]")?.forEach((button) => {
+      button.addEventListener("click", () => {
+        void renderAdminAnnouncerView();
+      });
+    });
+  }
+
   function formatDateHeading(dateLike) {
     const date = toDateOrNull(dateLike);
     if (!date) return "Date TBD";
@@ -116,7 +131,17 @@ export function createAdminAnnouncerController({
   function renderAnnouncerContent(rows, eventName) {
     if (!els.adminAnnouncerContent) return;
     if (!rows.length) {
-      els.adminAnnouncerContent.innerHTML = `<p class='hint'>${escapeHtml(eventName)} has no scheduled ensembles yet.</p>`;
+      els.adminAnnouncerContent.innerHTML = `
+        <div class="empty stack">
+          <div>${escapeHtml(eventName)} has no scheduled ensembles yet.</div>
+          <div class="hint">Add scheduled ensembles first, then return here for announcer scripts and stage flow.</div>
+          <div class="actions">
+            <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/flow">Open Schedule &amp; Flow</button>
+            <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/registrations">Open Registrations</button>
+          </div>
+        </div>
+      `;
+      bindAnnouncerWorkflowActions();
       return;
     }
 
@@ -230,7 +255,16 @@ export function createAdminAnnouncerController({
       state.admin.announcerCurrentIndex = -1;
       state.admin.announcerEventId = "";
       els.adminAnnouncerContent.innerHTML =
-        "<p class='hint'>Set an active event to load announcer notes.</p>";
+        `
+          <div class="empty stack">
+            <div>Set an active event to load announcer notes.</div>
+            <div class="hint">The announcer workspace follows the active event schedule.</div>
+            <div class="actions">
+              <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/settings">Open Settings</button>
+            </div>
+          </div>
+        `;
+      bindAnnouncerWorkflowActions();
       return;
     }
 
@@ -304,7 +338,16 @@ export function createAdminAnnouncerController({
       renderAnnouncerContent(rows, eventName);
     } catch (error) {
       const message = error?.message || "Unable to load announcer notes.";
-      els.adminAnnouncerContent.innerHTML = `<p class='hint'>${escapeHtml(String(message))}</p>`;
+      els.adminAnnouncerContent.innerHTML = `
+        <div class="empty stack">
+          <div>${escapeHtml(String(message))}</div>
+          <div class="actions">
+            <button type="button" class="ghost btn--sm" data-announcer-retry="1">Retry Announcer</button>
+            <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/flow">Open Schedule &amp; Flow</button>
+          </div>
+        </div>
+      `;
+      bindAnnouncerWorkflowActions();
     }
   }
 

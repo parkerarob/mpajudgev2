@@ -138,9 +138,10 @@ export function computePacketSummary(grade, submissions) {
           JUDGE_POSITIONS.sight,
         ];
 
-  const requiredComplete = requiredPositions.every((position) =>
-    isSubmissionComplete(submissions[position])
+  const blockingPositions = requiredPositions.filter((position) =>
+    !isSubmissionComplete(submissions[position])
   );
+  const requiredComplete = blockingPositions.length === 0;
   const requiredReleased = requiredPositions.every(
     (position) => submissions[position]?.status === STATUSES.released
   );
@@ -156,6 +157,7 @@ export function computePacketSummary(grade, submissions) {
   return {
     grade: normalizedGrade,
     requiredPositions,
+    blockingPositions,
     requiredComplete,
     requiredReleased,
     overall,

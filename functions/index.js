@@ -847,13 +847,25 @@ async function generateDirectorPacketExportInternal({
   const db = admin.firestore();
   const bucket = admin.storage().bucket();
   const positions = requiredPositionsForGrade(grade);
-  const submissionDocs = await Promise.all(
-      positions.map((position) => db.collection(COLLECTIONS.submissions).doc(`${eventId}_${ensembleId}_${position}`).get()),
-  );
+  const [officialDocs, submissionDocs] = await Promise.all([
+    Promise.all(
+        positions.map((position) =>
+          db.collection(COLLECTIONS.officialAssessments).doc(`${eventId}_${ensembleId}_${position}`).get(),
+        ),
+    ),
+    Promise.all(
+        positions.map((position) =>
+          db.collection(COLLECTIONS.submissions).doc(`${eventId}_${ensembleId}_${position}`).get(),
+        ),
+    ),
+  ]);
   const submissionsByPosition = {};
-  submissionDocs.forEach((docSnap, index) => {
-    const position = positions[index];
-    submissionsByPosition[position] = docSnap.exists ? docSnap.data() : null;
+  buildCanonicalPacketAssessments({
+    positions,
+    officialDocs,
+    submissionDocs,
+  }).forEach((item) => {
+    submissionsByPosition[item.position] = item.assessment;
   });
 
   const schoolId = String(submissionsByPosition[positions[0]]?.schoolId || "");
@@ -985,6 +997,27 @@ async function markDirectorPacketExportFailure({
     generatedBy: actorUid || "",
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, {merge: true});
+}
+
+async function loadCanonicalPacketAssessmentsForEvent({db, eventId, ensembleId, grade} = {}) {
+  const positions = requiredPositionsForGrade(grade);
+  const [officialDocs, submissionDocs] = await Promise.all([
+    Promise.all(
+        positions.map((position) =>
+          db.collection(COLLECTIONS.officialAssessments).doc(`${eventId}_${ensembleId}_${position}`).get(),
+        ),
+    ),
+    Promise.all(
+        positions.map((position) =>
+          db.collection(COLLECTIONS.submissions).doc(`${eventId}_${ensembleId}_${position}`).get(),
+        ),
+    ),
+  ]);
+  return buildCanonicalPacketAssessments({
+    positions,
+    officialDocs,
+    submissionDocs,
+  });
 }
 
 function buildMockCaptionsForForm(formType) {
@@ -1873,6 +1906,47 @@ function isSubmissionReady(submission) {
   return true;
 }
 
+function normalizeCanonicalPacketAssessment({official = null, submission = null} = {}) {
+  if (official) {
+    return {
+      ...(submission || {}),
+      ...official,
+      locked: true,
+      status: official.status === STATUSES.released ? STATUSES.released : STATUSES.submitted,
+      canonicalAudioStatus:
+        submission?.canonicalAudioStatus ||
+        CANONICAL_AUDIO_STATUS.ready,
+      canonicalAudioUrl:
+        official.audioUrl ||
+        submission?.canonicalAudioUrl ||
+        submission?.audioUrl ||
+        "",
+      canonicalAudioPath:
+        official.audioPath ||
+        submission?.canonicalAudioPath ||
+        submission?.audioPath ||
+        "",
+      canonicalAudioDurationSec:
+        Number(official.audioDurationSec || submission?.canonicalAudioDurationSec || submission?.audioDurationSec || 0),
+    };
+  }
+  return submission || null;
+}
+
+function buildCanonicalPacketAssessments({positions = [], officialDocs = [], submissionDocs = []} = {}) {
+  return positions.map((position, index) => {
+    const official = officialDocs[index]?.exists ? (officialDocs[index].data() || null) : null;
+    const submission = submissionDocs[index]?.exists ? (submissionDocs[index].data() || null) : null;
+    return {
+      position,
+      label: judgeLabelByPosition(position),
+      assessment: normalizeCanonicalPacketAssessment({official, submission}),
+      official,
+      submission,
+    };
+  });
+}
+
 function calculateCaptionTotal(captions = {}) {
   return Object.values(captions).reduce((sum, caption) => {
     const letter = caption?.gradeLetter || "";
@@ -1888,6 +1962,22 @@ function computeFinalRatingFromTotal(total) {
   if (total >= 25 && total <= 31) return {label: "IV", value: 4};
   if (total >= 32 && total <= 35) return {label: "V", value: 5};
   return {label: "N/A", value: null};
+}
+
+function normalizeReviewState(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "approved") return "approved";
+  if (normalized === "excluded") return "excluded";
+  if (normalized === "in_review") return "in_review";
+  return "pending";
+}
+
+function buildRawAssessmentId({packetId, rawAssessmentId} = {}) {
+  return String(rawAssessmentId || packetId || "").trim();
+}
+
+function buildOfficialAssessmentId({eventId, ensembleId, judgePosition} = {}) {
+  return `${String(eventId || "").trim()}_${String(ensembleId || "").trim()}_${String(judgePosition || "").trim()}`;
 }
 
 async function writePacketAudit(packetRef, {action, fromStatus, toStatus, actor}) {
@@ -2127,31 +2217,43 @@ async function deleteScheduledPacketGroup({
   const submissionRefs = positions.map((position) =>
     db.collection(COLLECTIONS.submissions).doc(`${eventId}_${ensembleId}_${position}`),
   );
-  const submissionSnaps = await Promise.all(submissionRefs.map((ref) => ref.get()));
-  const existingDocs = submissionSnaps.filter((docSnap) => docSnap.exists);
-  if (!existingDocs.length) {
+  const officialRefs = positions.map((position) =>
+    db.collection(COLLECTIONS.officialAssessments).doc(`${eventId}_${ensembleId}_${position}`),
+  );
+  const [submissionSnaps, officialSnaps] = await Promise.all([
+    Promise.all(submissionRefs.map((ref) => ref.get())),
+    Promise.all(officialRefs.map((ref) => ref.get())),
+  ]);
+  const submissionDocs = submissionSnaps.filter((docSnap) => docSnap.exists);
+  const officialDocs = officialSnaps.filter((docSnap) => docSnap.exists);
+  if (!submissionDocs.length && !officialDocs.length) {
     return {
       found: false,
       hasReleased: false,
       deletedSubmissions: 0,
+      deletedOfficialAssessments: 0,
       deletedPacketExport: 0,
     };
   }
 
-  const hasReleased = existingDocs.some((docSnap) => {
-    const submission = docSnap.data() || {};
-    return submission.status === STATUSES.released;
+  const canonicalAssessments = buildCanonicalPacketAssessments({
+    positions,
+    officialDocs: officialSnaps,
+    submissionDocs: submissionSnaps,
   });
+  const hasReleased = canonicalAssessments.some((item) => item.assessment?.status === STATUSES.released);
   if (hasReleased) {
     return {
       found: true,
       hasReleased: true,
       deletedSubmissions: 0,
+      deletedOfficialAssessments: 0,
       deletedPacketExport: 0,
     };
   }
 
-  const deletedSubmissions = await deleteDocsInBatches(db, existingDocs);
+  const deletedSubmissions = await deleteDocsInBatches(db, submissionDocs);
+  const deletedOfficialAssessments = await deleteDocsInBatches(db, officialDocs);
   let deletedPacketExport = 0;
   const exportRef = db
       .collection(COLLECTIONS.packetExports)
@@ -2166,6 +2268,7 @@ async function deleteScheduledPacketGroup({
     found: true,
     hasReleased: false,
     deletedSubmissions,
+    deletedOfficialAssessments,
     deletedPacketExport,
   };
 }
@@ -2879,6 +2982,8 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
             "",
         ).trim() :
         "";
+    let audioSegments = [];
+    const latestAudioUrl = String(packet.latestAudioUrl || "").trim();
     if (packetMode === ADJUDICATION_MODES.official) {
       if (!effectiveOfficialEventId || !effectiveOfficialJudgePosition) {
         throw new HttpsError(
@@ -2915,65 +3020,13 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
       }
       const sessionsQuery = packetRef.collection("sessions").orderBy("createdAt", "asc");
       const sessionsSnap = await tx.get(sessionsQuery);
-      const audioSegments = buildAudioSegmentsFromSessionSnapshots(sessionsSnap.docs);
-      const latestAudioUrl = String(packet.latestAudioUrl || "").trim();
+      audioSegments = buildAudioSegmentsFromSessionSnapshots(sessionsSnap.docs);
       if (!audioSegments.length && !latestAudioUrl) {
         throw new HttpsError(
             "failed-precondition",
             "Official adjudication requires at least one uploaded audio segment.",
         );
       }
-      const submissionId = `${effectiveOfficialEventId}_${nextEnsembleId}_${effectiveOfficialJudgePosition}`;
-      const submissionRef = db.collection(COLLECTIONS.submissions).doc(submissionId);
-      const submissionSnap = await tx.get(submissionRef);
-      const existingSubmission = submissionSnap.exists ? (submissionSnap.data() || {}) : {};
-      if (existingSubmission.locked === true && !isAdmin) {
-        throw new HttpsError(
-            "failed-precondition",
-            "Official submission is locked. Ask admin to unlock before resubmitting.",
-        );
-      }
-      tx.set(submissionRef, {
-        [FIELDS.submissions.status]: STATUSES.submitted,
-        [FIELDS.submissions.locked]: true,
-        [FIELDS.submissions.judgeUid]: request.auth.uid,
-        [FIELDS.submissions.judgeName]:
-          data.createdByJudgeName || packet.createdByJudgeName || existingSubmission.judgeName || "",
-        [FIELDS.submissions.judgeEmail]:
-          data.createdByJudgeEmail || packet.createdByJudgeEmail || existingSubmission.judgeEmail || "",
-        [FIELDS.submissions.judgeTitle]: existingSubmission.judgeTitle || "",
-        [FIELDS.submissions.judgeAffiliation]: existingSubmission.judgeAffiliation || "",
-        [FIELDS.submissions.schoolId]: nextSchoolId,
-        [FIELDS.submissions.eventId]: effectiveOfficialEventId,
-        [FIELDS.submissions.ensembleId]: nextEnsembleId,
-        [FIELDS.submissions.judgePosition]: effectiveOfficialJudgePosition,
-        [FIELDS.submissions.formType]:
-          (data.formType === FORM_TYPES.sight || data.formType === FORM_TYPES.stage) ?
-            data.formType :
-            (packet.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage),
-        [FIELDS.submissions.audioUrl]: canonicalAudio?.url || latestAudioUrl,
-        audioPath: canonicalAudio?.path || "",
-        audioSegments,
-        [FIELDS.submissions.audioDurationSec]: Number(
-            canonicalAudio?.durationSec || packet.tapeDurationSec || 0,
-        ),
-        canonicalAudioStatus: CANONICAL_AUDIO_STATUS.ready,
-        canonicalAudioPath: canonicalAudio?.path || "",
-        canonicalAudioUrl: canonicalAudio?.url || "",
-        canonicalAudioDurationSec: Number(
-            canonicalAudio?.durationSec || packet.tapeDurationSec || 0,
-        ),
-        [FIELDS.submissions.transcript]: String(data.transcriptFull || data.transcript || ""),
-        [FIELDS.submissions.captions]: captions,
-        [FIELDS.submissions.captionScoreTotal]: captionScoreTotal,
-        [FIELDS.submissions.computedFinalRatingJudge]: rating.value,
-        [FIELDS.submissions.computedFinalRatingLabel]: rating.label,
-        [FIELDS.submissions.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
-        [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
-        createdAt: submissionSnap.exists ?
-          (existingSubmission.createdAt || admin.firestore.FieldValue.serverTimestamp()) :
-          admin.firestore.FieldValue.serverTimestamp(),
-      }, {merge: true});
     }
     const incomingSnapshot =
       data.ensembleSnapshot && typeof data.ensembleSnapshot === "object" ?
@@ -3031,6 +3084,16 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
               `${String(data.officialEventId || packet.officialEventId || assignment?.eventId || packet.assignmentEventId || "")}_${nextEnsembleId}_${String(data.officialJudgePosition || packet.officialJudgePosition || assignment?.judgePosition || packet.judgePosition || "")}`,
           ) :
           "",
+      [FIELDS.packets.captureStatus]: STATUSES.submitted,
+      [FIELDS.packets.associationState]:
+        packetMode === ADJUDICATION_MODES.official &&
+        effectiveOfficialEventId &&
+        effectiveOfficialJudgePosition ?
+          "attached" :
+          "uncertain",
+      [FIELDS.packets.reviewState]: "pending",
+      [FIELDS.packets.officialAssessmentId]: "",
+      [FIELDS.packets.excludedReason]: "",
       [FIELDS.packets.transcript]: String(data.transcript || ""),
       [FIELDS.packets.transcriptFull]: String(data.transcriptFull || data.transcript || ""),
       [FIELDS.packets.captions]: captions,
@@ -3051,7 +3114,52 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
       [FIELDS.packets.releasedAt]: null,
       [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     };
+    const rawAssessmentId = buildRawAssessmentId({packetId});
+    const rawAssessmentRef = db.collection(COLLECTIONS.rawAssessments).doc(rawAssessmentId);
+    const rawAssessmentSnap = await tx.get(rawAssessmentRef);
+    const currentTranscript = String(data.transcriptFull || data.transcript || "").trim();
     tx.set(packetRef, payload, {merge: true});
+    tx.set(rawAssessmentRef, {
+      [FIELDS.rawAssessments.status]: STATUSES.submitted,
+      [FIELDS.rawAssessments.associationState]:
+        packetMode === ADJUDICATION_MODES.official &&
+        effectiveOfficialEventId &&
+        effectiveOfficialJudgePosition ?
+          "attached" :
+          "uncertain",
+      [FIELDS.rawAssessments.reviewState]: "pending",
+      [FIELDS.rawAssessments.packetId]: packetId,
+      [FIELDS.rawAssessments.officialAssessmentId]: "",
+      [FIELDS.rawAssessments.judgeUid]: request.auth.uid,
+      [FIELDS.rawAssessments.judgeName]:
+        data.createdByJudgeName || packet.createdByJudgeName || "",
+      [FIELDS.rawAssessments.judgeEmail]:
+        data.createdByJudgeEmail || packet.createdByJudgeEmail || "",
+      [FIELDS.rawAssessments.schoolId]: nextSchoolId,
+      [FIELDS.rawAssessments.eventId]: effectiveOfficialEventId,
+      [FIELDS.rawAssessments.ensembleId]: nextEnsembleId,
+      [FIELDS.rawAssessments.judgePosition]: effectiveOfficialJudgePosition,
+      [FIELDS.rawAssessments.formType]: nextFormType,
+      [FIELDS.rawAssessments.audioUrl]: canonicalAudio?.url || latestAudioUrl,
+      [FIELDS.rawAssessments.audioPath]: canonicalAudio?.path || "",
+      [FIELDS.rawAssessments.audioSegments]: audioSegments,
+      [FIELDS.rawAssessments.audioDurationSec]: Number(
+          canonicalAudio?.durationSec || packet.tapeDurationSec || 0,
+      ),
+      [FIELDS.rawAssessments.transcript]: currentTranscript,
+      [FIELDS.rawAssessments.writtenComments]: currentTranscript,
+      [FIELDS.rawAssessments.captions]: captions,
+      [FIELDS.rawAssessments.captionScoreTotal]: captionScoreTotal,
+      [FIELDS.rawAssessments.computedFinalRatingJudge]: rating.value,
+      [FIELDS.rawAssessments.computedFinalRatingLabel]: rating.label,
+      [FIELDS.rawAssessments.transcriptStatus]:
+        String(packet.transcriptStatus || data.transcriptStatus || (currentTranscript ? "complete" : "idle")),
+      [FIELDS.rawAssessments.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      [FIELDS.rawAssessments.createdAt]: rawAssessmentSnap.exists ?
+        (rawAssessmentSnap.data()?.createdAt || admin.firestore.FieldValue.serverTimestamp()) :
+        admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
   });
   await writePacketAudit(packetRef, {
     action: "submit",
@@ -3060,6 +3168,218 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
     actor: {uid: request.auth.uid, role: userRole || "judge"},
   });
   return {packetId, status: nextStatus, autoReleased: false};
+});
+
+exports.reassignRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const rawAssessmentId = buildRawAssessmentId({rawAssessmentId: data.rawAssessmentId});
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const judgePosition = String(data.judgePosition || "").trim();
+  const formType = data.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
+  if (!rawAssessmentId || !eventId || !ensembleId || !judgePosition) {
+    throw new HttpsError(
+        "invalid-argument",
+        "rawAssessmentId, eventId, ensembleId, and judgePosition are required.",
+    );
+  }
+  const db = admin.firestore();
+  const rawRef = db.collection(COLLECTIONS.rawAssessments).doc(rawAssessmentId);
+  const rawSnap = await rawRef.get();
+  if (!rawSnap.exists) {
+    throw new HttpsError("not-found", "Raw assessment not found.");
+  }
+  const raw = rawSnap.data() || {};
+  const schoolId = String(data.schoolId || raw.schoolId || "").trim();
+  await rawRef.set({
+    [FIELDS.rawAssessments.eventId]: eventId,
+    [FIELDS.rawAssessments.ensembleId]: ensembleId,
+    [FIELDS.rawAssessments.schoolId]: schoolId,
+    [FIELDS.rawAssessments.judgePosition]: judgePosition,
+    [FIELDS.rawAssessments.formType]: formType,
+    [FIELDS.rawAssessments.associationState]: "attached",
+    [FIELDS.rawAssessments.reviewState]: normalizeReviewState(raw.reviewState),
+    [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  const packetId = String(raw.packetId || "").trim();
+  if (packetId) {
+    await db.collection(COLLECTIONS.packets).doc(packetId).set({
+      [FIELDS.packets.officialEventId]: eventId,
+      [FIELDS.packets.ensembleId]: ensembleId,
+      [FIELDS.packets.schoolId]: schoolId,
+      [FIELDS.packets.officialJudgePosition]: judgePosition,
+      [FIELDS.packets.formType]: formType,
+      [FIELDS.packets.associationState]: "attached",
+      [FIELDS.packets.reviewState]: normalizeReviewState(raw.reviewState),
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  }
+  return {ok: true, rawAssessmentId};
+});
+
+exports.excludeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  const profile = await assertOpsLead(request);
+  const data = request.data || {};
+  const rawAssessmentId = buildRawAssessmentId({rawAssessmentId: data.rawAssessmentId});
+  const reason = String(data.reason || "").trim();
+  if (!rawAssessmentId) {
+    throw new HttpsError("invalid-argument", "rawAssessmentId is required.");
+  }
+  const db = admin.firestore();
+  const rawRef = db.collection(COLLECTIONS.rawAssessments).doc(rawAssessmentId);
+  const rawSnap = await rawRef.get();
+  if (!rawSnap.exists) {
+    throw new HttpsError("not-found", "Raw assessment not found.");
+  }
+  const raw = rawSnap.data() || {};
+  await rawRef.set({
+    [FIELDS.rawAssessments.status]: STATUSES.excluded,
+    [FIELDS.rawAssessments.reviewState]: "excluded",
+    excludedReason: reason,
+    [FIELDS.rawAssessments.reviewedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  const packetId = String(raw.packetId || "").trim();
+  if (packetId) {
+    await db.collection(COLLECTIONS.packets).doc(packetId).set({
+      [FIELDS.packets.reviewState]: "excluded",
+      [FIELDS.packets.captureStatus]: STATUSES.excluded,
+      [FIELDS.packets.excludedReason]: reason,
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await writePacketAudit(db.collection(COLLECTIONS.packets).doc(packetId), {
+      action: "exclude",
+      fromStatus: raw.status || null,
+      toStatus: STATUSES.excluded,
+      actor: {uid: request.auth.uid, role: getEffectiveRole(profile) || "admin"},
+    });
+  }
+  return {ok: true, rawAssessmentId};
+});
+
+exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  const profile = await assertOpsLead(request);
+  const data = request.data || {};
+  const rawAssessmentId = buildRawAssessmentId({rawAssessmentId: data.rawAssessmentId});
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const judgePosition = String(data.judgePosition || "").trim();
+  const formType = data.formType === FORM_TYPES.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
+  if (!rawAssessmentId || !eventId || !ensembleId || !judgePosition) {
+    throw new HttpsError(
+        "invalid-argument",
+        "rawAssessmentId, eventId, ensembleId, and judgePosition are required.",
+    );
+  }
+  const db = admin.firestore();
+  const rawRef = db.collection(COLLECTIONS.rawAssessments).doc(rawAssessmentId);
+  const rawSnap = await rawRef.get();
+  if (!rawSnap.exists) {
+    throw new HttpsError("not-found", "Raw assessment not found.");
+  }
+  const raw = rawSnap.data() || {};
+  const schoolId = String(data.schoolId || raw.schoolId || "").trim();
+  const officialAssessmentId = buildOfficialAssessmentId({eventId, ensembleId, judgePosition});
+  const officialRef = db.collection(COLLECTIONS.officialAssessments).doc(officialAssessmentId);
+  const submissionRef = db.collection(COLLECTIONS.submissions).doc(officialAssessmentId);
+  await db.runTransaction(async (tx) => {
+    const officialSnap = await tx.get(officialRef);
+    const officialExisting = officialSnap.exists ? (officialSnap.data() || {}) : {};
+    tx.set(officialRef, {
+      [FIELDS.officialAssessments.status]: "official",
+      [FIELDS.officialAssessments.releaseEligible]: true,
+      [FIELDS.officialAssessments.sourceRawAssessmentId]: rawAssessmentId,
+      [FIELDS.officialAssessments.judgeUid]: raw.judgeUid || "",
+      [FIELDS.officialAssessments.judgeName]: raw.judgeName || "",
+      [FIELDS.officialAssessments.judgeEmail]: raw.judgeEmail || "",
+      [FIELDS.officialAssessments.schoolId]: schoolId,
+      [FIELDS.officialAssessments.eventId]: eventId,
+      [FIELDS.officialAssessments.ensembleId]: ensembleId,
+      [FIELDS.officialAssessments.judgePosition]: judgePosition,
+      [FIELDS.officialAssessments.formType]: formType,
+      [FIELDS.officialAssessments.audioUrl]: raw.audioUrl || "",
+      [FIELDS.officialAssessments.audioPath]: raw.audioPath || "",
+      [FIELDS.officialAssessments.audioSegments]: raw.audioSegments || [],
+      [FIELDS.officialAssessments.audioDurationSec]: Number(raw.audioDurationSec || 0),
+      [FIELDS.officialAssessments.transcript]: raw.transcript || "",
+      [FIELDS.officialAssessments.writtenComments]:
+        raw.writtenComments || raw.transcript || "",
+      [FIELDS.officialAssessments.captions]: raw.captions || {},
+      [FIELDS.officialAssessments.captionScoreTotal]:
+        Number.isFinite(Number(raw.captionScoreTotal)) ? Number(raw.captionScoreTotal) : null,
+      [FIELDS.officialAssessments.computedFinalRatingJudge]:
+        Number.isFinite(Number(raw.computedFinalRatingJudge)) ? Number(raw.computedFinalRatingJudge) : null,
+      [FIELDS.officialAssessments.computedFinalRatingLabel]:
+        String(raw.computedFinalRatingLabel || "N/A"),
+      [FIELDS.officialAssessments.reviewedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      [FIELDS.officialAssessments.reviewedByUid]: request.auth.uid,
+      [FIELDS.officialAssessments.reviewedByName]:
+        profile.displayName || profile.email || request.auth.uid,
+      [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      [FIELDS.officialAssessments.createdAt]: officialSnap.exists ?
+        (officialExisting.createdAt || admin.firestore.FieldValue.serverTimestamp()) :
+        admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    tx.set(submissionRef, {
+      [FIELDS.submissions.status]: STATUSES.submitted,
+      [FIELDS.submissions.locked]: true,
+      [FIELDS.submissions.judgeUid]: raw.judgeUid || "",
+      [FIELDS.submissions.judgeName]: raw.judgeName || "",
+      [FIELDS.submissions.judgeEmail]: raw.judgeEmail || "",
+      [FIELDS.submissions.schoolId]: schoolId,
+      [FIELDS.submissions.eventId]: eventId,
+      [FIELDS.submissions.ensembleId]: ensembleId,
+      [FIELDS.submissions.judgePosition]: judgePosition,
+      [FIELDS.submissions.formType]: formType,
+      [FIELDS.submissions.audioUrl]: raw.audioUrl || "",
+      audioPath: raw.audioPath || "",
+      audioSegments: raw.audioSegments || [],
+      [FIELDS.submissions.audioDurationSec]: Number(raw.audioDurationSec || 0),
+      [FIELDS.submissions.transcript]: raw.transcript || "",
+      [FIELDS.submissions.captions]: raw.captions || {},
+      [FIELDS.submissions.captionScoreTotal]:
+        Number.isFinite(Number(raw.captionScoreTotal)) ? Number(raw.captionScoreTotal) : null,
+      [FIELDS.submissions.computedFinalRatingJudge]:
+        Number.isFinite(Number(raw.computedFinalRatingJudge)) ? Number(raw.computedFinalRatingJudge) : null,
+      [FIELDS.submissions.computedFinalRatingLabel]: String(raw.computedFinalRatingLabel || "N/A"),
+      [FIELDS.submissions.submittedAt]: raw.submittedAt || admin.firestore.FieldValue.serverTimestamp(),
+      [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    tx.set(rawRef, {
+      [FIELDS.rawAssessments.status]: STATUSES.officialized,
+      [FIELDS.rawAssessments.associationState]: "attached",
+      [FIELDS.rawAssessments.reviewState]: "approved",
+      [FIELDS.rawAssessments.officialAssessmentId]: officialAssessmentId,
+      [FIELDS.rawAssessments.eventId]: eventId,
+      [FIELDS.rawAssessments.ensembleId]: ensembleId,
+      [FIELDS.rawAssessments.schoolId]: schoolId,
+      [FIELDS.rawAssessments.judgePosition]: judgePosition,
+      [FIELDS.rawAssessments.formType]: formType,
+      [FIELDS.rawAssessments.reviewedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+  const packetId = String(raw.packetId || "").trim();
+  if (packetId) {
+    const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+    await packetRef.set({
+      [FIELDS.packets.officialAssessmentId]: officialAssessmentId,
+      [FIELDS.packets.reviewState]: "approved",
+      [FIELDS.packets.associationState]: "attached",
+      [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await writePacketAudit(packetRef, {
+      action: "officialize",
+      fromStatus: raw.status || null,
+      toStatus: STATUSES.officialized,
+      actor: {uid: request.auth.uid, role: getEffectiveRole(profile) || "admin"},
+    });
+  }
+  return {ok: true, rawAssessmentId, officialAssessmentId};
 });
 
 exports.lockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
@@ -3732,15 +4052,6 @@ exports.runEventPreflight = onCall(async (request) => {
     ranAt: admin.firestore.FieldValue.serverTimestamp(),
     ranBy: request.auth.uid,
   };
-  const nextWalkthroughStatus = walkthroughComplete ?
-    "complete" :
-    (hasWalkthroughActivity ? "in-progress" : "not-started");
-  const defaultWalkthroughNote = walkthroughComplete ?
-    "Walkthrough complete" :
-    (hasWalkthroughActivity ? "Walkthrough in progress" : "Walkthrough not started");
-  const nextWalkthroughNote = existingWalkthroughNote && existingWalkthroughStatus === nextWalkthroughStatus ?
-    existingWalkthroughNote :
-    defaultWalkthroughNote;
   const hasWalkthroughActivity =
     Boolean(existingStartedAt) ||
     Boolean(existingStartedBy) ||
@@ -3756,6 +4067,15 @@ exports.runEventPreflight = onCall(async (request) => {
           );
         },
     );
+  const nextWalkthroughStatus = walkthroughComplete ?
+    "complete" :
+    (hasWalkthroughActivity ? "in-progress" : "not-started");
+  const defaultWalkthroughNote = walkthroughComplete ?
+    "Walkthrough complete" :
+    (hasWalkthroughActivity ? "Walkthrough in progress" : "Walkthrough not started");
+  const nextWalkthroughNote = existingWalkthroughNote && existingWalkthroughStatus === nextWalkthroughStatus ?
+    existingWalkthroughNote :
+    defaultWalkthroughNote;
   const nextStartedAt = hasWalkthroughActivity ?
     (existingStartedAt || admin.firestore.FieldValue.serverTimestamp()) :
     null;
@@ -3975,6 +4295,7 @@ exports.cleanupTestArtifacts = onCall(async (request) => {
     activeEventSkipped: [],
     packetCandidates: 0,
     submissionCandidates: 0,
+    officialAssessmentCandidates: 0,
     audioResultCandidates: 0,
     packetExportCandidates: 0,
     deletedEvents: 0,
@@ -3983,6 +4304,7 @@ exports.cleanupTestArtifacts = onCall(async (request) => {
     deletedOpenPacketSessions: 0,
     deletedOpenPacketAuditDocs: 0,
     deletedSubmissions: 0,
+    deletedOfficialAssessments: 0,
     deletedAudioResults: 0,
     deletedPacketExports: 0,
     deletedScheduleRows: 0,
@@ -4094,6 +4416,23 @@ exports.cleanupTestArtifacts = onCall(async (request) => {
   }
   summary.submissionCandidates = submissionsById.size;
 
+  const officialAssessmentsById = new Map();
+  const addOfficialAssessments = async (queryRef) => {
+    const snap = await queryRef.get();
+    snap.docs.forEach((docSnap) => officialAssessmentsById.set(docSnap.id, docSnap));
+  };
+  for (const eventId of eventIds) {
+    await addOfficialAssessments(
+        db.collection(COLLECTIONS.officialAssessments).where(FIELDS.officialAssessments.eventId, "==", eventId),
+    );
+  }
+  for (const schoolId of schoolIds) {
+    await addOfficialAssessments(
+        db.collection(COLLECTIONS.officialAssessments).where(FIELDS.officialAssessments.schoolId, "==", schoolId),
+    );
+  }
+  summary.officialAssessmentCandidates = officialAssessmentsById.size;
+
   const audioResultsById = new Map();
   const addAudioResults = async (queryRef) => {
     const snap = await queryRef.get();
@@ -4147,6 +4486,7 @@ exports.cleanupTestArtifacts = onCall(async (request) => {
   }
 
   summary.deletedSubmissions = await deleteDocsInBatches(db, Array.from(submissionsById.values()));
+  summary.deletedOfficialAssessments = await deleteDocsInBatches(db, Array.from(officialAssessmentsById.values()));
   summary.deletedAudioResults = await deleteDocsInBatches(db, Array.from(audioResultsById.values()));
   summary.deletedPacketExports = await deleteDocsInBatches(db, Array.from(packetExportsById.values()));
 
@@ -4239,6 +4579,7 @@ exports.cleanupRehearsalArtifacts = onCall(async (request) => {
   let deletedScheduledPackets = 0;
   let skippedReleasedScheduledPackets = 0;
   let deletedSubmissions = 0;
+  let deletedOfficialAssessments = 0;
   let deletedPacketExports = 0;
 
   const [assignmentPacketsSnap, officialPacketsSnap] = await Promise.all([
@@ -4270,22 +4611,29 @@ exports.cleanupRehearsalArtifacts = onCall(async (request) => {
     deletedOpenPacketAuditDocs += deletionResult.deletedAuditCount;
   }
 
-  const submissionsSnap = await db
-      .collection(COLLECTIONS.submissions)
-      .where(FIELDS.submissions.eventId, "==", eventId)
-      .get();
+  const [submissionsSnap, officialAssessmentsSnap] = await Promise.all([
+    db
+        .collection(COLLECTIONS.submissions)
+        .where(FIELDS.submissions.eventId, "==", eventId)
+        .get(),
+    db
+        .collection(COLLECTIONS.officialAssessments)
+        .where(FIELDS.officialAssessments.eventId, "==", eventId)
+        .get(),
+  ]);
   const scheduledGroups = new Map();
-  submissionsSnap.forEach((docSnap) => {
-    const submission = docSnap.data() || {};
-    const ensembleId = String(submission.ensembleId || "").trim();
+  const registerScheduledGroup = (item = {}) => {
+    const ensembleId = String(item.ensembleId || "").trim();
     if (!ensembleId) return;
     if (!scheduledGroups.has(ensembleId)) {
       scheduledGroups.set(ensembleId, {ensembleId, hasReleased: false});
     }
-    if (submission.status === STATUSES.released) {
+    if (item.status === STATUSES.released) {
       scheduledGroups.get(ensembleId).hasReleased = true;
     }
-  });
+  };
+  submissionsSnap.forEach((docSnap) => registerScheduledGroup(docSnap.data() || {}));
+  officialAssessmentsSnap.forEach((docSnap) => registerScheduledGroup(docSnap.data() || {}));
   for (const group of scheduledGroups.values()) {
     if (group.hasReleased) {
       skippedReleasedScheduledPackets += 1;
@@ -4300,9 +4648,10 @@ exports.cleanupRehearsalArtifacts = onCall(async (request) => {
       if (result.hasReleased) skippedReleasedScheduledPackets += 1;
       continue;
     }
-    if (result.deletedSubmissions > 0) {
+    if (result.deletedSubmissions > 0 || result.deletedOfficialAssessments > 0) {
       deletedScheduledPackets += 1;
       deletedSubmissions += result.deletedSubmissions;
+      deletedOfficialAssessments += result.deletedOfficialAssessments;
       deletedPacketExports += result.deletedPacketExport;
     }
   }
@@ -4323,6 +4672,7 @@ exports.cleanupRehearsalArtifacts = onCall(async (request) => {
     deletedScheduledPackets,
     skippedReleasedScheduledPackets,
     deletedSubmissions,
+    deletedOfficialAssessments,
     deletedPacketExports,
   };
 });
@@ -4339,6 +4689,7 @@ exports.deleteAllUnreleasedPackets = onCall(async (request) => {
   let deletedScheduledPackets = 0;
   let skippedReleasedScheduledPackets = 0;
   let deletedSubmissions = 0;
+  let deletedOfficialAssessments = 0;
   let deletedPacketExports = 0;
 
   const openPacketsSnap = await db.collection(COLLECTIONS.packets).get();
@@ -4360,22 +4711,26 @@ exports.deleteAllUnreleasedPackets = onCall(async (request) => {
     deletedOpenPacketAuditDocs += deletionResult.deletedAuditCount;
   }
 
-  const submissionsSnap = await db.collection(COLLECTIONS.submissions).get();
+  const [submissionsSnap, officialAssessmentsSnap] = await Promise.all([
+    db.collection(COLLECTIONS.submissions).get(),
+    db.collection(COLLECTIONS.officialAssessments).get(),
+  ]);
   const scheduledGroups = new Map();
-  submissionsSnap.forEach((docSnap) => {
-    const submission = docSnap.data() || {};
-    const eventId = String(submission.eventId || "").trim();
-    const ensembleId = String(submission.ensembleId || "").trim();
+  const registerScheduledGroup = (item = {}) => {
+    const eventId = String(item.eventId || "").trim();
+    const ensembleId = String(item.ensembleId || "").trim();
     if (!eventId || !ensembleId) return;
     const key = `${eventId}__${ensembleId}`;
     if (!scheduledGroups.has(key)) {
       scheduledGroups.set(key, {eventId, ensembleId, hasReleased: false});
     }
     const group = scheduledGroups.get(key);
-    if (submission.status === STATUSES.released) {
+    if (item.status === STATUSES.released) {
       group.hasReleased = true;
     }
-  });
+  };
+  submissionsSnap.forEach((docSnap) => registerScheduledGroup(docSnap.data() || {}));
+  officialAssessmentsSnap.forEach((docSnap) => registerScheduledGroup(docSnap.data() || {}));
 
   for (const group of scheduledGroups.values()) {
     if (group.hasReleased) {
@@ -4391,9 +4746,10 @@ exports.deleteAllUnreleasedPackets = onCall(async (request) => {
       if (result.hasReleased) skippedReleasedScheduledPackets += 1;
       continue;
     }
-    if (result.deletedSubmissions > 0) {
+    if (result.deletedSubmissions > 0 || result.deletedOfficialAssessments > 0) {
       deletedScheduledPackets += 1;
       deletedSubmissions += result.deletedSubmissions;
+      deletedOfficialAssessments += result.deletedOfficialAssessments;
       deletedPacketExports += result.deletedPacketExport;
     }
   }
@@ -4407,6 +4763,7 @@ exports.deleteAllUnreleasedPackets = onCall(async (request) => {
     deletedScheduledPackets,
     skippedReleasedScheduledPackets,
     deletedSubmissions,
+    deletedOfficialAssessments,
     deletedPacketExports,
   });
 
@@ -4419,6 +4776,7 @@ exports.deleteAllUnreleasedPackets = onCall(async (request) => {
     deletedScheduledPackets,
     skippedReleasedScheduledPackets,
     deletedSubmissions,
+    deletedOfficialAssessments,
     deletedPacketExports,
   };
 });
@@ -4719,17 +5077,24 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
     const submissionId = `${eventId}_${ensembleId}_${position}`;
     return db.collection(COLLECTIONS.submissions).doc(submissionId);
   });
+  const officialRefs = positions.map((position) => {
+    const assessmentId = `${eventId}_${ensembleId}_${position}`;
+    return db.collection(COLLECTIONS.officialAssessments).doc(assessmentId);
+  });
   let schoolId = "";
   await db.runTransaction(async (tx) => {
     const submissionDocs = await Promise.all(submissionRefs.map((ref) => tx.get(ref)));
-    const submissions = submissionDocs.map((docSnap) =>
-      docSnap.exists ? docSnap.data() : null,
-    );
-    if (!submissions.every((submission) => isSubmissionReady(submission))) {
-      const blockers = submissions.map((submission, index) => ({
-        position: positions[index],
-        label: judgeLabelByPosition(positions[index]),
-        ready: isSubmissionReady(submission),
+    const officialDocs = await Promise.all(officialRefs.map((ref) => tx.get(ref)));
+    const assessments = buildCanonicalPacketAssessments({
+      positions,
+      officialDocs,
+      submissionDocs,
+    });
+    if (!assessments.every((item) => isSubmissionReady(item.assessment))) {
+      const blockers = assessments.map((item) => ({
+        position: item.position,
+        label: item.label,
+        ready: isSubmissionReady(item.assessment),
       })).filter((item) => !item.ready);
       throw new HttpsError(
           "failed-precondition",
@@ -4740,9 +5105,9 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
 
     if (grade === "I") {
       const stageScores = [
-        submissions[0]?.computedFinalRatingJudge,
-        submissions[1]?.computedFinalRatingJudge,
-        submissions[2]?.computedFinalRatingJudge,
+        assessments[0]?.assessment?.computedFinalRatingJudge,
+        assessments[1]?.assessment?.computedFinalRatingJudge,
+        assessments[2]?.assessment?.computedFinalRatingJudge,
       ];
       if (stageScores.some((value) => typeof value !== "number")) {
         throw new HttpsError(
@@ -4758,13 +5123,64 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
         );
       }
     }
-    schoolId = String(submissions[0]?.schoolId || "");
-    submissionRefs.forEach((ref) => {
-      tx.update(ref, {
+    schoolId = String(
+        assessments.find((item) => item.assessment?.schoolId)?.assessment?.schoolId || "",
+    );
+    assessments.forEach((item, index) => {
+      const canonical = item.assessment || {};
+      tx.set(submissionRefs[index], {
         [FIELDS.submissions.status]: STATUSES.released,
+        [FIELDS.submissions.locked]: true,
+        [FIELDS.submissions.judgeUid]: canonical.judgeUid || "",
+        [FIELDS.submissions.judgeName]: canonical.judgeName || "",
+        [FIELDS.submissions.judgeEmail]: canonical.judgeEmail || "",
+        [FIELDS.submissions.schoolId]: canonical.schoolId || "",
+        [FIELDS.submissions.eventId]: canonical.eventId || eventId,
+        [FIELDS.submissions.ensembleId]: canonical.ensembleId || ensembleId,
+        [FIELDS.submissions.judgePosition]: canonical.judgePosition || item.position,
+        [FIELDS.submissions.formType]: canonical.formType || (
+          item.position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage
+        ),
+        [FIELDS.submissions.audioUrl]:
+          canonical.audioUrl ||
+          canonical.canonicalAudioUrl ||
+          "",
+        audioPath:
+          canonical.audioPath ||
+          canonical.canonicalAudioPath ||
+          "",
+        [FIELDS.submissions.audioSegments]: canonical.audioSegments || [],
+        [FIELDS.submissions.audioDurationSec]: Number(
+            canonical.audioDurationSec ||
+            canonical.canonicalAudioDurationSec ||
+            0,
+        ),
+        [FIELDS.submissions.transcript]: canonical.transcript || "",
+        [FIELDS.submissions.captions]: canonical.captions || {},
+        [FIELDS.submissions.captionScoreTotal]:
+          Number.isFinite(Number(canonical.captionScoreTotal)) ? Number(canonical.captionScoreTotal) : null,
+        [FIELDS.submissions.computedFinalRatingJudge]:
+          Number.isFinite(Number(canonical.computedFinalRatingJudge)) ?
+              Number(canonical.computedFinalRatingJudge) :
+              null,
+        [FIELDS.submissions.computedFinalRatingLabel]:
+          String(canonical.computedFinalRatingLabel || "N/A"),
+        submittedAt:
+          canonical.submittedAt ||
+          admin.firestore.FieldValue.serverTimestamp(),
         releasedAt: admin.firestore.FieldValue.serverTimestamp(),
         releasedBy: request.auth.uid,
-      });
+        [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    });
+    officialDocs.forEach((docSnap, index) => {
+      if (!docSnap.exists) return;
+      tx.set(officialRefs[index], {
+        [FIELDS.officialAssessments.status]: STATUSES.released,
+        [FIELDS.officialAssessments.releasedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        releasedBy: request.auth.uid,
+        [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
     });
   });
   try {
@@ -4815,18 +5231,25 @@ exports.unreleasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => 
     const submissionId = `${eventId}_${ensembleId}_${position}`;
     return db.collection(COLLECTIONS.submissions).doc(submissionId);
   });
+  const officialRefs = positions.map((position) => {
+    const assessmentId = `${eventId}_${ensembleId}_${position}`;
+    return db.collection(COLLECTIONS.officialAssessments).doc(assessmentId);
+  });
   await db.runTransaction(async (tx) => {
     const submissionDocs = await Promise.all(submissionRefs.map((ref) => tx.get(ref)));
-    const submissions = submissionDocs.map((docSnap) =>
-      docSnap.exists ? docSnap.data() : null,
-    );
+    const officialDocs = await Promise.all(officialRefs.map((ref) => tx.get(ref)));
+    const assessments = buildCanonicalPacketAssessments({
+      positions,
+      officialDocs,
+      submissionDocs,
+    });
     if (
-      !submissions.every((submission) => submission?.status === STATUSES.released)
+      !assessments.every((item) => item.assessment?.status === STATUSES.released)
     ) {
-      const blockers = submissions.map((submission, index) => ({
-        position: positions[index],
-        label: judgeLabelByPosition(positions[index]),
-        status: String(submission?.status || "missing"),
+      const blockers = assessments.map((item) => ({
+        position: item.position,
+        label: item.label,
+        status: String(item.assessment?.status || "missing"),
       })).filter((item) => item.status !== STATUSES.released);
       throw new HttpsError(
           "failed-precondition",
@@ -4834,12 +5257,61 @@ exports.unreleasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => 
           {blockers},
       );
     }
-    submissionRefs.forEach((ref) => {
-      tx.update(ref, {
+    assessments.forEach((item, index) => {
+      const canonical = item.assessment || {};
+      tx.set(submissionRefs[index], {
         [FIELDS.submissions.status]: STATUSES.submitted,
+        [FIELDS.submissions.locked]: true,
+        [FIELDS.submissions.judgeUid]: canonical.judgeUid || "",
+        [FIELDS.submissions.judgeName]: canonical.judgeName || "",
+        [FIELDS.submissions.judgeEmail]: canonical.judgeEmail || "",
+        [FIELDS.submissions.schoolId]: canonical.schoolId || "",
+        [FIELDS.submissions.eventId]: canonical.eventId || eventId,
+        [FIELDS.submissions.ensembleId]: canonical.ensembleId || ensembleId,
+        [FIELDS.submissions.judgePosition]: canonical.judgePosition || item.position,
+        [FIELDS.submissions.formType]: canonical.formType || (
+          item.position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage
+        ),
+        [FIELDS.submissions.audioUrl]:
+          canonical.audioUrl ||
+          canonical.canonicalAudioUrl ||
+          "",
+        audioPath:
+          canonical.audioPath ||
+          canonical.canonicalAudioPath ||
+          "",
+        [FIELDS.submissions.audioSegments]: canonical.audioSegments || [],
+        [FIELDS.submissions.audioDurationSec]: Number(
+            canonical.audioDurationSec ||
+            canonical.canonicalAudioDurationSec ||
+            0,
+        ),
+        [FIELDS.submissions.transcript]: canonical.transcript || "",
+        [FIELDS.submissions.captions]: canonical.captions || {},
+        [FIELDS.submissions.captionScoreTotal]:
+          Number.isFinite(Number(canonical.captionScoreTotal)) ? Number(canonical.captionScoreTotal) : null,
+        [FIELDS.submissions.computedFinalRatingJudge]:
+          Number.isFinite(Number(canonical.computedFinalRatingJudge)) ?
+              Number(canonical.computedFinalRatingJudge) :
+              null,
+        [FIELDS.submissions.computedFinalRatingLabel]:
+          String(canonical.computedFinalRatingLabel || "N/A"),
+        submittedAt:
+          canonical.submittedAt ||
+          admin.firestore.FieldValue.serverTimestamp(),
         releasedAt: admin.firestore.FieldValue.delete(),
         releasedBy: admin.firestore.FieldValue.delete(),
-      });
+        [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    });
+    officialDocs.forEach((docSnap, index) => {
+      if (!docSnap.exists) return;
+      tx.set(officialRefs[index], {
+        [FIELDS.officialAssessments.status]: "official",
+        [FIELDS.officialAssessments.releasedAt]: admin.firestore.FieldValue.delete(),
+        releasedBy: admin.firestore.FieldValue.delete(),
+        [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
     });
   });
   const batch = db.batch();
@@ -4961,12 +5433,61 @@ exports.getDirectorPacketAssets = onCall(async (request) => {
   const exportRef = db
       .collection(COLLECTIONS.packetExports)
       .doc(buildDirectorPacketExportId(eventId, ensembleId));
-  const exportSnap = await exportRef.get();
+  let exportSnap = await exportRef.get();
+  let exportData = exportSnap.exists ? (exportSnap.data() || {}) : {};
+  let schoolId = String(exportData.schoolId || "");
+
+  if (!exportSnap.exists || String(exportData.status || "") !== "ready") {
+    const grade = await resolvePerformanceGrade(eventId, ensembleId);
+    if (grade) {
+      const assessments = await loadCanonicalPacketAssessmentsForEvent({
+        db,
+        eventId,
+        ensembleId,
+        grade,
+      });
+      schoolId = String(
+          schoolId ||
+          assessments.find((item) => item.assessment?.schoolId)?.assessment?.schoolId ||
+          "",
+      );
+      if (!isAdmin) {
+        if (role !== "director") {
+          throw new HttpsError("permission-denied", "Not authorized.");
+        }
+        if (!schoolId || String(user.schoolId || "") !== schoolId) {
+          throw new HttpsError("permission-denied", "Not authorized for this school.");
+        }
+      }
+      const releasable = assessments.length > 0 &&
+        assessments.every((item) => item.assessment?.status === STATUSES.released);
+      if (releasable) {
+        try {
+          await generateDirectorPacketExportInternal({
+            eventId,
+            ensembleId,
+            grade,
+            actorUid: request.auth.uid,
+          });
+        } catch (error) {
+          await markDirectorPacketExportFailure({
+            eventId,
+            ensembleId,
+            schoolId,
+            error: error?.message || String(error),
+            actorUid: request.auth.uid,
+          });
+        }
+        exportSnap = await exportRef.get();
+        exportData = exportSnap.exists ? (exportSnap.data() || {}) : {};
+        schoolId = String(exportData.schoolId || schoolId || "");
+      }
+    }
+  }
+
   if (!exportSnap.exists) {
     throw new HttpsError("not-found", "Packet assets not found.");
   }
-  const exportData = exportSnap.data() || {};
-  const schoolId = String(exportData.schoolId || "");
   if (!isAdmin) {
     if (role !== "director") {
       throw new HttpsError("permission-denied", "Not authorized.");
@@ -5045,6 +5566,7 @@ exports.attachManualPacketAudio = onCall(async (request) => {
     }
     const submissionId = `${eventId}_${ensembleId}_${judgePosition}`;
     const submissionRef = db.collection(COLLECTIONS.submissions).doc(submissionId);
+    const officialRef = db.collection(COLLECTIONS.officialAssessments).doc(submissionId);
     const submissionSnap = await submissionRef.get();
     if (!submissionSnap.exists) {
       throw new HttpsError("not-found", "Submission not found for that packet position.");
@@ -5055,6 +5577,15 @@ exports.attachManualPacketAudio = onCall(async (request) => {
       supplementalAudioDurationSec: Number.isFinite(durationSec) ? durationSec : 0,
       [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     }, {merge: true});
+    const officialSnap = await officialRef.get();
+    if (officialSnap.exists) {
+      await officialRef.set({
+        supplementalAudioUrl: audioUrl,
+        supplementalAudioPath: audioPath,
+        supplementalAudioDurationSec: Number.isFinite(durationSec) ? durationSec : 0,
+        [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
 
     const exportRef = db
         .collection(COLLECTIONS.packetExports)
@@ -5248,6 +5779,7 @@ exports.repairManualAudioOverrides = onCall(async (request) => {
     dryRun,
     submissionsScanned: 0,
     submissionsUpdated: 0,
+    officialAssessmentsUpdated: 0,
     packetsScanned: 0,
     packetsUpdated: 0,
     skippedNoCanonical: 0,
@@ -5290,11 +5822,27 @@ exports.repairManualAudioOverrides = onCall(async (request) => {
       audioPath: canonicalPath,
       [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     };
+    const officialRef = db.collection(COLLECTIONS.officialAssessments).doc(submissionId);
+    const officialSnap = await officialRef.get();
+    const officialPatch = {
+      supplementalAudioPath: currentPath,
+      supplementalAudioUrl: String(submission.audioUrl || ""),
+      supplementalAudioDurationSec: Number(submission.audioDurationSec || 0),
+      [FIELDS.officialAssessments.audioUrl]: canonicalUrl,
+      [FIELDS.officialAssessments.audioPath]: canonicalPath,
+      [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    };
     summary.samples.push({type: "submission", id: submissionId});
     if (!dryRun) {
       await docSnap.ref.set(patch, {merge: true});
+      if (officialSnap.exists) {
+        await officialRef.set(officialPatch, {merge: true});
+      }
     }
     summary.submissionsUpdated += 1;
+    if (officialSnap.exists) {
+      summary.officialAssessmentsUpdated += 1;
+    }
   }
 
   const packetsSnap = await db.collection(COLLECTIONS.packets).get();
@@ -5373,6 +5921,7 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
     packetsScanned: 0,
     packetsUpdated: 0,
     submissionsUpdated: 0,
+    officialAssessmentsUpdated: 0,
     exportsUpdated: 0,
     skippedNoSubmission: 0,
     skippedNoSessions: 0,
@@ -5430,6 +5979,8 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
 
     const submissionRef = db.collection(COLLECTIONS.submissions).doc(officialSubmissionId);
     const submissionSnap = await submissionRef.get();
+    const officialRef = db.collection(COLLECTIONS.officialAssessments).doc(officialSubmissionId);
+    const officialSnap = await officialRef.get();
     if (!submissionSnap.exists) {
       summary.skippedNoSubmission += 1;
       continue;
@@ -5442,6 +5993,13 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
       [FIELDS.submissions.audioSegments]: audioSegments,
       [FIELDS.submissions.audioDurationSec]: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
       [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    const officialPatch = {
+      [FIELDS.officialAssessments.audioPath]: primaryAudio?.audioPath || String(officialSnap.data()?.audioPath || ""),
+      [FIELDS.officialAssessments.audioUrl]: primaryAudio?.audioUrl || String(officialSnap.data()?.audioUrl || ""),
+      [FIELDS.officialAssessments.audioSegments]: audioSegments,
+      [FIELDS.officialAssessments.audioDurationSec]: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
+      [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     };
 
     const eventId = String(submission.eventId || packet.officialEventId || "").trim();
@@ -5466,6 +6024,9 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
 
     if (!dryRun) {
       await submissionRef.set(submissionPatch, {merge: true});
+      if (officialSnap.exists) {
+        await officialRef.set(officialPatch, {merge: true});
+      }
       if (exportPatch) {
         const exportRef = db
             .collection(COLLECTIONS.packetExports)
@@ -5496,6 +6057,9 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
       }
     }
     summary.submissionsUpdated += 1;
+    if (officialSnap.exists) {
+      summary.officialAssessmentsUpdated += 1;
+    }
     if (exportPatch) {
       summary.exportsUpdated += 1;
     }
@@ -5713,29 +6277,46 @@ exports.unlockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
   const submissionRef = db
       .collection(COLLECTIONS.submissions)
       .doc(submissionId);
+  const officialRef = db
+      .collection(COLLECTIONS.officialAssessments)
+      .doc(submissionId);
   await db.runTransaction(async (tx) => {
-    const submissionSnap = await tx.get(submissionRef);
-    if (!submissionSnap.exists) {
+    const [submissionSnap, officialSnap] = await Promise.all([
+      tx.get(submissionRef),
+      tx.get(officialRef),
+    ]);
+    if (!submissionSnap.exists && !officialSnap.exists) {
       throw new HttpsError("not-found", "Submission not found.");
     }
-    const submission = submissionSnap.data() || {};
-    if (submission.status !== STATUSES.submitted) {
+    const canonical = officialSnap.exists ? officialSnap.data() || {} : submissionSnap.data() || {};
+    if (canonical.status !== STATUSES.submitted && canonical.status !== "official") {
       throw new HttpsError(
           "failed-precondition",
-          "Only submitted packets can be unlocked.",
+          "Only submitted or officialized packets can be unlocked.",
       );
     }
-    if (submission.locked !== true) {
+    if (canonical.locked !== true) {
       throw new HttpsError(
           "failed-precondition",
           "Submission is already unlocked.",
       );
     }
-    tx.update(submissionRef, {
-      [FIELDS.submissions.locked]: false,
-      unlockedAt: admin.firestore.FieldValue.serverTimestamp(),
-      unlockedBy: request.auth.uid,
-    });
+    const unlockedAt = admin.firestore.FieldValue.serverTimestamp();
+    if (submissionSnap.exists) {
+      tx.update(submissionRef, {
+        [FIELDS.submissions.locked]: false,
+        unlockedAt,
+        unlockedBy: request.auth.uid,
+      });
+    }
+    if (officialSnap.exists) {
+      tx.update(officialRef, {
+        [FIELDS.officialAssessments.locked]: false,
+        unlockedAt,
+        unlockedBy: request.auth.uid,
+        [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
   });
   return {locked: false};
 });
@@ -5759,27 +6340,45 @@ exports.lockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
   const submissionRef = db
       .collection(COLLECTIONS.submissions)
       .doc(submissionId);
+  const officialRef = db
+      .collection(COLLECTIONS.officialAssessments)
+      .doc(submissionId);
   await db.runTransaction(async (tx) => {
-    const submissionSnap = await tx.get(submissionRef);
-    if (!submissionSnap.exists) {
+    const [submissionSnap, officialSnap] = await Promise.all([
+      tx.get(submissionRef),
+      tx.get(officialRef),
+    ]);
+    if (!submissionSnap.exists && !officialSnap.exists) {
       throw new HttpsError("not-found", "Submission not found.");
     }
-    const submission = submissionSnap.data() || {};
-    if (submission.status !== STATUSES.submitted && submission.status !== STATUSES.released) {
+    const canonical = officialSnap.exists ? officialSnap.data() || {} : submissionSnap.data() || {};
+    if (
+      canonical.status !== STATUSES.submitted &&
+      canonical.status !== STATUSES.released &&
+      canonical.status !== "official"
+    ) {
       throw new HttpsError(
           "failed-precondition",
-          "Only submitted or released submissions can be locked.",
+          "Only submitted, officialized, or released submissions can be locked.",
       );
     }
-    if (submission.locked === true) {
+    if (canonical.locked === true) {
       throw new HttpsError(
           "failed-precondition",
           "Submission is already locked.",
       );
     }
-    tx.update(submissionRef, {
-      [FIELDS.submissions.locked]: true,
-    });
+    if (submissionSnap.exists) {
+      tx.update(submissionRef, {
+        [FIELDS.submissions.locked]: true,
+      });
+    }
+    if (officialSnap.exists) {
+      tx.update(officialRef, {
+        [FIELDS.officialAssessments.locked]: true,
+        [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
   });
   return {locked: true};
 });
@@ -5927,10 +6526,15 @@ async function collectDeleteUserBlockers({
 
   const [
     submissionsSnap,
+    officialAssessmentsSnap,
     packetsSnap,
   ] = await Promise.all([
     db.collection(COLLECTIONS.submissions)
         .where(FIELDS.submissions.judgeUid, "==", targetUid)
+        .limit(1)
+        .get(),
+    db.collection(COLLECTIONS.officialAssessments)
+        .where(FIELDS.officialAssessments.judgeUid, "==", targetUid)
         .limit(1)
         .get(),
     db.collection(COLLECTIONS.packets)
@@ -5944,6 +6548,13 @@ async function collectDeleteUserBlockers({
       code: "submissions-exist",
       message: "User still owns one or more submissions.",
       details: {sampleSubmissionId: submissionsSnap.docs[0].id},
+    });
+  }
+  if (!officialAssessmentsSnap.empty) {
+    blockers.push({
+      code: "official-assessments-exist",
+      message: "User still owns one or more official assessments.",
+      details: {sampleOfficialAssessmentId: officialAssessmentsSnap.docs[0].id},
     });
   }
   if (!packetsSnap.empty) {
@@ -6346,6 +6957,18 @@ exports.deleteEnsemble = onCall(async (request) => {
       );
     }
 
+    const officialAssessmentsSnap = await db
+        .collection(COLLECTIONS.officialAssessments)
+        .where(FIELDS.officialAssessments.ensembleId, "==", ensembleId)
+        .limit(1)
+        .get();
+    if (!officialAssessmentsSnap.empty) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Official assessments exist for this ensemble.",
+      );
+    }
+
     await ensembleRef.delete();
     return {deleted: true, forced: false};
   }
@@ -6353,6 +6976,7 @@ exports.deleteEnsemble = onCall(async (request) => {
   let deletedEntries = 0;
   let deletedSchedule = 0;
   let deletedSubmissions = 0;
+  let deletedOfficialAssessments = 0;
   let deletedPacketExports = 0;
   let deletedPackets = 0;
 
@@ -6394,6 +7018,19 @@ exports.deleteEnsemble = onCall(async (request) => {
       return !rowSchoolId || rowSchoolId === schoolId;
     });
     deletedSubmissions += await deleteDocsInBatches(targetDocs);
+  }
+
+  const officialAssessmentsSnap = await db
+      .collection(COLLECTIONS.officialAssessments)
+      .where(FIELDS.officialAssessments.ensembleId, "==", ensembleId)
+      .get();
+  if (!officialAssessmentsSnap.empty) {
+    const targetDocs = officialAssessmentsSnap.docs.filter((docSnap) => {
+      const row = docSnap.data() || {};
+      const rowSchoolId = String(row.schoolId || "");
+      return !rowSchoolId || rowSchoolId === schoolId;
+    });
+    deletedOfficialAssessments += await deleteDocsInBatches(targetDocs);
   }
 
   const packetExportsSnap = await db
@@ -6439,6 +7076,7 @@ exports.deleteEnsemble = onCall(async (request) => {
     deletedEntries,
     deletedSchedule,
     deletedSubmissions,
+    deletedOfficialAssessments,
     deletedPackets,
     deletedPacketExports,
     actorUid: request.auth.uid,
@@ -6450,6 +7088,7 @@ exports.deleteEnsemble = onCall(async (request) => {
     deletedEntries,
     deletedSchedule,
     deletedSubmissions,
+    deletedOfficialAssessments,
     deletedPackets,
     deletedPacketExports,
   };
@@ -6885,6 +7524,30 @@ exports.deleteSchool = onCall(async (request) => {
     );
   }
 
+  const submissionsSnap = await db
+      .collection(COLLECTIONS.submissions)
+      .where(FIELDS.submissions.schoolId, "==", schoolId)
+      .limit(1)
+      .get();
+  if (!submissionsSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Scheduled submissions are linked to this school.",
+    );
+  }
+
+  const officialAssessmentsSnap = await db
+      .collection(COLLECTIONS.officialAssessments)
+      .where(FIELDS.officialAssessments.schoolId, "==", schoolId)
+      .limit(1)
+      .get();
+  if (!officialAssessmentsSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Official assessments are linked to this school.",
+    );
+  }
+
   await schoolRef.delete();
   return {deleted: true};
 });
@@ -6917,6 +7580,19 @@ exports.deleteEvent = onCall(async (request) => {
     );
   }
 
+  const releasedOfficialSnap = await db
+      .collection(COLLECTIONS.officialAssessments)
+      .where(FIELDS.officialAssessments.eventId, "==", eventId)
+      .where(FIELDS.officialAssessments.status, "==", STATUSES.released)
+      .limit(1)
+      .get();
+  if (!releasedOfficialSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Cannot delete event: released official assessments exist.",
+    );
+  }
+
   let lastDoc = null;
   let hasMore = true;
   // Delete non-released submissions for this event.
@@ -6925,6 +7601,26 @@ exports.deleteEvent = onCall(async (request) => {
         .collection(COLLECTIONS.submissions)
         .where(FIELDS.submissions.eventId, "==", eventId)
         .orderBy(FIELDS.submissions.eventId)
+        .limit(400);
+    if (lastDoc) queryRef = queryRef.startAfter(lastDoc);
+    const snap = await queryRef.get();
+    if (snap.empty) {
+      hasMore = false;
+      break;
+    }
+    const batch = db.batch();
+    snap.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+    await batch.commit();
+    lastDoc = snap.docs[snap.docs.length - 1];
+  }
+
+  lastDoc = null;
+  hasMore = true;
+  while (hasMore) {
+    let queryRef = db
+        .collection(COLLECTIONS.officialAssessments)
+        .where(FIELDS.officialAssessments.eventId, "==", eventId)
+        .orderBy(FIELDS.officialAssessments.eventId)
         .limit(400);
     if (lastDoc) queryRef = queryRef.startAfter(lastDoc);
     const snap = await queryRef.get();

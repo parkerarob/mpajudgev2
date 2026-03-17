@@ -144,10 +144,6 @@ export function buildDirectorAutosavePayload() {
         : "",
     notes: lunchOrder.notes || "",
   };
-  const resolvedLunch = isPizzaOrderWindowClosed() && state.director.persistedLunchOrder
-    ? { ...state.director.persistedLunchOrder }
-    : normalizedLunch;
-
   return {
     status: "draft",
     performanceGrade: state.director.entryDraft?.performanceGrade || "",
@@ -164,18 +160,8 @@ export function buildDirectorAutosavePayload() {
     rule3c: normalizedRule3c,
     seating: normalizedSeating,
     percussionNeeds: normalizedPercussion,
-    lunchOrder: resolvedLunch,
+    lunchOrder: normalizedLunch,
   };
-}
-
-export function isPizzaOrderWindowClosed(
-  eventId = state.director.selectedEventId || state.event.active?.id || ""
-) {
-  const targetId = String(eventId || "").trim();
-  if (!targetId) return false;
-  const event = (state.event.list || []).find((item) => item.id === targetId) ||
-    (state.event.active?.id === targetId ? state.event.active : null);
-  return Boolean(event?.pizzaOrdersClosed);
 }
 
 function isPermissionDeniedError(error) {
@@ -202,9 +188,6 @@ function resolveDirectorEntryPermissionMessage(error, repairResult = null) {
   }
   if (repairResult?.reason === "entry-mismatch-unrepairable") {
     return "This event form is attached to a different school than this director account. Ask an admin to repair the entry.";
-  }
-  if (isPizzaOrderWindowClosed()) {
-    return "Pizza ordering is closed for this event.";
   }
   if (isPermissionDeniedError(error)) {
     return "Unable to save because this event form does not match the director's school access. Ask an admin to repair the entry if it continues.";
@@ -499,6 +482,74 @@ async function getCachedPacketGrade(eventId, ensembleId) {
   const grade = await fetchEnsembleGrade(eventId, ensembleId);
   state.director.packetGradeCache.set(key, grade || "");
   return grade || "";
+}
+
+async function getCachedPacketLabels({ eventId = "", schoolId = "", ensembleId = "" } = {}) {
+  const cacheKey = `${eventId || ""}_${schoolId || ""}_${ensembleId || ""}`;
+  if (state.director.packetLabelCache.has(cacheKey)) {
+    return state.director.packetLabelCache.get(cacheKey);
+  }
+
+  let eventName =
+    state.event.list.find((item) => item.id === eventId)?.name ||
+    (state.event.active?.id === eventId
+      ? state.event.active?.name || ""
+      : "");
+  let schoolName = "";
+  let ensembleName = "";
+
+  if (schoolId) {
+    const schoolFromAdmin = Array.isArray(state.admin.schoolsList)
+      ? state.admin.schoolsList.find((item) => item.id === schoolId)
+      : null;
+    schoolName = schoolFromAdmin?.name || "";
+  }
+
+  const ensembleFromCache = Array.isArray(state.director.ensemblesCache)
+    ? state.director.ensemblesCache.find((item) => item.id === ensembleId)
+    : null;
+  if (ensembleFromCache) {
+    ensembleName = ensembleFromCache.name || "";
+    schoolName = schoolName || ensembleFromCache.schoolName || "";
+  }
+
+  const lookups = [];
+  if (!eventName && eventId) {
+    lookups.push(
+      getDoc(doc(db, COLLECTIONS.events, eventId)).then((snap) => {
+        if (!snap.exists()) return;
+        eventName = String(snap.data()?.name || "").trim();
+      })
+    );
+  }
+  if (!schoolName && schoolId) {
+    lookups.push(
+      getDoc(doc(db, COLLECTIONS.schools, schoolId)).then((snap) => {
+        if (!snap.exists()) return;
+        schoolName = String(snap.data()?.name || "").trim();
+      })
+    );
+  }
+  if (!ensembleName && schoolId && ensembleId) {
+    lookups.push(
+      getDoc(doc(db, COLLECTIONS.schools, schoolId, COLLECTIONS.ensembles, ensembleId)).then((snap) => {
+        if (!snap.exists()) return;
+        ensembleName = String(snap.data()?.name || "").trim();
+      })
+    );
+  }
+
+  if (lookups.length) {
+    await Promise.allSettled(lookups);
+  }
+
+  const labels = {
+    eventName: eventName || eventId || "",
+    schoolName: schoolName || schoolId || "",
+    ensembleName: ensembleName || ensembleId || "",
+  };
+  state.director.packetLabelCache.set(cacheKey, labels);
+  return labels;
 }
 
 export async function ensureEntryDocExists() {
@@ -864,13 +915,6 @@ export async function savePercussionSection() {
 
 export async function saveLunchSection() {
   if (!state.director.entryDraft) return;
-  if (isPizzaOrderWindowClosed()) {
-    return {
-      ok: false,
-      reason: "validation",
-      message: "Pizza ordering is closed for this event.",
-    };
-  }
   const lunchOrder = state.director.entryDraft.lunchOrder || {};
   lunchOrder.pepperoniQty = normalizeNumber(lunchOrder.pepperoniQty);
   lunchOrder.cheeseQty = normalizeNumber(lunchOrder.cheeseQty);
@@ -1502,6 +1546,9 @@ export function watchDirectorPackets(callback) {
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
   if (state.subscriptions.directorAudioResults) state.subscriptions.directorAudioResults();
   state.director.packetGradeCache.clear();
+  if (state.director.packetLabelCache?.clear) {
+    state.director.packetLabelCache.clear();
+  }
   if (state.director.packetAssetsCache?.clear) {
     state.director.packetAssetsCache.clear();
   }
@@ -1518,6 +1565,12 @@ export function watchDirectorPackets(callback) {
   }
 
   const submissionsQuery = query(
+    collection(db, COLLECTIONS.officialAssessments),
+    where(FIELDS.officialAssessments.schoolId, "==", directorSchoolId),
+    where(FIELDS.officialAssessments.status, "==", STATUSES.released)
+  );
+
+  const legacySubmissionsQuery = query(
     collection(db, COLLECTIONS.submissions),
     where(FIELDS.submissions.schoolId, "==", directorSchoolId),
     where(FIELDS.submissions.status, "==", STATUSES.released)
@@ -1535,13 +1588,68 @@ export function watchDirectorPackets(callback) {
     where(FIELDS.audioResults.status, "==", STATUSES.released)
   );
 
-  const merged = { submissions: [], packets: [], audioResults: [] };
+  const merged = { submissions: [], legacySubmissions: [], packets: [], audioResults: [] };
   let buildVersion = 0;
   let lastSignature = "";
   let lastGroups = [];
 
+  const getScheduledSubmissionRows = () => {
+    const byId = new Map();
+    (Array.isArray(merged.legacySubmissions) ? merged.legacySubmissions : []).forEach((item) => {
+      if (!item?.id) return;
+      byId.set(item.id, item);
+    });
+    (Array.isArray(merged.submissions) ? merged.submissions : []).forEach((item) => {
+      if (!item?.id) return;
+      const previous = byId.get(item.id) || null;
+      byId.set(item.id, {
+        ...(previous || {}),
+        ...item,
+        locked: true,
+        sourceType: "officialAssessment",
+        canonicalAudioUrl:
+          item.audioUrl ||
+          previous?.canonicalAudioUrl ||
+          previous?.audioUrl ||
+          "",
+        canonicalAudioPath:
+          item.audioPath ||
+          previous?.canonicalAudioPath ||
+          previous?.audioPath ||
+          "",
+        canonicalAudioDurationSec: Number(
+          item.audioDurationSec ||
+            previous?.canonicalAudioDurationSec ||
+            previous?.audioDurationSec ||
+            0
+        ),
+        audioSegments: Array.isArray(item.audioSegments) && item.audioSegments.length
+          ? item.audioSegments
+          : Array.isArray(previous?.audioSegments)
+            ? previous.audioSegments
+            : [],
+        supplementalAudioUrl: String(
+          item.supplementalAudioUrl ||
+            previous?.supplementalAudioUrl ||
+            ""
+        ),
+        supplementalAudioPath: String(
+          item.supplementalAudioPath ||
+            previous?.supplementalAudioPath ||
+            ""
+        ),
+        supplementalAudioDurationSec: Number(
+          item.supplementalAudioDurationSec ||
+            previous?.supplementalAudioDurationSec ||
+            0
+        ),
+      });
+    });
+    return Array.from(byId.values());
+  };
+
   const buildSignature = () => {
-    const submissionSig = merged.submissions
+    const submissionSig = getScheduledSubmissionRows()
       .map((item) => [
         item.id || "",
         item.status || "",
@@ -1606,11 +1714,31 @@ export function watchDirectorPackets(callback) {
       merged.submissions = snapshot.docs.map((docSnap) => ({
         id: docSnap.id,
         ...docSnap.data(),
+        sourceType: "officialAssessment",
+        locked: true,
+        status: docSnap.data()?.status === STATUSES.released ? STATUSES.released : STATUSES.submitted,
       }));
       await emitMergedGroups();
     },
     (error) => {
       console.error("watchDirectorPackets submissions failed", error);
+      if (watchVersion !== state.director.packetWatchVersion) return;
+      callback?.({ groups: [], hint: "Unable to load released packets right now." });
+    }
+  );
+
+  state.subscriptions.directorLegacyPackets = onSnapshot(
+    legacySubmissionsQuery,
+    async (snapshot) => {
+      merged.legacySubmissions = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+        sourceType: "submission",
+      }));
+      await emitMergedGroups();
+    },
+    (error) => {
+      console.error("watchDirectorPackets legacy submissions failed", error);
       if (watchVersion !== state.director.packetWatchVersion) return;
       callback?.({ groups: [], hint: "Unable to load released packets right now." });
     }
@@ -1651,7 +1779,20 @@ export function watchDirectorPackets(callback) {
 
 async function buildDirectorPacketGroups(merged) {
   const grouped = {};
-  merged.submissions.forEach((data) => {
+  const scheduledSubmissions = (() => {
+    const byId = new Map();
+    (Array.isArray(merged.legacySubmissions) ? merged.legacySubmissions : []).forEach((data) => {
+      if (!data?.id) return;
+      byId.set(data.id, data);
+    });
+    (Array.isArray(merged.submissions) ? merged.submissions : []).forEach((data) => {
+      if (!data?.id) return;
+      byId.set(data.id, data);
+    });
+    return Array.from(byId.values());
+  })();
+
+  scheduledSubmissions.forEach((data) => {
     const key = `${data.eventId}_${data.ensembleId}`;
     if (!grouped[key]) {
       grouped[key] = {
@@ -1667,14 +1808,22 @@ async function buildDirectorPacketGroups(merged) {
 
   const scheduledGroups = await Promise.all(
     Object.values(grouped).map(async (group) => {
-      const [grade, directorName] = await Promise.all([
+      const [grade, directorName, labels] = await Promise.all([
         getCachedPacketGrade(group.eventId, group.ensembleId),
         getDirectorNameForSchool(group.schoolId),
+        getCachedPacketLabels({
+          eventId: group.eventId,
+          schoolId: group.schoolId,
+          ensembleId: group.ensembleId,
+        }),
       ]);
       const summary = computePacketSummary(grade, group.submissions);
       return {
         ...group,
         directorName,
+        eventName: labels.eventName,
+        schoolName: labels.schoolName,
+        ensembleName: labels.ensembleName,
         grade,
         overall: summary.overall,
       };

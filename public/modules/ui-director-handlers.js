@@ -168,7 +168,7 @@ export function createDirectorHandlerBinder({
             await renderDirectorRegistrationPanel();
           }
         } catch (err) {
-          console.error("Director Event Forms failed", err);
+          console.error("Director workspace open failed", err);
           alertUser(err?.message || "Something went wrong. Try again.");
         }
       });
@@ -185,6 +185,12 @@ export function createDirectorHandlerBinder({
     if (els.directorNavResultsBtn) {
       els.directorNavResultsBtn.addEventListener("click", navigateDirectorResults);
     }
+    if (els.directorResultsOpenEnsemblesBtn) {
+      els.directorResultsOpenEnsemblesBtn.addEventListener("click", navigateDirectorEnsembles);
+    }
+    if (els.directorResultsOpenInfoBtn) {
+      els.directorResultsOpenInfoBtn.addEventListener("click", navigateDirectorInfo);
+    }
     if (els.directorWorkspaceLandingBtn) {
       els.directorWorkspaceLandingBtn.addEventListener("click", navigateDirectorLanding);
     }
@@ -195,6 +201,9 @@ export function createDirectorHandlerBinder({
     }
     if (els.directorWorkspaceRegisterBtn) {
       els.directorWorkspaceRegisterBtn.addEventListener("click", navigateDirectorRegister);
+    }
+    if (els.directorWorkspaceRegistrationShortcutBtn) {
+      els.directorWorkspaceRegistrationShortcutBtn.addEventListener("click", navigateDirectorRegister);
     }
     if (els.directorWorkspaceEnsemblesBtn) {
       els.directorWorkspaceEnsemblesBtn.addEventListener("click", navigateDirectorEnsembles);
@@ -219,6 +228,12 @@ export function createDirectorHandlerBinder({
     }
     if (els.eventDetailDirectorResultsBtn) {
       els.eventDetailDirectorResultsBtn.addEventListener("click", navigateDirectorResults);
+    }
+    if (els.eventScheduleOpenRegistrationBtn) {
+      els.eventScheduleOpenRegistrationBtn.addEventListener("click", navigateDirectorRegister);
+    }
+    if (els.eventScheduleOpenEnsemblesBtn) {
+      els.eventScheduleOpenEnsemblesBtn.addEventListener("click", navigateDirectorEnsembles);
     }
     if (els.directorRegistrationProfileBtn) {
       els.directorRegistrationProfileBtn.addEventListener("click", () => {
@@ -482,6 +497,7 @@ export function createDirectorHandlerBinder({
           state.director.entryDraft,
           computeDirectorCompletionState(state.director.entryDraft)
         );
+        renderDirectorEnsembles(state.director.ensemblesCache || []);
       });
     }
 

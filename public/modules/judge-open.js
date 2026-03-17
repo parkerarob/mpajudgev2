@@ -2,7 +2,6 @@ import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/fireba
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 import {
   collection,
-  collectionGroup,
   doc,
   getDoc,
   getDocs,
@@ -489,7 +488,7 @@ function queueEligibleSessionAutoTranscription(sessions = []) {
   });
 }
 
-export async function watchOpenPackets(callback) {
+export async function watchOpenPackets(callback, errorCallback) {
   if (!state.auth.currentUser) {
     callback?.([]);
     return;
@@ -497,7 +496,6 @@ export async function watchOpenPackets(callback) {
   const packetsQuery = query(
     collection(db, COLLECTIONS.packets),
     where(FIELDS.packets.createdByJudgeUid, "==", state.auth.currentUser.uid),
-    orderBy(FIELDS.packets.updatedAt, "desc"),
     limit(25)
   );
   return onSnapshot(packetsQuery, (snapshot) => {
@@ -505,12 +503,22 @@ export async function watchOpenPackets(callback) {
       id: docSnap.id,
       ...docSnap.data(),
       display: buildPacketDisplay(docSnap.data()),
-    }));
+    })).sort((a, b) => {
+      const aUpdated = a.updatedAt?.toMillis ? a.updatedAt.toMillis() : 0;
+      const bUpdated = b.updatedAt?.toMillis ? b.updatedAt.toMillis() : 0;
+      if (aUpdated !== bUpdated) return bUpdated - aUpdated;
+      return String(a.id || "").localeCompare(String(b.id || ""));
+    });
     callback?.(state.judgeOpen.packets);
+  }, (error) => {
+    console.warn("watchOpenPackets failed", error);
+    state.judgeOpen.packets = [];
+    callback?.([]);
+    errorCallback?.(error);
   });
 }
 
-export function watchOpenSessions(packetId, callback) {
+export function watchOpenSessions(packetId, callback, errorCallback) {
   if (state.subscriptions.openSessions) state.subscriptions.openSessions();
   if (state.judgeOpen.openSessionsRafId != null) {
     window.cancelAnimationFrame(state.judgeOpen.openSessionsRafId);
@@ -539,6 +547,12 @@ export function watchOpenSessions(packetId, callback) {
     state.judgeOpen.openSessionsPendingRender = state.judgeOpen.sessions;
     scheduleOpenSessionsRender(callback);
     queueEligibleSessionAutoTranscription(state.judgeOpen.sessions);
+  }, (error) => {
+    console.warn("watchOpenSessions failed", { packetId, error });
+    state.judgeOpen.sessions = [];
+    clearAutoTranscriptionRuntimeState();
+    flushOpenSessionsRender(callback);
+    errorCallback?.(error);
   });
 }
 
@@ -694,56 +708,31 @@ export async function fetchOpenEnsembleIndex(schoolsList) {
   }
 
   const loader = (async () => {
-    try {
-      const snapshot = await getDocs(query(collectionGroup(db, COLLECTIONS.ensembles)));
-      const items = snapshot.docs
-        .map((docSnap) => {
-          const schoolId = docSnap.ref.parent?.parent?.id || "";
-          if (!schoolNameById.has(schoolId)) return null;
-          const data = docSnap.data() || {};
-          return {
-            schoolId,
-            schoolName: schoolNameById.get(schoolId) || schoolId,
-            ensembleId: docSnap.id,
-            ensembleName: data.name || docSnap.id,
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => {
-          const schoolCmp = String(a.schoolName || "").localeCompare(String(b.schoolName || ""));
-          if (schoolCmp !== 0) return schoolCmp;
-          return String(a.ensembleName || "").localeCompare(String(b.ensembleName || ""));
-        });
-      openEnsembleIndexCache = {
-        key: cacheKey,
-        cachedAt: Date.now(),
-        items,
-        inFlight: null,
-      };
-      return items;
-    } catch (error) {
-      // Fallback to legacy fan-out so the Judge page still works if collectionGroup is denied.
-      console.warn("fetchOpenEnsembleIndex collectionGroup failed; falling back", error);
-      const results = await Promise.all(
-        schools.map(async (school) => {
-          const ensembles = await fetchOpenEnsembles(school.id);
-          return ensembles.map((ensemble) => ({
-            schoolId: school.id,
-            schoolName: school.name || school.id,
-            ensembleId: ensemble.id,
-            ensembleName: ensemble.name || ensemble.id,
-          }));
-        })
-      );
-      const items = results.flat();
-      openEnsembleIndexCache = {
-        key: cacheKey,
-        cachedAt: Date.now(),
-        items,
-        inFlight: null,
-      };
-      return items;
-    }
+    const results = await Promise.all(
+      schools.map(async (school) => {
+        const ensembles = await fetchOpenEnsembles(school.id);
+        return ensembles.map((ensemble) => ({
+          schoolId: school.id,
+          schoolName: school.name || school.id,
+          ensembleId: ensemble.id,
+          ensembleName: ensemble.name || ensemble.id,
+        }));
+      })
+    );
+    const items = results
+      .flat()
+      .sort((a, b) => {
+        const schoolCmp = String(a.schoolName || "").localeCompare(String(b.schoolName || ""));
+        if (schoolCmp !== 0) return schoolCmp;
+        return String(a.ensembleName || "").localeCompare(String(b.ensembleName || ""));
+      });
+    openEnsembleIndexCache = {
+      key: cacheKey,
+      cachedAt: Date.now(),
+      items,
+      inFlight: null,
+    };
+    return items;
   })();
 
   openEnsembleIndexCache = {
@@ -759,10 +748,22 @@ export async function fetchOfficialOpenEnsembleIndex(eventId) {
   const targetEventId = String(eventId || "").trim();
   if (!targetEventId) return [];
   const scheduleRef = collection(db, COLLECTIONS.events, targetEventId, COLLECTIONS.schedule);
-  const scheduleSnap = await getDocs(query(scheduleRef, orderBy("performanceAt", "asc")));
+  const scheduleSnap = await getDocs(scheduleRef);
   const dedupe = new Map();
-  scheduleSnap.docs.forEach((docSnap) => {
-    const row = docSnap.data() || {};
+  const rows = scheduleSnap.docs
+    .map((docSnap) => ({id: docSnap.id, ...docSnap.data()}))
+    .sort((a, b) => {
+      const aPerformance = a.performanceAt?.toMillis ? a.performanceAt.toMillis() : 0;
+      const bPerformance = b.performanceAt?.toMillis ? b.performanceAt.toMillis() : 0;
+      if (aPerformance && bPerformance && aPerformance !== bPerformance) {
+        return aPerformance - bPerformance;
+      }
+      const aOrder = Number(a.orderIndex || 0);
+      const bOrder = Number(b.orderIndex || 0);
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return String(a.id || "").localeCompare(String(b.id || ""));
+    });
+  rows.forEach((row) => {
     const schoolId = String(row.schoolId || "").trim();
     const ensembleId = String(row.ensembleId || "").trim();
     if (!schoolId || !ensembleId) return;
@@ -1382,6 +1383,29 @@ export async function submitOpenPacket() {
       computedFinalRatingJudge: rating.value,
       computedFinalRatingLabel: rating.label,
     });
+    const nextStatus = String(response.data?.status || "locked").trim() || "locked";
+    if (state.judgeOpen.currentPacketId && state.judgeOpen.currentPacket) {
+      state.judgeOpen.currentPacket = {
+        ...state.judgeOpen.currentPacket,
+        status: nextStatus,
+        locked: true,
+        captureStatus: "submitted",
+        reviewState: "pending",
+      };
+      if (Array.isArray(state.judgeOpen.packets)) {
+        state.judgeOpen.packets = state.judgeOpen.packets.map((item) =>
+          item?.id === state.judgeOpen.currentPacketId
+            ? {
+                ...item,
+                status: nextStatus,
+                locked: true,
+                captureStatus: "submitted",
+                reviewState: "pending",
+              }
+            : item
+        );
+      }
+    }
     return { ok: true, ...response.data };
   } catch (error) {
     const message = error?.message || "Unable to submit adjudication.";

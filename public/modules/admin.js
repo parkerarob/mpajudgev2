@@ -226,6 +226,66 @@ export async function setPizzaOrdersClosed({ eventId, closed }) {
   });
 }
 
+export function watchRawAssessments(callback) {
+  const q = query(
+    collection(db, COLLECTIONS.rawAssessments),
+    orderBy(FIELDS.rawAssessments.submittedAt, "desc")
+  );
+  return onSnapshot(q, (snapshot) => {
+    const rows = snapshot.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    }));
+    callback?.(rows);
+  });
+}
+
+export async function officializeRawAssessment({
+  rawAssessmentId,
+  eventId,
+  ensembleId,
+  schoolId,
+  judgePosition,
+  formType,
+}) {
+  const fn = httpsCallable(functions, "officializeRawAssessment");
+  const response = await fn({
+    rawAssessmentId,
+    eventId,
+    ensembleId,
+    schoolId,
+    judgePosition,
+    formType,
+  });
+  return response.data || {};
+}
+
+export async function excludeRawAssessment({ rawAssessmentId, reason = "" }) {
+  const fn = httpsCallable(functions, "excludeRawAssessment");
+  const response = await fn({ rawAssessmentId, reason });
+  return response.data || {};
+}
+
+export async function reassignRawAssessment({
+  rawAssessmentId,
+  eventId,
+  ensembleId,
+  schoolId,
+  judgePosition,
+  formType,
+}) {
+  const fn = httpsCallable(functions, "reassignRawAssessment");
+  const response = await fn({
+    rawAssessmentId,
+    eventId,
+    ensembleId,
+    schoolId,
+    judgePosition,
+    formType,
+  });
+  return response.data || {};
+}
+
 export async function deleteEvent(eventId) {
   const deleteEventFn = httpsCallable(functions, "deleteEvent");
   return deleteEventFn({ eventId });
@@ -375,6 +435,40 @@ export function watchUsers(callback) {
   });
 }
 
+function toScheduleSortMs(value) {
+  if (!value) return null;
+  if (typeof value?.toMillis === "function") {
+    const ms = value.toMillis();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof value?.toDate === "function") {
+    const date = value.toDate();
+    const ms = date instanceof Date ? date.getTime() : Number.NaN;
+    return Number.isFinite(ms) ? ms : null;
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  const ms = date instanceof Date ? date.getTime() : Number.NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function sortScheduleEntries(entries = []) {
+  return [...entries].sort((a, b) => {
+    const aMs = toScheduleSortMs(a?.performanceAt);
+    const bMs = toScheduleSortMs(b?.performanceAt);
+    if (aMs != null && bMs != null && aMs !== bMs) return aMs - bMs;
+    if (aMs != null && bMs == null) return -1;
+    if (aMs == null && bMs != null) return 1;
+    const aOrder = Number(a?.orderIndex);
+    const bOrder = Number(b?.orderIndex);
+    if (Number.isFinite(aOrder) && Number.isFinite(bOrder) && aOrder !== bOrder) {
+      return aOrder - bOrder;
+    }
+    const aLabel = String(a?.ensembleName || a?.ensembleId || a?.id || "").toLowerCase();
+    const bLabel = String(b?.ensembleName || b?.ensembleId || b?.id || "").toLowerCase();
+    return aLabel.localeCompare(bLabel);
+  });
+}
+
 export function watchRoster(callback) {
   if (state.subscriptions.roster) state.subscriptions.roster();
   if (!state.event.active) {
@@ -383,14 +477,13 @@ export function watchRoster(callback) {
     return;
   }
   const rosterQuery = query(
-    collection(db, COLLECTIONS.events, state.event.active.id, COLLECTIONS.schedule),
-    orderBy("performanceAt", "asc")
+    collection(db, COLLECTIONS.events, state.event.active.id, COLLECTIONS.schedule)
   );
   state.subscriptions.roster = onSnapshot(rosterQuery, (snapshot) => {
-    state.event.rosterEntries = snapshot.docs.map((docSnap) => ({
+    state.event.rosterEntries = sortScheduleEntries(snapshot.docs.map((docSnap) => ({
       id: docSnap.id,
       ...docSnap.data(),
-    }));
+    })));
     callback?.(state.event.rosterEntries);
   });
 }
@@ -735,9 +828,9 @@ export async function fetchScheduleEntries(eventId, schoolId = null) {
   const scheduleRef = collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule);
   const scheduleQuery = schoolId
     ? query(scheduleRef, where("schoolId", "==", schoolId))
-    : query(scheduleRef, orderBy("performanceAt", "asc"));
+    : query(scheduleRef);
   const snap = await getDocs(scheduleQuery);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  return sortScheduleEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
 }
 
 export async function fetchSchoolRegistrations(eventId) {

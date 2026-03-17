@@ -707,29 +707,21 @@ export function createJudgeOpenHandlerBinder({
 
     if (els.judgeOpenCaptionForm) {
       els.judgeOpenCaptionForm.addEventListener("click", (event) => {
-        const gradeBtn = event.target?.closest?.("[data-grade]");
-        const modifierBtn = event.target?.closest?.("[data-modifier]");
+        const gradeFullBtn = event.target?.closest?.("[data-grade-full]");
         const wrapper = event.target?.closest?.("[data-key]");
         if (!wrapper) return;
         const key = wrapper.dataset.key;
         const current = state.judgeOpen.captions[key] || {};
-        if (gradeBtn) {
-          const nextGrade = gradeBtn.dataset.grade || "";
+        if (gradeFullBtn) {
           state.judgeOpen.captions[key] = {
             ...current,
-            gradeLetter: nextGrade,
+            gradeLetter: gradeFullBtn.dataset.grade || "",
+            gradeModifier: gradeFullBtn.dataset.modifier || "",
           };
-          syncOpenCaptionStateLocally();
-          markJudgeOpenDirty();
-          applyOpenCaptionState();
-          updateOpenSubmitState();
-        }
-        if (modifierBtn) {
-          const nextModifier = modifierBtn.dataset.modifier || "";
-          state.judgeOpen.captions[key] = {
-            ...current,
-            gradeModifier: current.gradeModifier === nextModifier ? "" : nextModifier,
-          };
+          const dropdown = gradeFullBtn.closest("[data-grade-dropdown]");
+          if (dropdown) dropdown.classList.remove("is-open");
+          const trigger = wrapper.querySelector("[data-grade-trigger]");
+          if (trigger) trigger.setAttribute("aria-expanded", "false");
           syncOpenCaptionStateLocally();
           markJudgeOpenDirty();
           applyOpenCaptionState();

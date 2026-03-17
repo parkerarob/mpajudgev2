@@ -250,10 +250,10 @@ export const STANDARD_INSTRUMENTS = [
   { key: "altoSax", label: "Alto Sax" },
   { key: "tenorSax", label: "Tenor Sax" },
   { key: "bariSax", label: "Bari Sax" },
-  { key: "trumpetCornet", label: "Trumpet/Cornet" },
+  { key: "trumpetCornet", label: "Trumpet" },
   { key: "horn", label: "Horn" },
   { key: "trombone", label: "Trombone" },
-  { key: "euphoniumBaritone", label: "Euphonium/Baritone" },
+  { key: "euphoniumBaritone", label: "Euphonium" },
   { key: "tuba", label: "Tuba" },
 ];
 

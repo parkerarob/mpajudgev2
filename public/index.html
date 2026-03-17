@@ -616,15 +616,6 @@
       </section>
 
       <section class="card judge-open-card" id="judgeOpenCard" role="tabpanel" aria-labelledby="judgeOpenTab">
-        <div class="tab-header">
-          <div>
-            <h2>Judge Assessments</h2>
-          </div>
-          <div class="tab-header-actions">
-            <span class="badge" id="judgeOpenStatusBadge">Draft</span>
-            <button type="button" class="ghost" id="judgeOpenProfileToggleBtn">Update Profile</button>
-          </div>
-        </div>
         <div class="ios-screen">
           <div class="panel stack" id="judgeOpenModeSelectView">
             <p class="hint">Practice mode does not affect official event results.</p>
@@ -636,9 +627,19 @@
           </div>
 
           <div class="judge-open-layout is-hidden" id="judgeOpenWorkspace">
-            <div class="row judge-open-workspace-toolbar">
-              <button type="button" class="ghost" id="judgeOpenBackToLandingBtn">Back to Judge Landing</button>
-              <span class="note" id="judgeOpenWorkspaceModeLabel"></span>
+            <div class="judge-open-nav">
+              <div class="judge-open-nav-links">
+                <button type="button" class="nav-link" id="judgeOpenBackToLandingBtn">← Judge Landing</button>
+                <button type="button" class="nav-link" id="judgeOpenBackBtn">← Back</button>
+              </div>
+              <span class="judge-open-mode-badge" id="judgeOpenWorkspaceModeLabel"></span>
+            </div>
+            <div class="judge-open-form-type-bar">
+              <div class="form-type-toggle" id="judgeOpenFormTypeSegmented">
+                <button type="button" class="form-type-btn" data-form="stage">Stage</button>
+                <button type="button" class="form-type-btn" data-form="sight">Sight Reading</button>
+              </div>
+              <button type="button" id="judgeOpenDefaultFormBtn" class="nav-link">Set as default</button>
             </div>
             <div class="judge-open-list" id="judgeOpenListView">
               <div class="panel stack judge-open-list-panel">
@@ -662,38 +663,20 @@
             </div>
 
             <div class="judge-open-detail" id="judgeOpenDetailView">
-              <div class="detail-header">
-                <button type="button" class="ghost" id="judgeOpenBackBtn">Back</button>
-                <div class="detail-title">
-                  <div class="detail-title-main" id="judgeOpenHeaderTitle">School - Ensemble</div>
-                  <div class="detail-title-sub" id="judgeOpenHeaderSub">Draft</div>
-                </div>
-              </div>
-
 
               <div class="panel stack judge-open-step-card">
                 <div class="step-heading">
                   <span class="badge">Step 1</span>
                   <strong>Ensemble Setup</strong>
                 </div>
-                <label>
-                  Select existing ensemble
-                  <select id="judgeOpenExistingSelect"></select>
-                </label>
+                <select id="judgeOpenExistingSelect"></select>
 
-                <div class="panel">
-                  <div class="note" id="judgeOpenDirectorRefStatus"></div>
-                  <div class="stack" id="judgeOpenDirectorRefContent"></div>
-                </div>
+                <div class="note" id="judgeOpenDirectorRefStatus"></div>
+                <div id="judgeOpenDirectorRefContent"></div>
                 <select id="judgeOpenFormTypeSelect" class="is-hidden">
                   <option value="stage">Stage</option>
                   <option value="sight">Sight Reading</option>
                 </select>
-                <div class="segmented-control" id="judgeOpenFormTypeSegmented">
-                  <button type="button" class="segment btn--secondary" data-form="stage">Stage</button>
-                  <button type="button" class="segment btn--secondary" data-form="sight">Sight Reading</button>
-                  <button type="button" id="judgeOpenDefaultFormBtn" class="ghost">Set as default</button>
-                </div>
               </div>
 
               <div class="panel stack judge-open-step-card">
@@ -701,13 +684,10 @@
                   <span class="badge">Step 2</span>
                   <strong>Audio Capture</strong>
                 </div>
-                <label>
-                  Microphone
-                  <div class="row">
-                    <select id="judgeOpenMicSelect"></select>
-                    <button type="button" id="judgeOpenMicRefreshBtn" class="ghost">Refresh Mics</button>
-                  </div>
-                </label>
+                <div class="row">
+                  <select id="judgeOpenMicSelect"></select>
+                  <button type="button" id="judgeOpenMicRefreshBtn" class="ghost">Refresh Mics</button>
+                </div>
 
                 <div class="recording-control">
                   <button type="button" id="judgeOpenRecordBtn" class="btn--secondary record-btn">
@@ -721,9 +701,7 @@
                     <div class="level-meter" id="judgeOpenLevelMeter" aria-hidden="true">
                       <div class="level-meter-fill" id="judgeOpenLevelMeterFill"></div>
                     </div>
-                    <div class="note" id="judgeOpenTapeDurationRow">
-                      Audio Duration: <span id="judgeOpenTapeDuration">0:00</span>
-                    </div>
+                    <span id="judgeOpenTapeDuration" class="is-hidden"></span>
                   </div>
                 </div>
 
@@ -738,17 +716,14 @@
                 </details>
               </div>
 
-              <details class="panel transcript-panel judge-open-step-card" id="judgeOpenTranscriptPanel" open>
-                <summary class="step-heading">
-                  <strong>Auto Transcript</strong>
-                </summary>
+              <div class="panel transcript-panel judge-open-step-card" id="judgeOpenTranscriptPanel">
                 <textarea id="judgeOpenTranscriptInput" rows="6" aria-label="Auto Transcript"></textarea>
                 <div class="row">
-                    <button type="button" id="judgeOpenTranscribeBtn" class="ghost btn--secondary">
+                  <button type="button" id="judgeOpenTranscribeBtn" class="ghost btn--secondary">
                     Refresh Auto Transcript
-                    </button>
+                  </button>
                 </div>
-              </details>
+              </div>
 
               <div class="panel stack judge-open-step-card is-hidden" id="judgeOpenPrepTimePanel">
                 <div class="step-heading">
@@ -767,17 +742,12 @@
               <details class="panel stack judge-open-step-card" id="judgeOpenCaptionPanel" open>
                 <summary class="step-heading">
                   <span class="badge">Step 3</span>
-                  <strong>Required Caption Scoring</strong>
+                  <strong>Caption Scoring</strong>
                 </summary>
-                <div class="note">Every required caption must include both a comment and a score. The Judge Overall Rating is calculated from these caption scores.</div>
-                <div class="step-heading">
-                  <span class="badge">AI Assist</span>
-                  <strong>Draft from Tape Transcript</strong>
-                </div>
                 <div class="stack">
                   <div class="row">
                     <button type="button" id="judgeOpenDraftBtn" class="btn--secondary">
-                      Draft Caption Notes from Tape Transcript
+                      Draft Caption Comments from Transcript w/ AI
                     </button>
                     <label class="row">
                       <input type="checkbox" id="judgeOpenOverwriteCaptionsToggle" />
@@ -800,14 +770,17 @@
           Stop Recording Now
         </button>
 
-        <div class="sticky-bottom" id="judgeOpenStickyBar">
-          <div class="sticky-meta">
-            <div>Audio: <span id="judgeOpenStickyAudioDuration">0:00</span></div>
-            <div>Caption Total: <span id="judgeOpenCaptionTotal">Incomplete</span></div>
-            <div>Judge Overall Rating: <span id="judgeOpenFinalRating">N/A</span></div>
+        <div class="judge-open-submit-bar" id="judgeOpenStickyBar">
+          <span class="is-hidden" id="judgeOpenStickyAudioDuration">0:00</span>
+          <span class="is-hidden" id="judgeOpenCaptionTotal">Incomplete</span>
+          <div class="judge-open-submit-side">
             <div class="note" id="judgeOpenSubmitHint"></div>
+            <button type="button" id="judgeOpenSubmitBtn" class="btn--lg btn-primary">Submit Assessment</button>
           </div>
-          <button type="button" id="judgeOpenSubmitBtn" class="btn--lg btn-primary">Submit</button>
+          <div class="judge-open-final-rating">
+            <div class="judge-open-rating-label">Final Rating</div>
+            <div class="judge-open-rating-value" id="judgeOpenFinalRating">N/A</div>
+          </div>
         </div>
       </section>
 

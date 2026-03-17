@@ -322,10 +322,13 @@ function updateJudgeOpenModeUI() {
   if (els.judgeOpenWorkspaceModeLabel) {
     if (!mode) {
       els.judgeOpenWorkspaceModeLabel.textContent = "";
+      els.judgeOpenWorkspaceModeLabel.dataset.mode = "";
     } else if (mode === "official") {
-      els.judgeOpenWorkspaceModeLabel.textContent = "Official Adjudication Mode";
+      els.judgeOpenWorkspaceModeLabel.textContent = "Official";
+      els.judgeOpenWorkspaceModeLabel.dataset.mode = "official";
     } else {
-      els.judgeOpenWorkspaceModeLabel.textContent = "Practice Adjudication Mode";
+      els.judgeOpenWorkspaceModeLabel.textContent = "Practice";
+      els.judgeOpenWorkspaceModeLabel.dataset.mode = "practice";
     }
   }
   if (els.judgeOpenModeHint) {

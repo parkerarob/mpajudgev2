@@ -25,17 +25,37 @@ export function createJudgeOpenDirectorReference({
     els.judgeOpenDirectorRefContent.innerHTML = "";
 
     const summary = document.createElement("div");
-    summary.className = "stack";
+    summary.className = "ref-summary";
+
+    const makeRow = (label, value) => {
+      const row = document.createElement("div");
+      row.className = "ref-instr-row";
+      const lbl = document.createElement("span");
+      lbl.className = "ref-instr-label";
+      lbl.textContent = label;
+      const val = document.createElement("span");
+      val.textContent = value || "—";
+      row.appendChild(lbl);
+      row.appendChild(val);
+      return row;
+    };
+
     const addRow = (label, value) => {
+      summary.appendChild(makeRow(label, value));
+    };
+
+    const addSectionLabel = (text) => {
+      const el = document.createElement("div");
+      el.className = "ref-section-label";
+      el.textContent = text;
+      summary.appendChild(el);
+    };
+
+    if (!snapshot || status !== "loaded") {
       const row = document.createElement("div");
       row.className = "note";
-      row.textContent = `${label}: ${value || "N/A"}`;
+      row.textContent = "No director entry data available.";
       summary.appendChild(row);
-    };
-    if (!snapshot || status !== "loaded") {
-      addRow("Grade", "N/A");
-      addRow("Repertoire", "N/A");
-      addRow("Instrumentation", "N/A");
       els.judgeOpenDirectorRefContent.appendChild(summary);
       return;
     }
@@ -45,60 +65,70 @@ export function createJudgeOpenDirectorReference({
       ? `${snapshot.performanceGrade}${snapshot.performanceGradeFlex ? "-Flex" : ""}`
       : "N/A";
     const marchText =
-      [rep.march?.title || "", rep.march?.composer || ""].filter(Boolean).join(" - ") || "N/A";
+      [rep.march?.title || "", rep.march?.composer || ""].filter(Boolean).join(" - ") || null;
     const selection1Text =
       [rep.selection1?.title || "", rep.selection1?.composer || ""]
         .filter(Boolean)
-        .join(" - ") || "N/A";
+        .join(" - ") || null;
     const selection2Text =
       [rep.selection2?.title || "", rep.selection2?.composer || ""]
         .filter(Boolean)
-        .join(" - ") || "N/A";
+        .join(" - ") || null;
     const instrumentation = snapshot.instrumentation || {};
     const standardCounts = instrumentation.standardCounts || {};
     const labelByKey = Object.fromEntries(
       STANDARD_INSTRUMENTS.map((item) => [item.key, item.label])
     );
-    const woodwindKeys = [
-      "flute",
-      "oboe",
-      "bassoon",
-      "clarinet",
-      "bassClarinet",
-      "altoSax",
-      "tenorSax",
-      "bariSax",
-    ];
-    const brassKeys = [
-      "trumpetCornet",
-      "horn",
-      "trombone",
-      "euphoniumBaritone",
-      "tuba",
-    ];
-    const buildFamilyLine = (keys) =>
-      keys
-        .map((key) => `${labelByKey[key] || key} ${Number(standardCounts[key] || 0)}`)
-        .join(", ");
-    const woodwindDetail = buildFamilyLine(woodwindKeys);
-    const brassPercDetail = `${buildFamilyLine(brassKeys)}, Percussion ${Number(
-      instrumentation.totalPercussion || 0
-    )}`;
+    const woodwindKeys = ["flute", "oboe", "bassoon", "clarinet", "bassClarinet", "altoSax", "tenorSax", "bariSax"];
+    const brassKeys = ["trumpetCornet", "horn", "trombone", "euphoniumBaritone", "tuba"];
     const nonStandardRows = Array.isArray(instrumentation.nonStandard)
-      ? instrumentation.nonStandard.filter((row) => row?.instrumentName)
+      ? instrumentation.nonStandard.filter((r) => r?.instrumentName)
       : [];
-    const nonStandardDetail = nonStandardRows.length
-      ? nonStandardRows
-        .map((row) => `${String(row.instrumentName || "").trim()} ${Number(row.count || 0)}`)
-        .join(", ")
-      : "None";
-    addRow("Grade", gradeText);
+
+    // Grade
+    const gradeEl = document.createElement("div");
+    gradeEl.className = "ref-grade";
+    gradeEl.textContent = `Grade ${gradeText}`;
+    summary.appendChild(gradeEl);
+
+    // Repertoire
+    addSectionLabel("Repertoire");
     addRow("March", marchText);
     addRow("Selection #1", selection1Text);
     addRow("Selection #2", selection2Text);
-    addRow("Woodwinds", woodwindDetail);
-    addRow("Brass/Percussion", brassPercDetail);
-    addRow("Non-standard", nonStandardDetail);
+
+    // Instrumentation — two columns
+    addSectionLabel("Instrumentation");
+    const instrGrid = document.createElement("div");
+    instrGrid.className = "ref-instr-grid";
+
+    const wwCol = document.createElement("div");
+    wwCol.className = "ref-instr-col";
+    woodwindKeys.forEach((key) => {
+      wwCol.appendChild(makeRow(labelByKey[key] || key, String(Number(standardCounts[key] || 0))));
+    });
+
+    const bpCol = document.createElement("div");
+    bpCol.className = "ref-instr-col";
+    brassKeys.forEach((key) => {
+      bpCol.appendChild(makeRow(labelByKey[key] || key, String(Number(standardCounts[key] || 0))));
+    });
+    bpCol.appendChild(makeRow("Percussion", String(Number(instrumentation.totalPercussion || 0))));
+
+    instrGrid.appendChild(wwCol);
+    instrGrid.appendChild(bpCol);
+
+    if (nonStandardRows.length > 0) {
+      const nsCol = document.createElement("div");
+      nsCol.className = "ref-instr-col";
+      nonStandardRows.forEach((r) => {
+        nsCol.appendChild(makeRow(String(r.instrumentName || "").trim(), String(Number(r.count || 0))));
+      });
+      instrGrid.appendChild(nsCol);
+    }
+
+    summary.appendChild(instrGrid);
+
     els.judgeOpenDirectorRefContent.appendChild(summary);
   }
 

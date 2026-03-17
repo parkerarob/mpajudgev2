@@ -151,6 +151,32 @@ export function createJudgeOpenCore({
     }
   }
 
+  let gradeDropdownListenerAttached = false;
+
+  const GRADE_OPTIONS = [
+    { label: "A+", grade: "A", modifier: "+" },
+    { label: "A",  grade: "A", modifier: ""  },
+    { label: "A−", grade: "A", modifier: "-" },
+    { label: "B+", grade: "B", modifier: "+" },
+    { label: "B",  grade: "B", modifier: ""  },
+    { label: "B−", grade: "B", modifier: "-" },
+    { label: "C+", grade: "C", modifier: "+" },
+    { label: "C",  grade: "C", modifier: ""  },
+    { label: "C−", grade: "C", modifier: "-" },
+    { label: "D+", grade: "D", modifier: "+" },
+    { label: "D",  grade: "D", modifier: ""  },
+    { label: "D−", grade: "D", modifier: "-" },
+    { label: "F",  grade: "F", modifier: ""  },
+  ];
+
+  function closeAllGradeDropdowns() {
+    document.querySelectorAll("[data-grade-dropdown]").forEach((d) => {
+      d.classList.remove("is-open");
+      const trigger = d.closest("[data-grade-picker]")?.querySelector("[data-grade-trigger]");
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+    });
+  }
+
   function renderOpenCaptionForm() {
     if (!els.judgeOpenCaptionForm) return;
     els.judgeOpenCaptionForm.innerHTML = "";
@@ -159,31 +185,44 @@ export function createJudgeOpenCore({
       const wrapper = document.createElement("div");
       wrapper.className = "caption-card";
       wrapper.dataset.key = key;
+
+      const optionsHTML = GRADE_OPTIONS.map(({ label: gl, grade, modifier }) =>
+        `<button type="button" class="grade-option" data-grade-full="${gl}" data-grade="${grade}" data-modifier="${modifier}">${gl}</button>`
+      ).join("");
+
       wrapper.innerHTML = `
-        <div class="caption-body">
-          <div class="caption-main">
-            <div class="caption-header-row">
-              <div class="caption-title">${label}</div>
-              <div class="caption-segments" data-grade-group>
-                <button type="button" data-grade="A">A</button>
-                <button type="button" data-grade="B">B</button>
-                <button type="button" data-grade="C">C</button>
-                <button type="button" data-grade="D">D</button>
-                <button type="button" data-grade="F">F</button>
-              </div>
-            </div>
-            <textarea rows="5" data-comment class="caption-comment"></textarea>
-          </div>
-          <div class="caption-grade-rail">
-            <div class="caption-modifiers" data-modifier-group>
-              <button type="button" data-modifier="+">+</button>
-              <button type="button" data-modifier="-">-</button>
-            </div>
+        <div class="caption-header-row">
+          <div class="caption-title">${label}</div>
+          <div class="caption-grade-picker" data-grade-picker>
+            <button type="button" class="grade-trigger" data-grade-trigger aria-haspopup="true" aria-expanded="false">
+              <span data-grade-display>—</span>
+              <svg class="grade-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div class="grade-dropdown" data-grade-dropdown>${optionsHTML}</div>
           </div>
         </div>
+        <textarea rows="3" data-comment class="caption-comment"></textarea>
       `;
+
+      const trigger = wrapper.querySelector("[data-grade-trigger]");
+      const dropdown = wrapper.querySelector("[data-grade-dropdown]");
+      trigger.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const isOpen = dropdown.classList.contains("is-open");
+        closeAllGradeDropdowns();
+        if (!isOpen) {
+          dropdown.classList.add("is-open");
+          trigger.setAttribute("aria-expanded", "true");
+        }
+      });
+
       els.judgeOpenCaptionForm.appendChild(wrapper);
     });
+
+    if (!gradeDropdownListenerAttached) {
+      document.addEventListener("click", closeAllGradeDropdowns, true);
+      gradeDropdownListenerAttached = true;
+    }
     applyOpenCaptionState();
   }
 
@@ -194,14 +233,14 @@ export function createJudgeOpenCore({
       if (!wrapper) return;
       const caption = state.judgeOpen.captions[key] || {};
       const comment = wrapper.querySelector("[data-comment]");
-      const gradeButtons = wrapper.querySelectorAll("[data-grade]");
-      gradeButtons.forEach((btn) => {
-        const active = btn.dataset.grade === caption.gradeLetter;
-        btn.classList.toggle("is-active", active);
-      });
-      const modifierButtons = wrapper.querySelectorAll("[data-modifier]");
-      modifierButtons.forEach((btn) => {
-        const active = btn.dataset.modifier === caption.gradeModifier;
+      const gradeDisplay = wrapper.querySelector("[data-grade-display]");
+      if (gradeDisplay) {
+        const letter = caption.gradeLetter || "";
+        const mod = caption.gradeModifier || "";
+        gradeDisplay.textContent = letter ? `${letter}${mod === "-" ? "−" : mod}` : "—";
+      }
+      wrapper.querySelectorAll(".grade-option").forEach((btn) => {
+        const active = btn.dataset.grade === caption.gradeLetter && btn.dataset.modifier === (caption.gradeModifier || "");
         btn.classList.toggle("is-active", active);
       });
       if (comment) {
@@ -211,12 +250,12 @@ export function createJudgeOpenCore({
     });
     const complete = areOpenCaptionsComplete();
     const total = calculateCaptionTotal(state.judgeOpen.captions);
-    const rating = complete ? computeFinalRating(total) : { label: "N/A", value: null };
+    const rating = computeFinalRating(total);
     if (els.judgeOpenCaptionTotal) {
       els.judgeOpenCaptionTotal.textContent = complete ? String(total) : "Incomplete";
     }
     if (els.judgeOpenFinalRating) {
-      els.judgeOpenFinalRating.textContent = rating.label;
+      els.judgeOpenFinalRating.textContent = rating.value !== null ? rating.label : "—";
     }
   }
 

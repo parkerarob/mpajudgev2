@@ -2273,6 +2273,97 @@ async function deleteScheduledPacketGroup({
   };
 }
 
+async function deleteScheduledAssessmentAtPosition({
+  db,
+  eventId,
+  ensembleId,
+  judgePosition,
+}) {
+  const assessmentId = `${eventId}_${ensembleId}_${judgePosition}`;
+  const submissionRef = db.collection(COLLECTIONS.submissions).doc(assessmentId);
+  const officialRef = db.collection(COLLECTIONS.officialAssessments).doc(assessmentId);
+  const [submissionSnap, officialSnap] = await Promise.all([
+    submissionRef.get(),
+    officialRef.get(),
+  ]);
+  if (!submissionSnap.exists && !officialSnap.exists) {
+    return {
+      found: false,
+      hasReleased: false,
+      deletedSubmissions: 0,
+      deletedOfficialAssessments: 0,
+      revertedRawAssessments: 0,
+      revertedPackets: 0,
+      deletedPacketExport: 0,
+    };
+  }
+
+  const canonical = officialSnap.exists ? (officialSnap.data() || {}) : (submissionSnap.data() || {});
+  const canonicalStatus = String(canonical.status || "").trim().toLowerCase();
+  if (canonicalStatus === STATUSES.released) {
+    return {
+      found: true,
+      hasReleased: true,
+      deletedSubmissions: 0,
+      deletedOfficialAssessments: 0,
+      revertedRawAssessments: 0,
+      revertedPackets: 0,
+      deletedPacketExport: 0,
+    };
+  }
+
+  let revertedRawAssessments = 0;
+  let revertedPackets = 0;
+  const sourceRawAssessmentId = String(officialSnap.data()?.sourceRawAssessmentId || "").trim();
+  if (sourceRawAssessmentId) {
+    const rawRef = db.collection(COLLECTIONS.rawAssessments).doc(sourceRawAssessmentId);
+    const rawSnap = await rawRef.get();
+    if (rawSnap.exists) {
+      const raw = rawSnap.data() || {};
+      await rawRef.set({
+        [FIELDS.rawAssessments.status]: STATUSES.submitted,
+        [FIELDS.rawAssessments.reviewState]: "pending",
+        [FIELDS.rawAssessments.officialAssessmentId]: "",
+        [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      revertedRawAssessments = 1;
+
+      const packetId = String(raw.packetId || "").trim();
+      if (packetId) {
+        await db.collection(COLLECTIONS.packets).doc(packetId).set({
+          [FIELDS.packets.officialAssessmentId]: "",
+          [FIELDS.packets.reviewState]: "pending",
+          [FIELDS.packets.captureStatus]: STATUSES.submitted,
+          [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        revertedPackets = 1;
+      }
+    }
+  }
+
+  const deletedSubmissions = submissionSnap.exists ? await deleteDocsInBatches(db, [submissionSnap]) : 0;
+  const deletedOfficialAssessments = officialSnap.exists ? await deleteDocsInBatches(db, [officialSnap]) : 0;
+  let deletedPacketExport = 0;
+  const exportRef = db
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  const exportSnap = await exportRef.get();
+  if (exportSnap.exists) {
+    await exportRef.delete();
+    deletedPacketExport = 1;
+  }
+
+  return {
+    found: true,
+    hasReleased: false,
+    deletedSubmissions,
+    deletedOfficialAssessments,
+    revertedRawAssessments,
+    revertedPackets,
+    deletedPacketExport,
+  };
+}
+
 exports.parseTranscript = onCall(
     {
       ...APPCHECK_SENSITIVE_SECRET_OPTIONS,
@@ -3794,6 +3885,58 @@ exports.deleteScheduledPacket = onCall(async (request) => {
     eventId,
     ensembleId,
     deletedSubmissions: result.deletedSubmissions,
+    deletedPacketExport: result.deletedPacketExport,
+  };
+});
+
+exports.deleteScheduledAssessment = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const judgePosition = String(data.judgePosition || "").trim();
+  if (!eventId || !ensembleId || !judgePosition) {
+    throw new HttpsError("invalid-argument", "eventId, ensembleId, and judgePosition required.");
+  }
+
+  const db = admin.firestore();
+  const result = await deleteScheduledAssessmentAtPosition({
+    db,
+    eventId,
+    ensembleId,
+    judgePosition,
+  });
+  if (!result.found) {
+    throw new HttpsError("not-found", "No scheduled assessment found for that judge position.");
+  }
+  if (result.hasReleased) {
+    throw new HttpsError(
+        "failed-precondition",
+        "This assessment is released. Unrelease the results packet first.",
+    );
+  }
+
+  logger.info("deleteScheduledAssessment", {
+    eventId,
+    ensembleId,
+    judgePosition,
+    deletedSubmissions: result.deletedSubmissions,
+    deletedOfficialAssessments: result.deletedOfficialAssessments,
+    revertedRawAssessments: result.revertedRawAssessments,
+    revertedPackets: result.revertedPackets,
+    deletedPacketExport: result.deletedPacketExport,
+    actorUid: request.auth.uid,
+  });
+
+  return {
+    ok: true,
+    eventId,
+    ensembleId,
+    judgePosition,
+    deletedSubmissions: result.deletedSubmissions,
+    deletedOfficialAssessments: result.deletedOfficialAssessments,
+    revertedRawAssessments: result.revertedRawAssessments,
+    revertedPackets: result.revertedPackets,
     deletedPacketExport: result.deletedPacketExport,
   };
 });

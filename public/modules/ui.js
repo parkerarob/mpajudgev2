@@ -27,6 +27,7 @@ import {
   deleteAllUnreleasedPackets,
   cleanupTestArtifacts,
   deleteOpenPacket,
+  deleteScheduledAssessment,
   deleteScheduledPacket,
   attachManualAudioToScheduledPacket,
   attachManualAudioToOpenPacket,
@@ -2155,6 +2156,7 @@ function getAdminRenderers() {
     regenerateDirectorPacketExport,
     releasePacket,
     unreleasePacket,
+    deleteScheduledAssessment,
     deleteScheduledPacket,
     lockOpenPacket,
     unlockOpenPacket,
@@ -5959,6 +5961,36 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
           }
         });
         lockRow.appendChild(lockBtn);
+
+        const deleteAssessmentBtn = document.createElement("button");
+        deleteAssessmentBtn.type = "button";
+        deleteAssessmentBtn.className = "ghost";
+        deleteAssessmentBtn.textContent = "Delete Assessment";
+        if (summary?.requiredReleased) {
+          deleteAssessmentBtn.disabled = true;
+          deleteAssessmentBtn.title = "Unrelease results packet first.";
+        }
+        deleteAssessmentBtn.addEventListener("click", async () => {
+          const ok = window.confirm(
+            `Delete the official assessment for ${JUDGE_POSITION_LABELS[position] || position}? This removes the official result for this judge position and returns the source assessment to admin review when available.`
+          );
+          if (!ok) return;
+          deleteAssessmentBtn.disabled = true;
+          try {
+            await deleteScheduledAssessment({
+              eventId,
+              ensembleId: entry.ensembleId,
+              judgePosition: position,
+            });
+            await renderAdminPacketsBySchedule();
+          } catch (error) {
+            console.error("Admin packet detail assessment delete failed", error);
+            alert(error?.message || "Unable to delete scheduled assessment.");
+          } finally {
+            deleteAssessmentBtn.disabled = false;
+          }
+        });
+        lockRow.appendChild(deleteAssessmentBtn);
         wrapper.appendChild(lockRow);
       }
       grid.appendChild(wrapper);

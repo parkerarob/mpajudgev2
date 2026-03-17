@@ -26,6 +26,7 @@ export function createAdminRenderers({
   regenerateDirectorPacketExport,
   releasePacket,
   unreleasePacket,
+  deleteScheduledAssessment,
   deleteScheduledPacket,
   lockOpenPacket,
   unlockOpenPacket,

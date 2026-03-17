@@ -689,6 +689,12 @@ export async function deleteScheduledPacket({ eventId, ensembleId }) {
   return response.data || {};
 }
 
+export async function deleteScheduledAssessment({ eventId, ensembleId, judgePosition }) {
+  const deleteFn = httpsCallable(functions, "deleteScheduledAssessment");
+  const response = await deleteFn({ eventId, ensembleId, judgePosition });
+  return response.data || {};
+}
+
 export async function deleteAllUnreleasedPackets() {
   const deleteFn = httpsCallable(functions, "deleteAllUnreleasedPackets");
   const response = await deleteFn({});

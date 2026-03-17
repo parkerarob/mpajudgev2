@@ -3511,7 +3511,18 @@ exports.deleteRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request)
 
   const raw = rawSnap.data() || {};
   const officialAssessmentId = String(raw.officialAssessmentId || "").trim();
-  if (officialAssessmentId || String(raw.status || "").trim() === STATUSES.officialized) {
+  const rawStatus = String(raw.status || "").trim();
+
+  let officialSlotExists = false;
+  if (officialAssessmentId) {
+    const [officialSnap, submissionSnap] = await Promise.all([
+      db.collection(COLLECTIONS.officialAssessments).doc(officialAssessmentId).get(),
+      db.collection(COLLECTIONS.submissions).doc(officialAssessmentId).get(),
+    ]);
+    officialSlotExists = officialSnap.exists || submissionSnap.exists;
+  }
+
+  if (rawStatus === STATUSES.officialized || officialSlotExists) {
     throw new HttpsError(
         "failed-precondition",
         "Officialized assessments cannot be deleted from Live Submissions.",

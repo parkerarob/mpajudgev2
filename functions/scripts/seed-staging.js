@@ -33,6 +33,16 @@ async function ensureUser({uid, email, password, displayName}) {
     if (error.code !== "auth/user-not-found") throw error;
   }
 
+  if (email) {
+    try {
+      const existingByEmail = await admin.auth().getUserByEmail(email);
+      await admin.auth().updateUser(existingByEmail.uid, {password, displayName});
+      return await admin.auth().getUser(existingByEmail.uid);
+    } catch (error) {
+      if (error.code !== "auth/user-not-found") throw error;
+    }
+  }
+
   return admin.auth().createUser({uid, email, password, displayName});
 }
 

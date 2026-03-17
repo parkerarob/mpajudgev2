@@ -2142,6 +2142,7 @@ function getAdminRenderers() {
     resolveCurrentRegisteredEnsembles,
     fetchScheduleEntries,
     getSchoolNameById,
+    CAPTION_TEMPLATES,
     normalizeEnsembleDisplayName,
     toDateOrNull,
     toLocalDatetimeValue,

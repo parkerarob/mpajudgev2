@@ -11,6 +11,7 @@ export function createAdminRenderers({
   resolveCurrentRegisteredEnsembles,
   fetchScheduleEntries,
   getSchoolNameById,
+  CAPTION_TEMPLATES,
   normalizeEnsembleDisplayName,
   toDateOrNull,
   toLocalDatetimeValue,
@@ -420,7 +421,11 @@ export function createAdminRenderers({
     const captions = selected.captions && typeof selected.captions === "object"
       ? selected.captions
       : {};
-    const captionKeys = Object.keys(captions);
+    const formType = String(selected.formType || "stage").trim() || "stage";
+    const template = CAPTION_TEMPLATES?.[formType] || CAPTION_TEMPLATES?.stage || [];
+    const orderedKeys = template.map(({ key }) => key);
+    const extraKeys = Object.keys(captions).filter((key) => !orderedKeys.includes(key));
+    const captionKeys = [...orderedKeys.filter((key) => key in captions), ...extraKeys];
     const captionSection = document.createElement("div");
     captionSection.className = "stack";
     const captionTitle = document.createElement("strong");
@@ -552,12 +557,12 @@ export function createAdminRenderers({
       };
     };
 
-    const isOfficialized =
-      Boolean(String(selected.officialAssessmentId || "").trim()) ||
-      String(selected.status || "").trim() === "officialized";
+    const isOfficialized = String(selected.status || "").trim() === "officialized";
     deleteBtn.disabled = isOfficialized;
     if (isOfficialized) {
       deleteBtn.title = "Officialized assessments cannot be deleted from Live Submissions.";
+    } else {
+      deleteBtn.title = "";
     }
 
     reassignBtn.addEventListener("click", async () => {

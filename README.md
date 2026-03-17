@@ -1,43 +1,52 @@
-# MPA Judge V2
+# MPAapp
 
-MPA Judge V2 is a Firebase web app for running NCBA MPA events end-to-end:
+`MPAJudgeV2` is the current repo name for MPAapp, the NCBA-style adjudication and event operations web app.
 
-- Admin: pre-event setup, live-event operations, packet review/release, directory/settings
-- Judge: open judge flow (record, score, submit)
-- Director: profile, ensembles, registration/day-of data, released packet access
+Phase 1 is now live in production on `main`. The current operating model is:
 
-## Current Architecture
+- Admin: `Dashboard`, `Registrations`, `Schedule & Flow`, `Live Submissions`, `Packets & Results`, `Announcer`, `Readiness`, `Settings`
+- Judge: capture-first official/practice workspaces with required caption scoring
+- Director: `Dashboard`, `Registration`, `My Ensembles`, `Event Info`, `Official Results Packet`
 
-Frontend (`public/`):
-- SPA with `index.html` + ES modules
-- Central state/DOM registry in `public/state.js`
-- UI orchestration in `public/modules/ui.js` with feature modules extracted for:
-  - admin handlers/render helpers
-  - director handlers/renderers
-  - judge-open handlers/renderers/session logic
-- `public/modules/ui.js` remains a large compatibility/orchestration layer while extraction continues.
+## Current Product Model
 
-Backend (`functions/`):
-- Firebase Functions v2 callable APIs
-- Cloud Functions own packet/submission state transitions
+- Judges record audio, complete caption comments, assign caption scores, and submit.
+- AI assist is optional. It may help with transcript and caption drafting later, but it is not required for completion.
+- Admin reviews raw assessments in `Live Submissions`, corrects association when needed, and officializes assessments into results slots.
+- `officialAssessments` is the canonical released-results record. Legacy `submissions` remains as compatibility output where still needed.
+- Directors see released official results packets, audio, and generated files after admin release.
 
-Data/security:
-- Firestore + Storage rules enforce role boundaries (`admin`, `judge`, `director`)
+## Architecture
+
+Frontend (`public/`)
+- Single-page app built from `index.html` and ES modules
+- Global state and constants in `public/state.js`
+- Main orchestration in `public/modules/ui.js`
+- Role-focused modules for admin, judge, and director flows
+
+Backend (`functions/`)
+- Firebase Functions v2 callables
+- Packet, raw assessment, officialization, release, and export workflows live here
+
+Data and security
+- Firestore + Storage rules enforce role boundaries
 - One active event model
-- Deterministic submission identity by event/ensemble/judge position
+- Protected director/school/event-entry data remains in place
+- Official results now flow through `officialAssessments`
 
 ## Local Development
+
+Install dependencies as needed:
+
+```bash
+npm install
+npm --prefix functions install
+```
 
 Start emulators:
 
 ```bash
 firebase emulators:start
-```
-
-Install Functions dependencies if needed:
-
-```bash
-npm --prefix functions install
 ```
 
 Optional emulator seed:
@@ -46,7 +55,13 @@ Optional emulator seed:
 npm --prefix functions run seed:emulator
 ```
 
-## Testing Baseline
+Optional staging seed:
+
+```bash
+npm --prefix functions run seed:staging
+```
+
+## Verification
 
 Unit tests:
 
@@ -54,85 +69,73 @@ Unit tests:
 npm run test:unit
 ```
 
-Smoke E2E suite:
+Functions lint:
+
+```bash
+npm --prefix functions run lint
+```
+
+Security suite:
+
+```bash
+npm run test:security
+```
+
+Smoke E2E:
 
 ```bash
 npm run test:e2e:smoke
 npm run report:e2e:smoke
 ```
 
-Release E2E suite:
+Release E2E:
 
 ```bash
 npm run test:e2e:release
 npm run report:e2e:release
 ```
 
-Combined baseline verification:
+Combined baseline:
 
 ```bash
 npm run verify:baseline
 ```
 
-Security/emulator suite:
-
-```bash
-npm run test:security
-```
-
 Notes:
-- E2E suites require env vars: `MPA_BASE_URL`, `MPA_ADMIN_EMAIL`, `MPA_ADMIN_PASSWORD`, `MPA_DIRECTOR_EMAIL`, `MPA_DIRECTOR_PASSWORD`.
-- Smoke E2E also requires judge credentials: `MPA_JUDGE_EMAIL`, `MPA_JUDGE_PASSWORD`.
-- `verify:baseline` runs unit + smoke by default and only runs release E2E when `MPA_RUN_RELEASE_E2E=true`.
-- `verify:baseline` skips E2E when required env vars are missing unless `MPA_REQUIRE_E2E=true`.
+- E2E requires the appropriate `MPA_*` env vars for admin, director, and judge logins.
+- `verify:baseline` skips E2E when the required env vars are not present unless `MPA_REQUIRE_E2E=true`.
 
 ## Deployment
 
-Frontend/UI-only changes:
+Hosting only:
 
 ```bash
 firebase deploy --only hosting
 ```
 
-Functions-only changes:
+Functions only:
 
 ```bash
 firebase deploy --only functions
 ```
 
+Rules only:
+
+```bash
+firebase deploy --only firestore:rules,storage
+```
+
 Full deploy:
 
 ```bash
-firebase deploy
+firebase deploy --only hosting,functions,firestore:rules,storage
 ```
 
 ## Operational Notes
 
-- Prefer stability over feature density in admin flows.
-- Avoid loading hidden heavy views until needed.
-- Remove dead/legacy UI paths when replacing workflows.
-- For production event prep, validate the active event, judge assignments, and packet release flow before event day.
-- Use `Admin > Readiness` to run go/no-go preflight checks, track runbook milestones, and cleanup unreleased rehearsal artifacts.
-- Use `Admin > Readiness > Full Rehearsal Walkthrough` to run the live-day sequence with start/reset controls, step-level status, and direct links into the right admin view for each checkpoint.
-- Walkthrough status now records `not-started`/`in-progress`/`complete` metadata (who/when) in event readiness history, and Start/Reset gracefully falls back to per-step updates if the new callable is not yet deployed.
-- The `setReadinessWalkthrough` callable is reset-only (`incomplete`) by design to prevent one-call bypass of checklist completion.
-- If the walkthrough bulk-reset callable is unavailable, the client falls back to per-step updates and periodically retries callable support detection.
-- Current preflight checks cover active-event status, assignment completeness/uniqueness/role validity, schedule presence, scheduled-entry readiness coverage, and walkthrough completion for live events.
-- Rehearsal cleanup is intentionally limited to rehearsal-mode events; the Readiness UI disables cleanup controls for live-mode events.
-- Readiness actions share a common in-flight lock to prevent overlapping preflight/walkthrough/cleanup mutations.
-- `Admin > Readiness` also shows readiness history (latest preflight and runbook step updates with timestamps and actor UIDs) for operational auditability.
-- Use event mode (`Live` vs `Rehearsal`) at event creation time; the active mode is shown globally in the event banner after sign-in.
-
-## App Check Rollout Status
-
-- Client App Check rollout is currently `deferred` by default.
-- Manual local override for troubleshooting: set `localStorage["mpa.enableAppCheck"] = "1"`.
-- Functions App Check enforcement is controlled by `APP_CHECK_ENFORCEMENT_MODE`:
-  - `deferred` (default): does not enforce App Check on callables currently using sensitive options.
-  - `enforced`: requires App Check on those callables.
-
-## Signed URL Fallback Guardrail
-
-- `signStorageReadPath` prefers short-lived signed URLs.
-- If URL signing fails, token URL fallback is disabled by default (fail closed).
-- Emergency override only: set `ALLOW_STORAGE_TOKEN_FALLBACK=1` to allow use of existing token URLs.
+- Prefer operational clarity over feature breadth.
+- Do not reintroduce hidden legacy judge/admin paths as primary workflows.
+- Use `Admin > Live Submissions` for review, reassignment, exclusion, and raw-assessment cleanup.
+- Use `Admin > Packets & Results` for official packet review, per-position management, release/unrelease, and result file generation.
+- Use `Admin > Readiness` for preflight checks, walkthroughs, and rehearsal cleanup.
+- Generated results packet PDFs now use the current stage and sight form templates and current district/site labels.

@@ -1,5 +1,18 @@
 # MPAapp Refactor Plan
 
+## Status
+
+Phase 1 of this plan is now implemented on `main` and deployed to production.
+
+Completed outcomes:
+- capture-first judge workflow with required caption scoring
+- admin `Live Submissions` review and officialization workflow
+- canonical `officialAssessments` results path
+- director ensemble-first workspace shell
+- admin Phase 1 workspace shell
+
+What remains from this plan is follow-on cleanup and future-phase work, not the initial baseline.
+
 ## Product Direction
 
 This refactor moves MPAapp toward a clearer operating model:
@@ -116,14 +129,14 @@ A director should be able to:
 - Keep event information and site information read-only and admin-managed.
 - Keep packets/results read-focused and attached to the same director workspace.
 
-## Proposed Director IA
+## Delivered Director IA
 
 - Dashboard
+- Registration
 - My Ensembles
 - Ensemble Workspace
 - Event Info
-- Site Info
-- Packets / Results
+- Official Results Packet
 
 ## Ensemble Workspace Sections
 

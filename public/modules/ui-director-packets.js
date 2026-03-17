@@ -405,7 +405,7 @@ export function createDirectorPacketRenderers({
         const scoringFooter = document.createElement("div");
         scoringFooter.className = "note";
         scoringFooter.textContent =
-          `Caption Total: ${group.captionScoreTotal || 0} - Final Rating: ${group.computedFinalRatingLabel || "N/A"}`;
+          `Caption Total: ${group.captionScoreTotal || 0} - Judge Overall Rating: ${group.computedFinalRatingLabel || "N/A"}`;
 
         scoringCard.appendChild(scoringHeader);
         scoringCard.appendChild(judgeInfo);
@@ -588,16 +588,18 @@ export function createDirectorPacketRenderers({
       const ensembleLabel = document.createElement("strong");
       ensembleLabel.textContent = "Ensemble:";
       ensembleRow.appendChild(ensembleLabel);
-      ensembleRow.appendChild(document.createTextNode(` ${group.ensembleId}`));
+      ensembleRow.appendChild(
+        document.createTextNode(` ${group.ensembleName || group.ensembleId || "Unknown"}`)
+      );
       const schoolRow = document.createElement("div");
       schoolRow.className = "note";
-      schoolRow.textContent = `School: ${group.schoolId}`;
+      schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
       const directorRow = document.createElement("div");
       directorRow.className = "note";
       directorRow.textContent = `Director: ${directorName}`;
       const eventRow = document.createElement("div");
       eventRow.className = "note";
-      eventRow.textContent = `Event: ${group.eventId}`;
+      eventRow.textContent = `Event: ${group.eventName || group.eventId || "Unassigned"}`;
       const gradeRow = document.createElement("div");
       gradeRow.className = "note";
       gradeRow.textContent = `Grade: ${group.grade || "Unknown"}`;

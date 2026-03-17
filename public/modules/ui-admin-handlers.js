@@ -15,6 +15,7 @@ export function createAdminHandlerBinder({
   applyAdminView,
   closeAdminSchoolDetail,
   renderAdminPacketsBySchedule,
+  renderAdminLiveSubmissions,
   renderMockAdminPacketPreview,
   confirmUser,
   releaseMockPacketForAshleyTesting,
@@ -180,6 +181,15 @@ export function createAdminHandlerBinder({
         state.admin.packetsSchoolId = els.adminPacketsSchoolSelect?.value || "";
         if (state.admin.currentView === "packets") {
           renderAdminPacketsBySchedule();
+        }
+      });
+    }
+
+    if (els.adminSubmissionsFilter) {
+      els.adminSubmissionsFilter.addEventListener("change", () => {
+        state.admin.rawAssessmentFilter = els.adminSubmissionsFilter?.value || "pending";
+        if (state.admin.currentView === "submissions") {
+          renderAdminLiveSubmissions();
         }
       });
     }
@@ -563,7 +573,7 @@ export function createAdminHandlerBinder({
           state.admin.schoolManageEnsembles?.find((item) => item.id === ensembleId)?.name || ensembleId;
         const schoolLabel = school.name || school.id;
         const ok = confirmUser(
-          `Delete ensemble ${ensembleName} from ${schoolLabel}? This will fully remove linked schedule, entries, submissions, and packets.`
+          `Delete ensemble ${ensembleName} from ${schoolLabel}? This will fully remove linked schedule, entries, official assessments, supporting release records, and packets.`
         );
         if (!ok) return;
         els.adminSchoolEnsembleDeleteBtn.dataset.loadingLabel = "Deleting...";

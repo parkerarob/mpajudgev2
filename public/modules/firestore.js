@@ -75,15 +75,71 @@ export async function fetchPacketSubmissions(eventId, ensembleId) {
     JUDGE_POSITIONS.stage3,
     JUDGE_POSITIONS.sight,
   ];
+  const normalizePacketSubmission = ({ official = null, submission = null } = {}) => {
+    if (!official && !submission) return null;
+    if (!official) {
+      return { ...submission, sourceType: "submission" };
+    }
+    const officialStatus = String(official.status || "").trim().toLowerCase();
+    return {
+      ...(submission || {}),
+      ...official,
+      locked: true,
+      status: officialStatus === "released" ? "released" : "submitted",
+      sourceType: "officialAssessment",
+      releaseEligible: official.releaseEligible !== false,
+      canonicalAudioUrl:
+        official.audioUrl ||
+        submission?.canonicalAudioUrl ||
+        submission?.audioUrl ||
+        "",
+      canonicalAudioPath:
+        official.audioPath ||
+        submission?.canonicalAudioPath ||
+        submission?.audioPath ||
+        "",
+      canonicalAudioDurationSec: Number(
+        official.audioDurationSec ||
+          submission?.canonicalAudioDurationSec ||
+          submission?.audioDurationSec ||
+          0
+      ),
+      audioSegments: Array.isArray(official.audioSegments) && official.audioSegments.length
+        ? official.audioSegments
+        : Array.isArray(submission?.audioSegments)
+          ? submission.audioSegments
+          : [],
+      supplementalAudioUrl: String(
+        official.supplementalAudioUrl ||
+          submission?.supplementalAudioUrl ||
+          ""
+      ),
+      supplementalAudioPath: String(
+        official.supplementalAudioPath ||
+          submission?.supplementalAudioPath ||
+          ""
+      ),
+      supplementalAudioDurationSec: Number(
+        official.supplementalAudioDurationSec ||
+          submission?.supplementalAudioDurationSec ||
+          0
+      ),
+    };
+  };
   const submissions = {};
   await Promise.all(
     positions.map(async (position) => {
-      const submissionId = `${eventId}_${ensembleId}_${position}`;
-      const submissionRef = doc(db, COLLECTIONS.submissions, submissionId);
-      const submissionSnap = await getDoc(submissionRef);
-      submissions[position] = submissionSnap.exists()
-        ? { id: submissionSnap.id, ...submissionSnap.data() }
-        : null;
+      const assessmentId = `${eventId}_${ensembleId}_${position}`;
+      const officialRef = doc(db, COLLECTIONS.officialAssessments, assessmentId);
+      const submissionRef = doc(db, COLLECTIONS.submissions, assessmentId);
+      const [officialSnap, submissionSnap] = await Promise.all([
+        getDoc(officialRef),
+        getDoc(submissionRef),
+      ]);
+      submissions[position] = normalizePacketSubmission({
+        official: officialSnap.exists() ? { id: officialSnap.id, ...officialSnap.data() } : null,
+        submission: submissionSnap.exists() ? { id: submissionSnap.id, ...submissionSnap.data() } : null,
+      });
     })
   );
   return submissions;

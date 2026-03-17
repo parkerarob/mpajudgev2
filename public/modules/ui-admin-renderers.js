@@ -18,6 +18,9 @@ export function createAdminRenderers({
   mergeScheduleDayBreaks,
   formatPerformanceAt,
   getPacketData,
+  officializeRawAssessment,
+  excludeRawAssessment,
+  reassignRawAssessment,
   fetchDirectorPacketAssets,
   generateOpenPacketPrintAsset,
   regenerateDirectorPacketExport,
@@ -54,6 +57,13 @@ export function createAdminRenderers({
   scheduleAdminPreflightRefresh,
   refreshPreEventScheduleTimelineStarts,
 } = {}) {
+  const JUDGE_POSITION_LABELS = {
+    stage1: "Stage 1",
+    stage2: "Stage 2",
+    stage3: "Stage 3",
+    sight: "Sight",
+  };
+
   let adminSchoolDetailRenderInFlight = false;
   let adminSchoolDetailRenderQueued = false;
   let adminPacketsRenderInFlight = false;
@@ -76,6 +86,456 @@ export function createAdminRenderers({
     } catch (_error) {
       return "";
     }
+  }
+
+  function formatRawAssessmentStatus(value) {
+    const normalized = String(value || "").trim() || "draft";
+    return normalized.replace(/_/g, " ");
+  }
+
+  function formatJudgeRatingLabel(value) {
+    const label = String(value || "").trim();
+    return label || "N/A";
+  }
+
+  function formatCaptionKeyLabel(value) {
+    return String(value || "")
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase())
+      .trim() || "Caption";
+  }
+
+  function buildRawAssessmentQueue() {
+    const filter = String(state.admin.rawAssessmentFilter || "pending").trim();
+    const items = Array.isArray(state.admin.rawAssessments) ? state.admin.rawAssessments : [];
+    const eventId = String(state.event.active?.id || "").trim();
+    return items.filter((item) => {
+      if (eventId && item.eventId && String(item.eventId).trim() !== eventId) return false;
+      if (filter === "all") return true;
+      if (filter === "attached") return String(item.associationState || "") === "attached";
+      if (filter === "uncertain") return String(item.associationState || "") !== "attached";
+      if (filter === "officialized") return String(item.status || "") === "officialized";
+      if (filter === "excluded") return String(item.status || "") === "excluded";
+      return String(item.reviewState || "") === "pending" || String(item.status || "") === "submitted";
+    });
+  }
+
+  function getLiveSubmissionTargetCache(eventId) {
+    const activeEventId = String(eventId || "").trim();
+    if (!activeEventId) return [];
+    if (state.admin.liveSubmissionTargetsEventId !== activeEventId) {
+      state.admin.liveSubmissionTargetsEventId = activeEventId;
+      state.admin.liveSubmissionTargets = [];
+      state.admin.liveSubmissionTargetsLoading = false;
+    }
+    return Array.isArray(state.admin.liveSubmissionTargets) ? state.admin.liveSubmissionTargets : [];
+  }
+
+  async function ensureLiveSubmissionTargets(eventId) {
+    const activeEventId = String(eventId || "").trim();
+    if (!activeEventId || state.admin.liveSubmissionTargetsLoading) return;
+    const cachedTargets = getLiveSubmissionTargetCache(activeEventId);
+    if (cachedTargets.length) return;
+    state.admin.liveSubmissionTargetsLoading = true;
+    try {
+      const [scheduleEntries, registeredRaw] = await Promise.all([
+        fetchScheduleEntries(activeEventId).catch(() => []),
+        fetchRegisteredEnsembles(activeEventId).catch(() => []),
+      ]);
+      const { active: registered } = await resolveCurrentRegisteredEnsembles(activeEventId, registeredRaw);
+      const targetMap = new Map();
+      [...scheduleEntries, ...registered].forEach((entry) => {
+        const schoolId = String(entry.schoolId || "").trim();
+        const ensembleId = String(entry.ensembleId || entry.id || "").trim();
+        if (!schoolId || !ensembleId) return;
+        const key = `${schoolId}::${ensembleId}`;
+        const existing = targetMap.get(key) || {};
+        targetMap.set(key, {
+          schoolId,
+          ensembleId,
+          schoolName:
+            String(entry.schoolName || "").trim() ||
+            existing.schoolName ||
+            getSchoolNameById(state.admin.schoolsList, schoolId) ||
+            schoolId,
+          ensembleName:
+            String(entry.ensembleName || entry.name || "").trim() ||
+            existing.ensembleName ||
+            ensembleId,
+          eventId: String(entry.eventId || activeEventId).trim(),
+          orderIndex: Number.isFinite(Number(entry.orderIndex))
+            ? Number(entry.orderIndex)
+            : (Number.isFinite(Number(existing.orderIndex)) ? Number(existing.orderIndex) : Number.MAX_SAFE_INTEGER),
+        });
+      });
+      state.admin.liveSubmissionTargets = Array.from(targetMap.values()).sort((a, b) => {
+        const aOrder = Number(a.orderIndex);
+        const bOrder = Number(b.orderIndex);
+        if (Number.isFinite(aOrder) && Number.isFinite(bOrder) && aOrder !== bOrder) return aOrder - bOrder;
+        const aLabel = `${a.schoolName || ""} ${a.ensembleName || a.ensembleId || ""}`.toLowerCase();
+        const bLabel = `${b.schoolName || ""} ${b.ensembleName || b.ensembleId || ""}`.toLowerCase();
+        return aLabel.localeCompare(bLabel);
+      });
+      if (!state.event.rosterEntries?.length && scheduleEntries.length) {
+        state.event.rosterEntries = [...scheduleEntries];
+      }
+    } catch (error) {
+      console.warn("ensureLiveSubmissionTargets failed", { eventId: activeEventId, error });
+    } finally {
+      state.admin.liveSubmissionTargetsLoading = false;
+      if (state.admin.currentView === "submissions") {
+        renderAdminLiveSubmissions();
+      }
+    }
+  }
+
+  function resolveSubmissionTargetOptions(item) {
+    const eventId = String(state.event.active?.id || item?.eventId || "").trim();
+    const cachedTargets = getLiveSubmissionTargetCache(eventId);
+    if (!cachedTargets.length) {
+      ensureLiveSubmissionTargets(eventId);
+    }
+    const rosterFallback = (Array.isArray(state.event.rosterEntries) ? state.event.rosterEntries : [])
+      .filter((entry) => !eventId || String(entry.eventId || state.event.active?.id || "").trim() === eventId)
+      .map((entry) => ({
+        schoolId: String(entry.schoolId || "").trim(),
+        ensembleId: String(entry.ensembleId || entry.id || "").trim(),
+        schoolName:
+          String(entry.schoolName || "").trim() ||
+          getSchoolNameById(state.admin.schoolsList, entry.schoolId) ||
+          String(entry.schoolId || "").trim(),
+        ensembleName: String(entry.ensembleName || entry.name || "").trim(),
+        eventId,
+        orderIndex: Number.isFinite(Number(entry.orderIndex)) ? Number(entry.orderIndex) : Number.MAX_SAFE_INTEGER,
+      }))
+      .filter((entry) => entry.schoolId && entry.ensembleId);
+    const targetMap = new Map();
+    [...cachedTargets, ...rosterFallback].forEach((entry) => {
+      const key = `${entry.schoolId}::${entry.ensembleId}`;
+      if (!targetMap.has(key)) targetMap.set(key, entry);
+    });
+    const selectedSchoolId = String(item?.schoolId || "").trim();
+    const selectedEnsembleId = String(item?.ensembleId || "").trim();
+    if (selectedSchoolId && selectedEnsembleId) {
+      const key = `${selectedSchoolId}::${selectedEnsembleId}`;
+      if (!targetMap.has(key)) {
+        targetMap.set(key, {
+          schoolId: selectedSchoolId,
+          ensembleId: selectedEnsembleId,
+          schoolName: getSchoolNameById(state.admin.schoolsList, selectedSchoolId) || selectedSchoolId,
+          ensembleName: selectedEnsembleId,
+          eventId,
+          orderIndex: Number.MAX_SAFE_INTEGER,
+        });
+      }
+    }
+    return Array.from(targetMap.values()).sort((a, b) => {
+      const aOrder = Number(a.orderIndex);
+      const bOrder = Number(b.orderIndex);
+      if (Number.isFinite(aOrder) && Number.isFinite(bOrder) && aOrder !== bOrder) return aOrder - bOrder;
+      const aLabel = `${a.schoolName || ""} ${a.ensembleName || a.ensembleId || ""}`.toLowerCase();
+      const bLabel = `${b.schoolName || ""} ${b.ensembleName || b.ensembleId || ""}`.toLowerCase();
+      return aLabel.localeCompare(bLabel);
+    });
+  }
+
+  function renderAdminLiveSubmissions() {
+    if (!els.adminSubmissionsList || !els.adminSubmissionDetail) return;
+    const items = buildRawAssessmentQueue();
+    if (!state.admin.selectedRawAssessmentId || !items.some((item) => item.id === state.admin.selectedRawAssessmentId)) {
+      state.admin.selectedRawAssessmentId = items[0]?.id || "";
+    }
+    const selected = items.find((item) => item.id === state.admin.selectedRawAssessmentId) || null;
+    if (els.adminSubmissionsFilter && els.adminSubmissionsFilter.value !== (state.admin.rawAssessmentFilter || "pending")) {
+      els.adminSubmissionsFilter.value = state.admin.rawAssessmentFilter || "pending";
+    }
+    if (els.adminSubmissionsHint) {
+      els.adminSubmissionsHint.textContent = items.length
+        ? `${items.length} submission${items.length === 1 ? "" : "s"} in queue.`
+        : "No submissions in this filter.";
+    }
+    els.adminSubmissionsList.innerHTML = "";
+    items.forEach((item) => {
+      const li = document.createElement("li");
+      li.className = "list-item";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "admin-school-row-btn";
+      const targetOptions = resolveSubmissionTargetOptions(item);
+      const matchedTarget = targetOptions.find(
+        (entry) =>
+          String(entry.schoolId || "") === String(item.schoolId || "") &&
+          String(entry.ensembleId || "") === String(item.ensembleId || "")
+      );
+      const schoolLabel =
+        matchedTarget?.schoolName ||
+        getSchoolNameById(state.admin.schoolsList, item.schoolId) ||
+        item.schoolId ||
+        "School";
+      const ensembleLabel = normalizeEnsembleDisplayName({
+        schoolName: schoolLabel,
+        ensembleName: matchedTarget?.ensembleName || item.ensembleName,
+        ensembleId: item.ensembleId,
+      }) || "Unassigned ensemble";
+      const title = document.createElement("strong");
+      title.textContent = `${schoolLabel} - ${ensembleLabel}`;
+      const meta = document.createElement("div");
+      meta.className = "note";
+      meta.textContent = [
+        item.judgeName || item.judgeEmail || "Unknown judge",
+        item.judgePosition || "No position",
+        formatRawAssessmentStatus(item.status),
+        String(item.associationState || "uncertain"),
+      ].filter(Boolean).join(" • ");
+      btn.appendChild(title);
+      btn.appendChild(meta);
+      btn.addEventListener("click", () => {
+        state.admin.selectedRawAssessmentId = item.id;
+        renderAdminLiveSubmissions();
+      });
+      li.appendChild(btn);
+      els.adminSubmissionsList.appendChild(li);
+    });
+
+    els.adminSubmissionDetail.innerHTML = "";
+    if (!selected) {
+      const empty = document.createElement("div");
+      empty.className = "note";
+      empty.textContent = "Select a submission to review.";
+      els.adminSubmissionDetail.appendChild(empty);
+      return;
+    }
+
+    const detailTargets = resolveSubmissionTargetOptions(selected);
+    const matchedDetailTarget = detailTargets.find(
+      (entry) =>
+        String(entry.schoolId || "") === String(selected.schoolId || "") &&
+        String(entry.ensembleId || "") === String(selected.ensembleId || "")
+    );
+    const detailSchoolLabel =
+      matchedDetailTarget?.schoolName ||
+      getSchoolNameById(state.admin.schoolsList, selected.schoolId) ||
+      selected.schoolId ||
+      "School";
+    const detailEnsembleLabel = normalizeEnsembleDisplayName({
+      schoolName: detailSchoolLabel,
+      ensembleName: matchedDetailTarget?.ensembleName || selected.ensembleName,
+      ensembleId: selected.ensembleId,
+    }) || selected.ensembleId || "No ensemble";
+
+    const title = document.createElement("h4");
+    title.textContent = selected.judgeName || selected.judgeEmail || selected.id;
+    const meta = document.createElement("div");
+    meta.className = "note";
+    meta.textContent = [
+      selected.eventId || state.event.active?.id || "No event",
+      `${detailSchoolLabel} - ${detailEnsembleLabel}`,
+      selected.judgePosition || "No position",
+      `Status ${formatRawAssessmentStatus(selected.status)}`,
+      `Association ${selected.associationState || "uncertain"}`,
+    ].join(" • ");
+    els.adminSubmissionDetail.appendChild(title);
+    els.adminSubmissionDetail.appendChild(meta);
+
+    if (selected.audioUrl) {
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.className = "audio";
+      audio.src = selected.audioUrl;
+      els.adminSubmissionDetail.appendChild(audio);
+    }
+
+    const commentsLabel = document.createElement("strong");
+    commentsLabel.textContent = "Transcript / Reference Notes";
+    els.adminSubmissionDetail.appendChild(commentsLabel);
+    const comments = document.createElement("div");
+    comments.className = "note";
+    comments.textContent =
+      selected.writtenComments || selected.transcript || "No transcript or reference notes saved.";
+    els.adminSubmissionDetail.appendChild(comments);
+
+    const scoringMeta = document.createElement("div");
+    scoringMeta.className = "note";
+    scoringMeta.textContent = [
+      `Judge Overall Rating ${formatJudgeRatingLabel(selected.computedFinalRatingLabel)}`,
+      Number.isFinite(Number(selected.captionScoreTotal))
+        ? `Caption Total ${Number(selected.captionScoreTotal)}`
+        : "Caption Total N/A",
+    ].join(" • ");
+    els.adminSubmissionDetail.appendChild(scoringMeta);
+
+    const captions = selected.captions && typeof selected.captions === "object"
+      ? selected.captions
+      : {};
+    const captionKeys = Object.keys(captions);
+    const captionSection = document.createElement("div");
+    captionSection.className = "stack";
+    const captionTitle = document.createElement("strong");
+    captionTitle.textContent = "Caption Scoring";
+    captionSection.appendChild(captionTitle);
+    if (!captionKeys.length) {
+      const emptyCaption = document.createElement("div");
+      emptyCaption.className = "note";
+      emptyCaption.textContent = "No caption scores saved on this raw submission.";
+      captionSection.appendChild(emptyCaption);
+    } else {
+      captionKeys.forEach((key) => {
+        const caption = captions[key] || {};
+        const row = document.createElement("div");
+        row.className = "panel stack";
+        const title = document.createElement("strong");
+        title.textContent = formatCaptionKeyLabel(key);
+        const meta = document.createElement("div");
+        meta.className = "note";
+        meta.textContent = [
+          `Score ${String(caption.gradeLetter || "").trim() || "N/A"}${String(caption.gradeModifier || "").trim() || ""}`,
+        ].join(" • ");
+        const comment = document.createElement("div");
+        comment.className = "note";
+        comment.textContent = String(caption.comment || "").trim() || "No comment.";
+        row.appendChild(title);
+        row.appendChild(meta);
+        row.appendChild(comment);
+        captionSection.appendChild(row);
+      });
+    }
+    els.adminSubmissionDetail.appendChild(captionSection);
+
+    const eventId = String(state.event.active?.id || selected.eventId || "").trim();
+    const matchingRoster = resolveSubmissionTargetOptions(selected).filter(
+      (entry) => !eventId || String(entry.eventId || state.event.active?.id || "").trim() === eventId
+    );
+
+    const ensembleSelect = document.createElement("select");
+    if (!matchingRoster.length) {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "No event ensembles loaded";
+      placeholder.selected = true;
+      ensembleSelect.appendChild(placeholder);
+    }
+    matchingRoster.forEach((entry) => {
+      const option = document.createElement("option");
+      option.value = `${entry.schoolId || ""}::${entry.ensembleId || ""}`;
+      option.textContent = `${entry.schoolName || entry.schoolId || "School"} - ${
+        normalizeEnsembleDisplayName({
+          schoolName: entry.schoolName || entry.schoolId || "",
+          ensembleName: entry.ensembleName,
+          ensembleId: entry.ensembleId,
+        }) || entry.ensembleId || "Ensemble"
+      }`;
+      if ((entry.ensembleId || "") === (selected.ensembleId || "")) {
+        option.selected = true;
+      }
+      ensembleSelect.appendChild(option);
+    });
+    const positionSelect = document.createElement("select");
+    ["stage1", "stage2", "stage3", "sight"].forEach((position) => {
+      const option = document.createElement("option");
+      option.value = position;
+      option.textContent = position;
+      if (position === selected.judgePosition) option.selected = true;
+      positionSelect.appendChild(option);
+    });
+    const formTypeSelect = document.createElement("select");
+    ["stage", "sight"].forEach((formType) => {
+      const option = document.createElement("option");
+      option.value = formType;
+      option.textContent = formType;
+      if (formType === selected.formType) option.selected = true;
+      formTypeSelect.appendChild(option);
+    });
+
+    const controlWrap = document.createElement("div");
+    controlWrap.className = "stack";
+    const ensembleLabel = document.createElement("label");
+    ensembleLabel.textContent = "Target Ensemble";
+    ensembleLabel.appendChild(ensembleSelect);
+    const positionLabel = document.createElement("label");
+    positionLabel.textContent = "Judge Position";
+    positionLabel.appendChild(positionSelect);
+    const formLabel = document.createElement("label");
+    formLabel.textContent = "Form Type";
+    formLabel.appendChild(formTypeSelect);
+    controlWrap.appendChild(ensembleLabel);
+    controlWrap.appendChild(positionLabel);
+    controlWrap.appendChild(formLabel);
+    els.adminSubmissionDetail.appendChild(controlWrap);
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const reassignBtn = document.createElement("button");
+    reassignBtn.type = "button";
+    reassignBtn.textContent = "Reassign";
+    const officializeBtn = document.createElement("button");
+    officializeBtn.type = "button";
+    officializeBtn.textContent = "Officialize";
+    const excludeBtn = document.createElement("button");
+    excludeBtn.type = "button";
+    excludeBtn.className = "ghost";
+    excludeBtn.textContent = "Exclude";
+    actions.appendChild(reassignBtn);
+    actions.appendChild(officializeBtn);
+    actions.appendChild(excludeBtn);
+    els.adminSubmissionDetail.appendChild(actions);
+
+    const status = document.createElement("div");
+    status.className = "note";
+    els.adminSubmissionDetail.appendChild(status);
+
+    const getSelection = () => {
+      const [schoolId = "", ensembleId = ""] = String(ensembleSelect.value || "").split("::");
+      return {
+        schoolId,
+        ensembleId,
+        eventId,
+        judgePosition: positionSelect.value || selected.judgePosition || "",
+        formType: formTypeSelect.value || selected.formType || "stage",
+      };
+    };
+
+    reassignBtn.addEventListener("click", async () => {
+      const next = getSelection();
+      status.textContent = "Reassigning...";
+      try {
+        await reassignRawAssessment({
+          rawAssessmentId: selected.id,
+          ...next,
+        });
+        status.textContent = "Reassigned.";
+      } catch (error) {
+        status.textContent = error?.message || "Unable to reassign.";
+      }
+    });
+
+    officializeBtn.addEventListener("click", async () => {
+      const next = getSelection();
+      status.textContent = "Officializing...";
+      try {
+        await officializeRawAssessment({
+          rawAssessmentId: selected.id,
+          ...next,
+        });
+        status.textContent = "Officialized.";
+      } catch (error) {
+        status.textContent = error?.message || "Unable to officialize.";
+      }
+    });
+
+    excludeBtn.addEventListener("click", async () => {
+      status.textContent = "Excluding...";
+      try {
+        await excludeRawAssessment({
+          rawAssessmentId: selected.id,
+          reason: "Excluded from live review queue.",
+        });
+        status.textContent = "Excluded.";
+      } catch (error) {
+        status.textContent = error?.message || "Unable to exclude.";
+      }
+    });
   }
 
   function normalizeOpenPacketStatus(value) {
@@ -846,7 +1306,8 @@ export function createAdminRenderers({
             const suggestedSchoolCount = Number(preview.suggestedSchoolMatches?.length || 0);
             const packetCount = Number(preview.packetCandidates || 0);
             const submissionCount = Number(preview.submissionCandidates || 0);
-            if (!eventCount && !schoolCount && !packetCount && !submissionCount) {
+            const officialAssessmentCount = Number(preview.officialAssessmentCandidates || 0);
+            if (!eventCount && !schoolCount && !packetCount && !submissionCount && !officialAssessmentCount) {
               if (suggestedEventCount || suggestedSchoolCount) {
                 alertUser(
                   `No explicitly tagged test artifacts found.\n` +
@@ -864,6 +1325,7 @@ export function createAdminRenderers({
               `Schools: ${schoolCount}\n` +
               `Open packets: ${packetCount}\n` +
               `Scheduled submissions: ${submissionCount}\n` +
+              `Official assessments: ${officialAssessmentCount}\n` +
               `Strict mode: ${preview.strictMode === true ? "on" : "off"}\n` +
               `Active event skipped: ${Number(preview.activeEventSkipped?.length || 0)}\n\n` +
               "Proceed with permanent deletion?"
@@ -882,6 +1344,7 @@ export function createAdminRenderers({
               `Deleted schools: ${result.deletedSchools || 0}\n` +
               `Deleted open packets: ${result.deletedOpenPackets || 0}\n` +
               `Deleted scheduled submissions: ${result.deletedSubmissions || 0}\n` +
+              `Deleted official assessments: ${result.deletedOfficialAssessments || 0}\n` +
               `Deleted audio-only rows: ${result.deletedAudioResults || 0}`
             );
           } catch (error) {
@@ -933,10 +1396,10 @@ export function createAdminRenderers({
             alertUser(
               `${runDry ? "Dry run complete" : "Open tape metadata repair complete"}.\n` +
               `Open packets updated: ${result.packetsUpdated || 0}\n` +
-              `Official submissions updated: ${result.submissionsUpdated || 0}\n` +
+              `Official assessments updated: ${result.submissionsUpdated || 0}\n` +
               `Packet exports updated: ${result.exportsUpdated || 0}\n` +
               `Skipped (no sessions): ${result.skippedNoSessions || 0}\n` +
-              `Skipped (no official submission): ${result.skippedNoSubmission || 0}`
+              `Skipped (no official assessment): ${result.skippedNoSubmission || 0}`
             );
           } catch (error) {
             console.error("repairOpenSubmissionAudioMetadata failed", error);
@@ -1072,7 +1535,7 @@ export function createAdminRenderers({
           ensembleName: entry.ensembleName || "",
           ensembleId,
         });
-        const performLabel = formatPerformanceAt(entry.performanceAt);
+        const performLabel = formatPerformanceAt(entry.performanceAt) || String(entry.stageTime || "").trim();
         const packetData = packetDataByEntryId.get(entry.id) || null;
         const summary = packetData?.summary || null;
         reviewedCount += 1;
@@ -1111,6 +1574,18 @@ export function createAdminRenderers({
         meta.textContent = `Director: ${packetData?.directorName || "Unknown"} - Grade: ${packetData?.grade || "Unknown"} - Overall: ${summary?.overall?.label || "N/A"}`;
         li.appendChild(meta);
 
+        if (summary && !summary.requiredComplete) {
+          const blockerNote = document.createElement("div");
+          blockerNote.className = "note";
+          const blockers = Array.isArray(summary.blockingPositions) ? summary.blockingPositions : [];
+          blockerNote.textContent = blockers.length
+            ? `Blocking positions: ${
+              blockers.map((position) => JUDGE_POSITION_LABELS[position] || position).join(", ")
+            }`
+            : "Blocking positions: Packet is incomplete.";
+          li.appendChild(blockerNote);
+        }
+
         const actions = document.createElement("div");
         actions.className = "row";
         const releaseBtn = document.createElement("button");
@@ -1148,7 +1623,7 @@ export function createAdminRenderers({
         }
         deleteBtn.addEventListener("click", async () => {
           const ok = confirmUser(
-            `Delete scheduled packet for ${schoolName} - ${ensembleName}? This removes all judge submissions and packet export.`
+            `Delete scheduled packet for ${schoolName} - ${ensembleName}? This removes official assessments, supporting release records, and the packet export.`
           );
           if (!ok) return;
           deleteBtn.disabled = true;
@@ -1723,6 +2198,7 @@ export function createAdminRenderers({
 
   return {
     renderAdminSchoolDetail,
+    renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
     renderRegisteredEnsemblesList,
   };

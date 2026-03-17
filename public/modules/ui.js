@@ -42,7 +42,6 @@ import {
   getLunchTotalsBySchool,
   regenerateDirectorPacketExport,
   renameEvent,
-  setPizzaOrdersClosed,
   lockOpenPacket,
   lockSubmission,
   linkOpenPacketToEnsemble,
@@ -73,6 +72,10 @@ import {
   watchUsers,
   fetchRegisteredEnsembles,
   fetchScheduleEntries,
+  watchRawAssessments,
+  officializeRawAssessment,
+  excludeRawAssessment,
+  reassignRawAssessment,
   updateEntryCheckinFields,
 } from "./admin.js";
 import { computeScheduleTimeline } from "./scheduleTimeline.js";
@@ -95,7 +98,6 @@ import {
   getMpaRepertoireForGrade,
   getDirectorSchoolId,
   invalidateDirectorSchoolLunchTotalCache,
-  isPizzaOrderWindowClosed,
   loadDirectorEntry,
   loadDirectorSchoolLunchTotal,
   markDirectorDirty,
@@ -253,6 +255,13 @@ function canUseOpenJudge(profile) {
   if (state.app.features?.enableJudgeOpen === false) return false;
   const role = getEffectiveRole(profile);
   return role === "judge" || role === "admin";
+}
+
+function shouldAttachOpenJudgeWatchers(profile) {
+  if (state.app.features?.enableJudgeOpen === false) return false;
+  const role = getEffectiveRole(profile);
+  if (role === "judge") return true;
+  return role === "admin" && state.app.currentTab === "judge-open";
 }
 
 function isAdminLiveEventEnabled() {
@@ -477,44 +486,20 @@ function updateLunchTotalCost() {
   els.lunchTotalCost.textContent = `Pizza Order Total: $${total.toFixed(2)}`;
 }
 
-function lunchOrdersMatch(a = {}, b = {}) {
-  return Number(a.pepperoniQty || 0) === Number(b.pepperoniQty || 0) &&
-    Number(a.cheeseQty || 0) === Number(b.cheeseQty || 0) &&
-    String(a.pickupTiming || "") === String(b.pickupTiming || "") &&
-    String(a.notes || "") === String(b.notes || "");
-}
-
 function renderDirectorPizzaOrderWindowState() {
-  const closed = isPizzaOrderWindowClosed();
   if (els.pizzaOrderWindowStatus) {
-    els.pizzaOrderWindowStatus.textContent = closed
-      ? "Order window is closed. Existing pizza orders are read-only."
-      : "";
+    els.pizzaOrderWindowStatus.textContent = "";
   }
-  if (els.lunchPepperoniInput) els.lunchPepperoniInput.disabled = closed;
-  if (els.lunchCheeseInput) els.lunchCheeseInput.disabled = closed;
-  if (els.pizzaPickupTimingInput) els.pizzaPickupTimingInput.disabled = closed;
+  if (els.lunchPepperoniInput) els.lunchPepperoniInput.disabled = false;
+  if (els.lunchCheeseInput) els.lunchCheeseInput.disabled = false;
+  if (els.pizzaPickupTimingInput) els.pizzaPickupTimingInput.disabled = false;
   if (els.saveLunchBtn) {
-    els.saveLunchBtn.disabled = closed;
-    els.saveLunchBtn.textContent = closed ? "Order Window Closed" : "Save Pizza Order";
+    els.saveLunchBtn.disabled = false;
+    els.saveLunchBtn.textContent = "Save Pizza Order";
   }
 }
 
 function syncDirectorPizzaOrderWindowState() {
-  const closed = isPizzaOrderWindowClosed();
-  if (
-    closed &&
-    state.director.entryDraft?.lunchOrder &&
-    state.director.persistedLunchOrder &&
-    !lunchOrdersMatch(state.director.entryDraft.lunchOrder, state.director.persistedLunchOrder)
-  ) {
-    state.director.entryDraft.lunchOrder = {
-      ...state.director.persistedLunchOrder,
-    };
-    state.director.dirtySections.delete("lunch");
-    showDirectorSectionStatus("lunch", "Pizza ordering is closed for this event.", "error");
-    updateLunchTotalCost();
-  }
   renderDirectorPizzaOrderWindowState();
 }
 
@@ -1986,6 +1971,7 @@ function getAdminViewController() {
     renderLiveEventCheckinQueue,
     renderAdminSchoolDetail,
     renderRegisteredEnsemblesList,
+    renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
     renderAdminAnnouncerView,
     renderAdminReadinessView,
@@ -2049,6 +2035,7 @@ function getAdminHandlerBinder() {
     isAdminSettingsEnabled,
     applyAdminView,
     closeAdminSchoolDetail,
+    renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
     renderMockAdminPacketPreview,
     confirmUser,
@@ -2106,6 +2093,9 @@ function getAdminRenderers() {
     mergeScheduleDayBreaks,
     formatPerformanceAt,
     getPacketData,
+    officializeRawAssessment,
+    excludeRawAssessment,
+    reassignRawAssessment,
     fetchDirectorPacketAssets,
     generateOpenPacketPrintAsset,
     regenerateDirectorPacketExport,
@@ -3129,6 +3119,7 @@ export function stopWatchers() {
   if (state.subscriptions.assignments) state.subscriptions.assignments();
   if (state.subscriptions.judgeSubmission) state.subscriptions.judgeSubmission();
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
+  if (state.subscriptions.directorLegacyPackets) state.subscriptions.directorLegacyPackets();
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
   if (state.subscriptions.directorSchool) state.subscriptions.directorSchool();
   if (state.subscriptions.directorSchoolDirectors) state.subscriptions.directorSchoolDirectors();
@@ -3137,9 +3128,10 @@ export function stopWatchers() {
   if (state.subscriptions.judges) state.subscriptions.judges();
   if (state.subscriptions.directors) state.subscriptions.directors();
   if (state.subscriptions.users) state.subscriptions.users();
+  if (state.subscriptions.rawAssessments) state.subscriptions.rawAssessments();
   if (state.subscriptions.scheduleEnsembles) state.subscriptions.scheduleEnsembles();
-  if (state.subscriptions.openPackets) state.subscriptions.openPackets();
-  if (state.subscriptions.openSessions) state.subscriptions.openSessions();
+  if (typeof state.subscriptions.openPackets === "function") state.subscriptions.openPackets();
+  if (typeof state.subscriptions.openSessions === "function") state.subscriptions.openSessions();
   if (state.subscriptions.schools) state.subscriptions.schools();
   state.subscriptions.events = null;
   state.subscriptions.activeEvent = null;
@@ -3148,6 +3140,7 @@ export function stopWatchers() {
   state.subscriptions.assignments = null;
   state.subscriptions.judgeSubmission = null;
   state.subscriptions.directorPackets = null;
+  state.subscriptions.directorLegacyPackets = null;
   state.subscriptions.directorOpenPackets = null;
   state.subscriptions.directorSchool = null;
   state.subscriptions.directorSchoolDirectors = null;
@@ -3156,6 +3149,7 @@ export function stopWatchers() {
   state.subscriptions.judges = null;
   state.subscriptions.directors = null;
   state.subscriptions.users = null;
+  state.subscriptions.rawAssessments = null;
   state.subscriptions.scheduleEnsembles = null;
   state.subscriptions.openPackets = null;
   state.subscriptions.openSessions = null;
@@ -3291,6 +3285,9 @@ export function startWatchers() {
     if (state.app.currentTab === "admin" && state.admin.currentView === "packets") {
       renderAdminPacketsBySchedule();
     }
+    if (state.app.currentTab === "admin" && state.admin.currentView === "submissions") {
+      renderAdminLiveSubmissions();
+    }
     if (state.app.currentTab === "admin" && state.admin.currentView === "readiness") {
       renderAdminReadinessView();
     }
@@ -3413,11 +3410,28 @@ export function startWatchers() {
       state.judgeOpen.existingEnsembleIndexDirty = true;
     }
   }
-  if (judgeEnabled && canUseOpenJudge(state.auth.userProfile)) {
+  if (judgeEnabled && shouldAttachOpenJudgeWatchers(state.auth.userProfile)) {
     state.subscriptions.openPackets = watchOpenPackets((packets) => {
       state.judgeOpen.packets = packets || [];
       state.judgeOpen.openPacketsPendingRender = state.judgeOpen.packets;
       scheduleOpenPacketOptionsRender();
+    }, (error) => {
+      const code = String(error?.code || "");
+      if (code.includes("permission-denied")) {
+        state.judgeOpen.packets = [];
+        state.judgeOpen.openPacketsPendingRender = [];
+        scheduleOpenPacketOptionsRender();
+        return;
+      }
+      console.warn("open packet watcher error", error);
+    });
+  }
+  if (getEffectiveRole(state.auth.userProfile) === "admin") {
+    state.subscriptions.rawAssessments = watchRawAssessments((items) => {
+      state.admin.rawAssessments = Array.isArray(items) ? items : [];
+      if (state.app.currentTab === "admin" && state.admin.currentView === "submissions") {
+        renderAdminLiveSubmissions();
+      }
     });
   }
   if (judgeEnabled && getEffectiveRole(state.auth.userProfile) === "admin") {
@@ -3457,12 +3471,14 @@ function refreshDirectorWatchers() {
 
 function stopDirectorWatchers() {
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
+  if (state.subscriptions.directorLegacyPackets) state.subscriptions.directorLegacyPackets();
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
   if (state.subscriptions.directorSchool) state.subscriptions.directorSchool();
   if (state.subscriptions.directorSchoolDirectors) state.subscriptions.directorSchoolDirectors();
   if (state.subscriptions.directorEnsembles) state.subscriptions.directorEnsembles();
   if (state.subscriptions.directorEntry) state.subscriptions.directorEntry();
   state.subscriptions.directorPackets = null;
+  state.subscriptions.directorLegacyPackets = null;
   state.subscriptions.directorOpenPackets = null;
   state.subscriptions.directorSchool = null;
   state.subscriptions.directorSchoolDirectors = null;
@@ -3585,8 +3601,7 @@ export function renderEventList() {
     const modeLabel = String(event.eventMode || "").trim().toLowerCase() === "rehearsal" ?
       "Rehearsal" :
       "Live";
-    const pizzaLabel = event.pizzaOrdersClosed ? "Pizza Closed" : "Pizza Open";
-    activeBadge.textContent = `${event.isActive ? "Active" : "Inactive"} · ${modeLabel} · ${pizzaLabel}`;
+    activeBadge.textContent = `${event.isActive ? "Active" : "Inactive"} · ${modeLabel}`;
 
     const activateBtn = document.createElement("button");
     activateBtn.className = "ghost";
@@ -3649,16 +3664,6 @@ export function renderEventList() {
       renderEventList();
     });
 
-    const pizzaToggleBtn = document.createElement("button");
-    pizzaToggleBtn.className = event.pizzaOrdersClosed ? "ghost" : "danger";
-    pizzaToggleBtn.textContent = event.pizzaOrdersClosed ? "Reopen Pizza Orders" : "Close Pizza Orders";
-    pizzaToggleBtn.addEventListener("click", async () => {
-      await setPizzaOrdersClosed({
-        eventId: event.id,
-        closed: !event.pizzaOrdersClosed,
-      });
-    });
-
     if (isEditing) {
       const cancelBtn = document.createElement("button");
       cancelBtn.className = "ghost";
@@ -3680,7 +3685,6 @@ export function renderEventList() {
     });
 
     actions.appendChild(activeBadge);
-    actions.appendChild(pizzaToggleBtn);
     actions.appendChild(activateBtn);
     actions.appendChild(deactivateBtn);
     actions.appendChild(editBtn);
@@ -5450,6 +5454,10 @@ async function renderAdminPacketsBySchedule() {
   return getAdminRenderers().renderAdminPacketsBySchedule();
 }
 
+async function renderAdminLiveSubmissions() {
+  return getAdminRenderers().renderAdminLiveSubmissions();
+}
+
 export async function renderRegisteredEnsemblesList() {
   return getAdminRenderers().renderRegisteredEnsemblesList();
 }
@@ -5529,7 +5537,7 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
 
   const footer = document.createElement("div");
   footer.className = "note";
-  footer.textContent = `Caption Total: ${submission.captionScoreTotal || 0} - Final Rating: ${submission.computedFinalRatingLabel || "N/A"}`;
+  footer.textContent = `Caption Total: ${submission.captionScoreTotal || 0} - Judge Overall Rating: ${submission.computedFinalRatingLabel || "N/A"}`;
 
   card.appendChild(header);
   card.appendChild(judgeInfo);
@@ -5614,11 +5622,11 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
   if (showTranscript) {
     const transcript = document.createElement("details");
     const summary = document.createElement("summary");
-    summary.textContent = "Transcript";
+    summary.textContent = "Transcript / Reference Notes";
     transcript.appendChild(summary);
     const transcriptBody = document.createElement("div");
     transcriptBody.className = "note";
-    transcriptBody.textContent = submission.transcript || "No transcript.";
+    transcriptBody.textContent = submission.transcript || "No transcript or reference notes.";
     transcript.appendChild(transcriptBody);
     card.appendChild(transcript);
   }
@@ -5700,10 +5708,19 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
     releaseBtn.textContent = shouldRelease ? "Release Packet" : "Unrelease Packet";
     releaseBtn.disabled = shouldRelease ? !summary?.requiredComplete : false;
     releaseBtn.addEventListener("click", async () => {
-      if (shouldRelease) {
-      await releasePacket({ eventId, ensembleId: entry.ensembleId });
-    } else {
-        await unreleasePacket({ eventId, ensembleId: entry.ensembleId });
+      releaseBtn.disabled = true;
+      try {
+        if (shouldRelease) {
+          await releasePacket({ eventId, ensembleId: entry.ensembleId });
+        } else {
+          await unreleasePacket({ eventId, ensembleId: entry.ensembleId });
+        }
+        await renderAdminPacketsBySchedule();
+      } catch (error) {
+        console.error("Admin packet detail release toggle failed", error);
+        alert(error?.message || "Unable to update packet release state.");
+      } finally {
+        releaseBtn.disabled = false;
       }
     });
     actionRow.appendChild(releaseBtn);
@@ -5724,18 +5741,27 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
         lockBtn.textContent = isLocked ? "Unlock" : "Lock";
         lockBtn.className = "ghost";
         lockBtn.addEventListener("click", async () => {
-          if (isLocked) {
-            await unlockSubmission({
-              eventId,
-              ensembleId: entry.ensembleId,
-              judgePosition: position,
-            });
-          } else {
-            await lockSubmission({
-              eventId,
-              ensembleId: entry.ensembleId,
-              judgePosition: position,
-            });
+          lockBtn.disabled = true;
+          try {
+            if (isLocked) {
+              await unlockSubmission({
+                eventId,
+                ensembleId: entry.ensembleId,
+                judgePosition: position,
+              });
+            } else {
+              await lockSubmission({
+                eventId,
+                ensembleId: entry.ensembleId,
+                judgePosition: position,
+              });
+            }
+            await renderAdminPacketsBySchedule();
+          } catch (error) {
+            console.error("Admin packet detail lock toggle failed", error);
+            alert(error?.message || "Unable to update packet lock state.");
+          } finally {
+            lockBtn.disabled = false;
           }
         });
         lockRow.appendChild(lockBtn);

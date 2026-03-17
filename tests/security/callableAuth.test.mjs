@@ -47,4 +47,24 @@ describe("callable auth contract coverage", () => {
     expect(block).toContain("Director or admin access required.");
     expect(block).toContain("Director is not attached to a school.");
   });
+
+  it("raw assessment admin transitions require ops lead and explicit identifiers", () => {
+    const officializeBlock = getExportBlock("officializeRawAssessment");
+    const excludeBlock = getExportBlock("excludeRawAssessment");
+    const reassignBlock = getExportBlock("reassignRawAssessment");
+
+    expect(officializeBlock).toContain("await assertOpsLead(request)");
+    expect(officializeBlock).toContain("rawAssessmentId, eventId, ensembleId, and judgePosition are required.");
+    expect(excludeBlock).toContain("await assertOpsLead(request)");
+    expect(excludeBlock).toContain("rawAssessmentId is required.");
+    expect(reassignBlock).toContain("await assertOpsLead(request)");
+    expect(reassignBlock).toContain("rawAssessmentId, eventId, ensembleId, and judgePosition are required.");
+  });
+
+  it("submitOpenPacket now persists raw assessments instead of writing official submissions directly", () => {
+    const block = getExportBlock("submitOpenPacket");
+    expect(block).toContain("COLLECTIONS.rawAssessments");
+    expect(block).toContain("FIELDS.rawAssessments.status");
+    expect(block).not.toContain("tx.set(submissionRef");
+  });
 });

@@ -77,6 +77,7 @@
         <nav class="admin-subnav" id="adminSubnav" role="tablist" aria-label="Admin views">
           <button type="button" class="admin-subnav-btn" id="adminSubnavEventChairBtn" role="tab" data-admin-view="preEvent" aria-selected="true">Pre-Event</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavChairBtn" role="tab" data-admin-view="liveEvent" aria-selected="false">Live Event</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavSubmissionsBtn" role="tab" data-admin-view="submissions" aria-selected="false">Live Submissions</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavPacketsBtn" role="tab" data-admin-view="packets" aria-selected="false">Packets</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavAnnouncerBtn" role="tab" data-admin-view="announcer" aria-selected="false">Announcer</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavReadinessBtn" role="tab" data-admin-view="readiness" aria-selected="false">Readiness</button>
@@ -215,6 +216,33 @@
               </div>
             </div>
             <div id="liveEventContent"></div>
+          </div>
+          </div>
+
+          <div id="adminViewSubmissions" class="admin-view stack is-hidden" data-admin-view="submissions">
+          <div class="panel">
+            <h3>Live Submissions</h3>
+            <p class="hint">Review saved judge assessments, fix association, and officialize approved records.</p>
+            <div class="row row--between row--center">
+              <div class="note" id="adminSubmissionsHint">Waiting for judge submissions.</div>
+              <label>
+                Filter
+                <select id="adminSubmissionsFilter">
+                  <option value="pending">Pending Review</option>
+                  <option value="all">All</option>
+                  <option value="attached">Attached</option>
+                  <option value="uncertain">Uncertain</option>
+                  <option value="officialized">Officialized</option>
+                  <option value="excluded">Excluded</option>
+                </select>
+              </label>
+            </div>
+            <div class="admin-submissions-layout">
+              <ul id="adminSubmissionsList" class="list"></ul>
+              <div id="adminSubmissionDetail" class="panel stack">
+                <div class="note">Select a submission to review.</div>
+              </div>
+            </div>
           </div>
           </div>
 
@@ -506,8 +534,8 @@
       <section class="card judge-open-card" id="judgeOpenCard" role="tabpanel" aria-labelledby="judgeOpenTab">
         <div class="tab-header">
           <div>
-            <h2>Judge Adjudication</h2>
-            <div class="tab-subtitle">Record, transcribe, and score practice or official adjudications.</div>
+            <h2>Judge Assessments</h2>
+            <div class="tab-subtitle">Record audio, complete caption comments and scores, and submit practice or official assessments.</div>
           </div>
           <div class="tab-header-actions">
             <span class="badge" id="judgeOpenStatusBadge">Draft</span>
@@ -517,7 +545,7 @@
         <div class="ios-screen">
           <div class="panel stack" id="judgeOpenModeSelectView">
             <h3>Judge Workspace</h3>
-            <p class="hint">Open a workspace to resume recent adjudications or create a new one. Practice does not affect official event results.</p>
+            <p class="hint">Open a workspace to resume recent assessments or create a new one. Practice does not affect official event results.</p>
             <div class="row">
               <button type="button" class="btn--secondary" id="judgeOpenChoosePracticeBtn">Open Practice Workspace</button>
               <button type="button" class="btn-primary" id="judgeOpenChooseOfficialBtn">Open Official Workspace</button>
@@ -533,16 +561,16 @@
             <div class="judge-open-list" id="judgeOpenListView">
               <div class="panel stack judge-open-list-panel">
                 <div class="row judge-open-list-toolbar">
-                  <strong>My Adjudications</strong>
+                  <strong>My Assessments</strong>
                   <div class="row">
-                    <button type="button" id="judgeOpenNewPacketBtn" class="btn--secondary">New Adjudication</button>
+                    <button type="button" id="judgeOpenNewPacketBtn" class="btn--secondary">New Assessment</button>
                   </div>
                 </div>
                 <div class="note" id="judgeOpenPacketHint"></div>
                 <select id="judgeOpenPacketSelect" class="is-hidden"></select>
                 <div class="packet-card-list" id="judgeOpenPacketList"></div>
               </div>
-              <div class="empty" id="judgeOpenEmpty">Create or select an adjudication to begin.</div>
+              <div class="empty" id="judgeOpenEmpty">Create or select an assessment to begin.</div>
             </div>
 
             <div class="judge-open-detail" id="judgeOpenDetailView">
@@ -558,18 +586,18 @@
                 <div class="row">
                   <div class="event-meta">
                     <div class="event-meta-name" id="judgeOpenSummaryTitle">School - Ensemble</div>
-                    <div class="event-meta-detail" id="judgeOpenSummaryMeta">Draft adjudication</div>
+                    <div class="event-meta-detail" id="judgeOpenSummaryMeta">Draft assessment</div>
                   </div>
                   <span class="badge" id="judgeOpenSummaryStatus">Draft</span>
                 </div>
-                <div class="note" id="judgeOpenSummaryHint">Record comments, transcribe, and complete scoring.</div>
+                <div class="note" id="judgeOpenSummaryHint">Record, complete caption comments and scores, and submit for admin review.</div>
                 <div class="judge-open-workflow-chips" id="judgeOpenWorkflowChips">
                   <span class="judge-open-step-chip" id="judgeOpenStepChipEnsemble">Ensemble</span>
                   <span class="judge-open-step-chip" id="judgeOpenStepChipAudio">Audio</span>
-                  <span class="judge-open-step-chip" id="judgeOpenStepChipTranscript">Transcript</span>
-                  <span class="judge-open-step-chip" id="judgeOpenStepChipCaptions">Captions</span>
+                  <span class="judge-open-step-chip" id="judgeOpenStepChipTranscript">Comments</span>
+                  <span class="judge-open-step-chip" id="judgeOpenStepChipCaptions">Optional AI Assist</span>
                 </div>
-                <div class="note" id="judgeOpenReadinessHint">Choose an ensemble to start this adjudication.</div>
+                <div class="note" id="judgeOpenReadinessHint">Choose an ensemble to start this assessment.</div>
               </div>
 
               <div class="panel stack judge-open-step-card">
@@ -627,7 +655,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="empty" id="judgeOpenTapeEmpty">No adjudication audio yet.</div>
+                <div class="empty" id="judgeOpenTapeEmpty">No assessment audio yet.</div>
                 <audio id="judgeOpenTapePlayback" controls preload="metadata" class="audio"></audio>
                 <details class="accordion-card readiness-details" id="judgeOpenSegmentsDetails">
                   <summary>
@@ -641,13 +669,14 @@
 
               <details class="panel transcript-panel judge-open-step-card" id="judgeOpenTranscriptPanel" open>
                 <summary class="step-heading">
-                  <span class="badge">Step 3</span>
-                  <strong>Transcript</strong>
+                  <span class="badge">Optional</span>
+                  <strong>Tape Transcript Reference</strong>
                 </summary>
-                <textarea id="judgeOpenTranscriptInput" rows="6" aria-label="Transcript"></textarea>
+                <div class="note">Auto transcript can help with tape notes, but required caption comments must be entered below even if AI is unavailable.</div>
+                <textarea id="judgeOpenTranscriptInput" rows="6" aria-label="Tape Transcript Reference"></textarea>
                 <div class="row">
                     <button type="button" id="judgeOpenTranscribeBtn" class="ghost btn--secondary">
-                    Refresh Transcript
+                    Refresh Auto Transcript
                     </button>
                 </div>
               </details>
@@ -666,15 +695,20 @@
                 <div class="prep-time-display" id="judgeOpenPrepTimeDisplay" aria-live="polite"></div>
               </div>
 
-              <div class="panel stack judge-open-step-card">
+              <details class="panel stack judge-open-step-card" id="judgeOpenCaptionPanel">
+                <summary class="step-heading">
+                  <span class="badge">Step 3</span>
+                  <strong>Required Caption Scoring</strong>
+                </summary>
+                <div class="note">Every required caption must include both a comment and a score. The Judge Overall Rating is calculated from these caption scores.</div>
                 <div class="step-heading">
-                  <span class="badge">Step 4</span>
-                  <strong>Caption Scoring</strong>
+                  <span class="badge">AI Assist</span>
+                  <strong>Draft from Tape Transcript</strong>
                 </div>
                 <div class="stack">
                   <div class="row">
                     <button type="button" id="judgeOpenDraftBtn" class="btn--secondary">
-                      Draft Comments from Transcript
+                      Draft Caption Notes from Tape Transcript
                     </button>
                     <label class="row">
                       <input type="checkbox" id="judgeOpenOverwriteCaptionsToggle" />
@@ -684,7 +718,7 @@
                   <div class="hint" id="judgeOpenDraftStatus"></div>
                 </div>
                 <div id="judgeOpenCaptionForm" class="stack"></div>
-              </div>
+              </details>
             </div>
           </div>
         </div>
@@ -699,8 +733,10 @@
 
         <div class="sticky-bottom" id="judgeOpenStickyBar">
           <div class="sticky-meta">
-            <div>Total: <span id="judgeOpenCaptionTotal">0</span></div>
-            <div>Rating: <span id="judgeOpenFinalRating">N/A</span></div>
+            <div>Audio: <span id="judgeOpenStickyAudioDuration">0:00</span></div>
+            <div>Caption Total: <span id="judgeOpenCaptionTotal">Incomplete</span></div>
+            <div>Judge Overall Rating: <span id="judgeOpenFinalRating">N/A</span></div>
+            <div>Captions: <span id="judgeOpenCommentStatus">Incomplete</span></div>
             <div class="note" id="judgeOpenSubmitHint"></div>
           </div>
           <button type="button" id="judgeOpenSubmitBtn" class="btn--lg btn-primary">Submit</button>
@@ -962,7 +998,7 @@
 
           <div class="panel stack is-hidden director-results-shell" id="directorResultsSection">
             <details class="panel accordion-card group director-results-card" id="directorResultsPanel" open>
-              <summary><div><strong>Results Packet</strong></div></summary>
+              <summary><div><strong>Official Results Packet</strong></div></summary>
               <div class="form-section">
                 <div class="empty" id="directorEmpty">No results released yet.</div>
                 <div id="directorPackets" class="stack"></div>

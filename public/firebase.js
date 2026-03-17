@@ -21,13 +21,13 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app-check.js";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCmU330VAfE3CBPVAzVn5hwfSOfaPPcR0w",
-  authDomain: "mpa-judge-v2.firebaseapp.com",
-  projectId: "mpa-judge-v2",
-  storageBucket: "mpa-judge-v2.firebasestorage.app",
-  messagingSenderId: "980029437534",
-  appId: "1:980029437534:web:8db263a70d202cbde926cf",
-  measurementId: "G-Y8RQJEWTVL"
+  apiKey: "AIzaSyAPljc51n29A7a4RmTT1dWIzY1mOlr6bTE",
+  authDomain: "mpaapp-1.firebaseapp.com",
+  projectId: "mpaapp-1",
+  storageBucket: "mpaapp-1.firebasestorage.app",
+  messagingSenderId: "613127595018",
+  appId: "1:613127595018:web:5eb02aa37b99ec930f2bf3",
+  measurementId: "G-M0KEN6YS56"
 };
 
 const APP_CHECK_SITE_KEY = "6LfYOHQsAAAAAGXP0HnxPl4muUCMWsUVfNOZ9q8B";
@@ -53,10 +53,6 @@ if (useEmulators) {
   connectStorageEmulator(storage, "127.0.0.1", 9199);
 }
 
-if (useEmulators) {
-  self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
-}
-
 const appCheckFlag = (() => {
   try {
     return window.localStorage?.getItem(APP_CHECK_FLAG_KEY) || "";
@@ -67,16 +63,18 @@ const appCheckFlag = (() => {
 
 const manualAppCheckOverride = appCheckFlag === "1";
 const shouldEnableAppCheck =
-  useEmulators || APP_CHECK_ROLLOUT_MODE === "enforced" || manualAppCheckOverride;
+  !useEmulators && (APP_CHECK_ROLLOUT_MODE === "enforced" || manualAppCheckOverride);
 
 if (shouldEnableAppCheck) {
   initializeAppCheck(app, {
-    provider: new ReCaptchaV3Provider(useEmulators ? "debug" : APP_CHECK_SITE_KEY),
+    provider: new ReCaptchaV3Provider(APP_CHECK_SITE_KEY),
     isTokenAutoRefreshEnabled: true,
   });
 } else {
   console.warn(
-    `[firebase] App Check deferred. Set localStorage.${APP_CHECK_FLAG_KEY} = "1" for manual testing.`
+    useEmulators
+      ? "[firebase] App Check disabled for localhost emulator testing."
+      : `[firebase] App Check deferred. Set localStorage.${APP_CHECK_FLAG_KEY} = "1" for manual testing.`
   );
 }
 

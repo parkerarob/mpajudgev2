@@ -14,6 +14,7 @@ export function createAdminViewController({
   renderLiveEventCheckinQueue,
   renderAdminSchoolDetail,
   renderRegisteredEnsemblesList,
+  renderAdminLiveSubmissions,
   renderAdminPacketsBySchedule,
   renderAdminAnnouncerView,
   renderAdminReadinessView,
@@ -93,6 +94,7 @@ export function createAdminViewController({
     state.admin.currentView = resolvedView;
     const showPreEvent = resolvedView === "preEvent";
     const showPackets = resolvedView === "packets";
+    const showSubmissions = resolvedView === "submissions";
     const showAnnouncer = resolvedView === "announcer";
     const showLiveEvent = resolvedView === "liveEvent" && isAdminLiveEventEnabled();
     const showSettings = resolvedView === "settings" && isAdminSettingsEnabled();
@@ -103,6 +105,7 @@ export function createAdminViewController({
 
     setSectionVisible(els.adminViewEvents, showPreEvent);
     setSectionVisible(els.adminViewChair, showLiveEvent);
+    setSectionVisible(els.adminViewSubmissions, showSubmissions);
     setSectionVisible(els.adminViewPackets, showPackets);
     setSectionVisible(els.adminViewAnnouncer, showAnnouncer);
     setSectionVisible(els.adminViewSettings, showSettings);
@@ -115,6 +118,9 @@ export function createAdminViewController({
     packetsController.syncActions();
     liveController.render({ visible: showLiveEvent, heavyLoaded });
     preEventController.render({ showSchoolDetail, heavyLoaded });
+    if (showSubmissions) {
+      renderAdminLiveSubmissions();
+    }
     packetsController.render({ visible: showPackets });
     if (showAnnouncer) {
       renderAdminAnnouncerView();
@@ -130,6 +136,9 @@ export function createAdminViewController({
     }
     if (els.adminSubnavPacketsBtn) {
       els.adminSubnavPacketsBtn.setAttribute("aria-selected", showPackets ? "true" : "false");
+    }
+    if (els.adminSubnavSubmissionsBtn) {
+      els.adminSubnavSubmissionsBtn.setAttribute("aria-selected", showSubmissions ? "true" : "false");
     }
     if (els.adminSubnavAnnouncerBtn) {
       els.adminSubnavAnnouncerBtn.setAttribute("aria-selected", showAnnouncer ? "true" : "false");

@@ -80,13 +80,12 @@ service firebase.storage {
 
     match /packet_audio/{judgeUid}/{packetId}/{sessionId}/{fileName} {
       allow read: if isAdmin()
-        || (isJudge() && request.auth.uid == judgeUid)
+        || (isSignedIn() && request.auth.uid == judgeUid)
         || (isDirectorForSchool(packetDoc(packetId).schoolId)
           && packetDoc(packetId).status == "released");
       allow write: if isAdmin()
-        || (isJudge()
-          && request.auth.uid == judgeUid
-          && packetDoc(packetId).createdByJudgeUid == judgeUid);
+        || (isSignedIn()
+          && request.auth.uid == judgeUid);
     }
 
     match /director_cards/{uid}/{fileName} {

@@ -1,6 +1,7 @@
 const ADMIN_VIEWS = new Set([
   "preEvent",
   "liveEvent",
+  "submissions",
   "packets",
   "announcer",
   "readiness",
@@ -19,6 +20,9 @@ const ADMIN_VIEW_BY_SEGMENT = {
   chair: "liveEvent",
   logistics: "liveEvent",
   checkin: "liveEvent",
+  submissions: "submissions",
+  reviews: "submissions",
+  queue: "submissions",
   directory: "settings",
   settings: "settings",
   packets: "packets",

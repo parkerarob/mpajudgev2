@@ -105,11 +105,21 @@ async function main() {
     },
   });
 
-  await db.collection("ensembles").doc(ensembleId).set({
+  const ensembleSeed = {
     schoolId,
     name: "Central Wind Ensemble",
     performanceGrade: "II",
-  });
+  };
+
+  // Keep the legacy top-level record for older tooling, but seed the
+  // school-scoped collection the current app actually reads.
+  await db.collection("ensembles").doc(ensembleId).set(ensembleSeed);
+  await db
+      .collection("schools")
+      .doc(schoolId)
+      .collection("ensembles")
+      .doc(ensembleId)
+      .set(ensembleSeed);
 
   await db.collection("events").doc(eventId).set({
     name: "MPA Regional 2026",

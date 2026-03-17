@@ -9,6 +9,7 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "seed:emulator": "node scripts/seed-emulator.js",
+    "seed:staging": "node scripts/seed-staging.js",
     "seed:mpa": "node scripts/seed-mpa-repertoire.js"
   },
   "engines": {

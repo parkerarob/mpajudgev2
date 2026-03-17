@@ -121,9 +121,7 @@ export function createJudgeOpenCore({
       }
     }
     if (els.judgeOpenTapeEmptyText) {
-      els.judgeOpenTapeEmptyText.textContent = readiness.linkedEnsemble
-        ? "No assessment audio yet. Start recording when ready."
-        : "Select an ensemble before recording.";
+      els.judgeOpenTapeEmptyText.textContent = "No audio recorded yet.";
     }
     if (els.judgeOpenTapeEmptyPrimaryBtn) {
       els.judgeOpenTapeEmptyPrimaryBtn.textContent = readiness.linkedEnsemble

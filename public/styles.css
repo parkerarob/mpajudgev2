@@ -2822,7 +2822,7 @@ select:focus-visible {
   border-top: 1px solid rgba(116, 145, 216, 0.24);
   border-radius: 0;
   background: transparent;
-  padding: 10px 0 0;
+  padding: 20px 0 8px;
   gap: 8px;
 }
 

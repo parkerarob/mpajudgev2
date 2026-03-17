@@ -31,6 +31,8 @@ export function createJudgeOpenHandlerBinder({
   updateOpenRecordingStatus,
   stopOpenRecording,
   applyOpenCaptionState,
+  calculateCaptionTotal,
+  computeFinalRating,
   submitOpenPacket,
   selectOpenPacket,
   chooseJudgeOpenMode,
@@ -43,6 +45,38 @@ export function createJudgeOpenHandlerBinder({
     if (!textareaEl) return;
     textareaEl.style.height = "auto";
     textareaEl.style.height = `${Math.max(textareaEl.scrollHeight, 128)}px`;
+  };
+
+  const syncOpenCaptionStateLocally = () => {
+    const captions = { ...(state.judgeOpen.captions || {}) };
+    const captionScoreTotal =
+      typeof calculateCaptionTotal === "function" ? calculateCaptionTotal(captions) : 0;
+    const rating =
+      typeof computeFinalRating === "function"
+        ? computeFinalRating(captionScoreTotal)
+        : { label: "N/A", value: null };
+    if (state.judgeOpen.currentPacket) {
+      state.judgeOpen.currentPacket = {
+        ...state.judgeOpen.currentPacket,
+        captions,
+        captionScoreTotal,
+        computedFinalRatingJudge: rating.value,
+        computedFinalRatingLabel: rating.label,
+      };
+    }
+    if (Array.isArray(state.judgeOpen.packets) && state.judgeOpen.currentPacketId) {
+      state.judgeOpen.packets = state.judgeOpen.packets.map((packet) =>
+        packet?.id === state.judgeOpen.currentPacketId
+          ? {
+              ...packet,
+              captions,
+              captionScoreTotal,
+              computedFinalRatingJudge: rating.value,
+              computedFinalRatingLabel: rating.label,
+            }
+          : packet
+      );
+    }
   };
 
   async function waitForOpenRecordingSettle({
@@ -546,6 +580,8 @@ export function createJudgeOpenHandlerBinder({
             return;
           }
           const applyResult = applyOpenCaptionDraft({ captions: result.captions, overwrite });
+          syncOpenCaptionStateLocally();
+          updateOpenSubmitState();
           const meta = result.meta || {};
           if (els.judgeOpenDraftStatus) {
             if (meta.status === "model_failed") {
@@ -683,6 +719,7 @@ export function createJudgeOpenHandlerBinder({
             ...current,
             gradeLetter: nextGrade,
           };
+          syncOpenCaptionStateLocally();
           markJudgeOpenDirty();
           applyOpenCaptionState();
           updateOpenSubmitState();
@@ -693,6 +730,7 @@ export function createJudgeOpenHandlerBinder({
             ...current,
             gradeModifier: current.gradeModifier === nextModifier ? "" : nextModifier,
           };
+          syncOpenCaptionStateLocally();
           markJudgeOpenDirty();
           applyOpenCaptionState();
           updateOpenSubmitState();
@@ -708,6 +746,7 @@ export function createJudgeOpenHandlerBinder({
           ...current,
           comment: event.target.value || "",
         };
+        syncOpenCaptionStateLocally();
         autoSizeCaptionTextarea(event.target);
         markJudgeOpenDirty();
         updateOpenSubmitState();
@@ -760,6 +799,8 @@ export function createJudgeOpenHandlerBinder({
           showOpenDetailView();
           updateOpenSubmitState();
         });
+        updateOpenHeader();
+        updateOpenSubmitState();
       });
     }
   };

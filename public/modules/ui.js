@@ -2296,6 +2296,8 @@ function getJudgeOpenHandlerBinder() {
     updateOpenRecordingStatus,
     stopOpenRecording,
     applyOpenCaptionState,
+    calculateCaptionTotal,
+    computeFinalRating,
     submitOpenPacket,
     selectOpenPacket,
     chooseJudgeOpenMode,

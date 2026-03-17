@@ -23,7 +23,7 @@ import { COLLECTIONS, FIELDS, state } from "../state.js";
 import { db, functions, storage } from "../firebase.js";
 import { computePacketSummary } from "./judge-shared.js";
 import { getDirectorNameForSchool } from "./director.js";
-import { getSchoolNameById, normalizeEnsembleNameForSchool } from "./utils.js";
+import { getSchoolNameById, normalizeEnsembleNameForSchool, toDateLike } from "./utils.js";
 
 function sanitizeAudioFileName(name = "") {
   return String(name || "")
@@ -601,6 +601,7 @@ export async function getLunchTotalsBySchool(eventId) {
     const lunch = data.lunchOrder || {};
     const cheese = Number(lunch.cheeseQty) || 0;
     const pepperoni = Number(lunch.pepperoniQty) || 0;
+    if (!cheese && !pepperoni) return;
     const prev = bySchool.get(schoolId) || { cheese: 0, pepperoni: 0 };
     prev.cheese += cheese;
     prev.pepperoni += pepperoni;
@@ -614,8 +615,69 @@ export async function getLunchTotalsBySchool(eventId) {
       cheese: counts.cheese,
       pepperoni: counts.pepperoni,
       total: counts.cheese + counts.pepperoni,
+      label: getSchoolNameById(schoolsList, schoolId) || schoolId,
     }))
     .sort((a, b) => (a.schoolName || "").localeCompare(b.schoolName || ""));
+}
+
+export async function getLunchTotalsByDay(eventId) {
+  if (!eventId) return [];
+  const [entriesSnap, scheduleSnap] = await Promise.all([
+    getDocs(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries)),
+    getDocs(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule)),
+  ]);
+  const scheduleByEnsemble = new Map();
+  scheduleSnap.docs.forEach((snap) => {
+    const data = snap.data() || {};
+    const ensembleId = String(data.ensembleId || data.id || "").trim();
+    if (!ensembleId) return;
+    const performanceAt = toDateLike(data.performanceAt);
+    if (performanceAt) {
+      scheduleByEnsemble.set(ensembleId, performanceAt);
+    }
+  });
+
+  const totalsByDay = new Map();
+  entriesSnap.docs.forEach((snap) => {
+    const data = snap.data() || {};
+    const lunch = data.lunchOrder || {};
+    const cheese = Number(lunch.cheeseQty) || 0;
+    const pepperoni = Number(lunch.pepperoniQty) || 0;
+    if (!cheese && !pepperoni) return;
+    const ensembleId = String(data.ensembleId || data.id || "").trim();
+    const performanceAt = scheduleByEnsemble.get(ensembleId) || null;
+    let dayKey;
+    let dayLabel;
+    let dayValue = null;
+    if (performanceAt instanceof Date) {
+      const candidate = new Date(performanceAt);
+      candidate.setHours(0, 0, 0, 0);
+      dayKey = candidate.toISOString().slice(0, 10);
+      dayLabel = candidate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+      dayValue = candidate;
+    } else {
+      dayKey = "unscheduled";
+      dayLabel = "Unscheduled";
+    }
+    const existing = totalsByDay.get(dayKey) || { day: dayValue, label: dayLabel, cheese: 0, pepperoni: 0 };
+    existing.cheese += cheese;
+    existing.pepperoni += pepperoni;
+    totalsByDay.set(dayKey, existing);
+  });
+
+  return Array.from(totalsByDay.values())
+    .sort((a, b) => {
+      if (a.day && b.day) return a.day.getTime() - b.day.getTime();
+      if (a.day) return -1;
+      if (b.day) return 1;
+      return 0;
+    })
+    .map((record) => ({
+      label: record.label,
+      cheese: record.cheese,
+      pepperoni: record.pepperoni,
+      total: record.cheese + record.pepperoni,
+    }));
 }
 
 export async function getPacketData({ eventId, entry }) {
@@ -870,6 +932,26 @@ export async function updateEntryCheckinFields(eventId, ensembleId, fields) {
   const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId);
   const snap = await getDoc(ref);
   const payload = { ...fields, updatedAt: serverTimestamp() };
+  if (snap.exists()) {
+    return updateDoc(ref, payload);
+  }
+  return setDoc(
+    ref,
+    {
+      eventId,
+      ensembleId,
+      ...payload,
+      createdAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+export async function updateEntryFields(eventId, ensembleId, fields) {
+  if (!eventId || !ensembleId || !fields || typeof fields !== "object") return;
+  const ref = doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId);
+  const payload = { ...fields, updatedAt: serverTimestamp() };
+  const snap = await getDoc(ref);
   if (snap.exists()) {
     return updateDoc(ref, payload);
   }

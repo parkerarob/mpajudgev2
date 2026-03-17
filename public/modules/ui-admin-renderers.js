@@ -18,6 +18,8 @@ export function createAdminRenderers({
   deriveAutoScheduleDayBreaks,
   mergeScheduleDayBreaks,
   formatPerformanceAt,
+  getLunchTotalsByDay,
+  getLunchTotalsBySchool,
   getPacketData,
   officializeRawAssessment,
   excludeRawAssessment,
@@ -51,6 +53,7 @@ export function createAdminRenderers({
   createScheduleEntry,
   deleteScheduleEntry,
   updateScheduleEntryTime,
+  updateEntryFields,
   computeScheduleTimeline,
   formatAdminDayOfReadOnly,
   openDirectorDayOfFromAdmin,
@@ -59,6 +62,7 @@ export function createAdminRenderers({
   schedulePreEventGuidedFlowRender,
   scheduleAdminPreflightRefresh,
   refreshPreEventScheduleTimelineStarts,
+  formatStartTime,
 } = {}) {
   const JUDGE_POSITION_LABELS = {
     stage1: "Stage 1",
@@ -73,6 +77,9 @@ export function createAdminRenderers({
   let adminPacketsRenderQueued = false;
   let registeredRenderInFlight = false;
   let registeredRenderQueued = false;
+  let adminPizzaTotalsRenderTokenDay = 0;
+  let adminPizzaTotalsRenderTokenSchool = 0;
+  let adminPizzaTotalsRenderToken = 0;
 
   function formatBlockerError(error, fallbackMessage) {
     const blockers = Array.isArray(error?.details?.blockers) ? error.details.blockers : [];
@@ -1185,6 +1192,284 @@ export function createAdminRenderers({
     };
   }
 
+  function renderPizzaTotalsGrid(container, rows, emptyText) {
+    if (!container) return false;
+    container.innerHTML = "";
+    if (!Array.isArray(rows) || !rows.length) {
+      container.innerHTML = `<div class='note'>${emptyText}</div>`;
+      return false;
+    }
+    const grid = document.createElement("div");
+    grid.className = "admin-pizza-totals-grid";
+    const header = document.createElement("div");
+    header.className = "admin-pizza-totals-row admin-pizza-totals-row--header";
+    ["Day", "Cheese", "Pepperoni", "Total"].forEach((label) => {
+      const cell = document.createElement("span");
+      cell.textContent = label;
+      header.appendChild(cell);
+    });
+    grid.appendChild(header);
+    rows.forEach((rowData) => {
+      const rowNode = document.createElement("div");
+      rowNode.className = "admin-pizza-totals-row";
+      const dayCell = document.createElement("span");
+      dayCell.textContent = rowData.label;
+      rowNode.appendChild(dayCell);
+      ["cheese", "pepperoni", "total"].forEach((key) => {
+        const valueCell = document.createElement("span");
+        valueCell.textContent = String(rowData[key]);
+        valueCell.className = `admin-pizza-totals-value admin-pizza-totals-value--${key}`;
+        rowNode.appendChild(valueCell);
+      });
+      grid.appendChild(rowNode);
+    });
+    container.appendChild(grid);
+    return true;
+  }
+
+  async function renderAdminPizzaTotalsByDay() {
+    if (!els.adminPizzaTotalsTable) return;
+    const eventId = String(state.event.active?.id || "").trim();
+    if (!eventId) {
+      els.adminPizzaTotalsTable.innerHTML = "";
+      if (els.adminPizzaTotalsHint) {
+        els.adminPizzaTotalsHint.textContent = "Set an active event to begin.";
+      }
+      return;
+    }
+    const renderToken = ++adminPizzaTotalsRenderTokenDay;
+    if (els.adminPizzaTotalsHint) els.adminPizzaTotalsHint.textContent = "Loading pizza totals...";
+    els.adminPizzaTotalsTable.innerHTML = "<div class='note'>Loading pizza totals...</div>";
+    try {
+      const totals = await getLunchTotalsByDay(eventId);
+      if (renderToken !== adminPizzaTotalsRenderTokenDay) return;
+      const rendered = renderPizzaTotalsGrid(
+        els.adminPizzaTotalsTable,
+        totals,
+        "No pizza orders recorded yet."
+      );
+      if (rendered && els.adminPizzaTotalsHint) {
+        els.adminPizzaTotalsHint.textContent = `Last updated ${new Date().toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })}.`;
+      } else if (els.adminPizzaTotalsHint) {
+        els.adminPizzaTotalsHint.textContent = "No pizza orders recorded for this event.";
+      }
+    } catch (error) {
+      console.error("renderAdminPizzaTotalsByDay failed", error);
+      if (renderToken !== adminPizzaTotalsRenderTokenDay) return;
+      if (els.adminPizzaTotalsTable) {
+        els.adminPizzaTotalsTable.innerHTML = "<div class='note'>Unable to load pizza totals right now.</div>";
+      }
+      if (els.adminPizzaTotalsHint) {
+        els.adminPizzaTotalsHint.textContent = "Unable to load pizza totals right now.";
+      }
+    }
+  }
+
+  async function renderAdminPizzaTotalsBySchool() {
+    if (!els.adminPizzaBySchoolTable) return;
+    const eventId = String(state.event.active?.id || "").trim();
+    if (!eventId) {
+      els.adminPizzaBySchoolTable.innerHTML = "";
+      if (els.adminPizzaBySchoolHint) {
+        els.adminPizzaBySchoolHint.textContent = "Set an active event to begin.";
+      }
+      return;
+    }
+    const renderToken = ++adminPizzaTotalsRenderTokenSchool;
+    if (els.adminPizzaBySchoolHint) els.adminPizzaBySchoolHint.textContent = "Loading school totals...";
+    els.adminPizzaBySchoolTable.innerHTML = "<div class='note'>Loading school totals...</div>";
+    try {
+      const totals = await getLunchTotalsBySchool(eventId);
+      if (renderToken !== adminPizzaTotalsRenderTokenSchool) return;
+      const rendered = renderPizzaTotalsGrid(
+        els.adminPizzaBySchoolTable,
+        totals,
+        "No pizza orders recorded yet."
+      );
+      if (rendered && els.adminPizzaBySchoolHint) {
+        els.adminPizzaBySchoolHint.textContent = `Last updated ${new Date().toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })}.`;
+      } else if (els.adminPizzaBySchoolHint) {
+        els.adminPizzaBySchoolHint.textContent = "No pizza orders recorded for this event.";
+      }
+    } catch (error) {
+      console.error("renderAdminPizzaTotalsBySchool failed", error);
+      if (renderToken !== adminPizzaTotalsRenderTokenSchool) return;
+      if (els.adminPizzaBySchoolTable) {
+        els.adminPizzaBySchoolTable.innerHTML = "<div class='note'>Unable to load totals right now.</div>";
+      }
+      if (els.adminPizzaBySchoolHint) {
+        els.adminPizzaBySchoolHint.textContent = "Unable to load school totals right now.";
+      }
+    }
+  }
+
+  async function renderAdminPizzaTotals() {
+    await Promise.allSettled([
+      renderAdminPizzaTotalsByDay(),
+      renderAdminPizzaTotalsBySchool(),
+    ]);
+  }
+
+  function buildAdminEntryEditPanel({
+    entryData,
+    eventId,
+    schoolId,
+    ensembleId,
+    ensembleName,
+    readOnlyElement,
+  }) {
+    const data = entryData || {};
+    const instrumentation = data.instrumentation || {};
+    const seating = data.seating || {};
+    const percussionNeeds = data.percussionNeeds || {};
+    const lunchOrder = data.lunchOrder || {};
+    const details = document.createElement("details");
+    details.className = "admin-entry-edit-details";
+    const summary = document.createElement("summary");
+    summary.textContent = "Edit event form data";
+    details.appendChild(summary);
+
+    const form = document.createElement("div");
+    form.className = "admin-entry-edit-form";
+    const info = document.createElement("div");
+    info.className = "hint";
+    info.textContent = "Update instrumentation, seating, percussion, and pizza order details for this ensemble.";
+    form.appendChild(info);
+
+    const instrumentationLabel = document.createElement("label");
+    instrumentationLabel.textContent = "Instrumentation notes";
+    const instrumentationInput = document.createElement("textarea");
+    instrumentationInput.rows = 3;
+    instrumentationInput.value = String(instrumentation.otherInstrumentationNotes || "");
+    instrumentationLabel.appendChild(instrumentationInput);
+    form.appendChild(instrumentationLabel);
+
+    const seatingLabel = document.createElement("label");
+    seatingLabel.textContent = "Seating notes";
+    const seatingInput = document.createElement("textarea");
+    seatingInput.rows = 3;
+    seatingInput.value = String(seating.notes || "");
+    seatingLabel.appendChild(seatingInput);
+    form.appendChild(seatingLabel);
+
+    const percussionLabel = document.createElement("label");
+    percussionLabel.textContent = "Percussion notes";
+    const percussionInput = document.createElement("textarea");
+    percussionInput.rows = 3;
+    percussionInput.value = String(percussionNeeds.notes || "");
+    percussionLabel.appendChild(percussionInput);
+    form.appendChild(percussionLabel);
+
+    const lunchRow = document.createElement("div");
+    lunchRow.className = "row";
+    const pepperoniLabel = document.createElement("label");
+    pepperoniLabel.textContent = "Pepperoni qty";
+    const pepperoniInput = document.createElement("input");
+    pepperoniInput.type = "number";
+    pepperoniInput.min = "0";
+    pepperoniInput.step = "1";
+    pepperoniInput.value = String(Number(lunchOrder.pepperoniQty || 0));
+    pepperoniLabel.appendChild(pepperoniInput);
+    const cheeseLabel = document.createElement("label");
+    cheeseLabel.textContent = "Cheese qty";
+    const cheeseInput = document.createElement("input");
+    cheeseInput.type = "number";
+    cheeseInput.min = "0";
+    cheeseInput.step = "1";
+    cheeseInput.value = String(Number(lunchOrder.cheeseQty || 0));
+    cheeseLabel.appendChild(cheeseInput);
+    lunchRow.appendChild(pepperoniLabel);
+    lunchRow.appendChild(cheeseLabel);
+    form.appendChild(lunchRow);
+
+    const pickupLabel = document.createElement("label");
+    pickupLabel.textContent = "Pizza pickup timing";
+    const pickupSelect = document.createElement("select");
+    [
+      { value: "", label: "Select timing" },
+      { value: "before", label: "Before performance" },
+      { value: "after", label: "After performance" },
+    ].forEach((optionData) => {
+      const option = document.createElement("option");
+      option.value = optionData.value;
+      option.textContent = optionData.label;
+      pickupSelect.appendChild(option);
+    });
+    pickupSelect.value = String(lunchOrder.pickupTiming || "");
+    pickupLabel.appendChild(pickupSelect);
+    form.appendChild(pickupLabel);
+
+    const statusMessage = document.createElement("div");
+    statusMessage.className = "hint";
+    statusMessage.textContent = "";
+    form.appendChild(statusMessage);
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "ghost";
+    saveBtn.textContent = "Save event form updates";
+    const sanitizeCount = (value) => {
+      const parsed = Math.round(Number(value));
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    };
+    saveBtn.addEventListener("click", async () => {
+      const instrumentationPayload = {
+        ...instrumentation,
+        otherInstrumentationNotes: instrumentationInput.value.trim(),
+      };
+      const seatingPayload = {
+        ...seating,
+        notes: seatingInput.value.trim(),
+      };
+      const percussionPayload = {
+        ...percussionNeeds,
+        notes: percussionInput.value.trim(),
+      };
+      const lunchPayload = {
+        ...lunchOrder,
+        pepperoniQty: sanitizeCount(pepperoniInput.value),
+        cheeseQty: sanitizeCount(cheeseInput.value),
+        pickupTiming: pickupSelect.value || "",
+      };
+      const payload = {
+        eventId,
+        schoolId,
+        ensembleId,
+        instrumentation: instrumentationPayload,
+        seating: seatingPayload,
+        percussionNeeds: percussionPayload,
+        lunchOrder: lunchPayload,
+      };
+      statusMessage.textContent = "Saving...";
+      saveBtn.disabled = true;
+      try {
+        await updateEntryFields(eventId, ensembleId, payload);
+        entryData.instrumentation = instrumentationPayload;
+        entryData.seating = seatingPayload;
+        entryData.percussionNeeds = percussionPayload;
+        entryData.lunchOrder = lunchPayload;
+        readOnlyElement.textContent = formatAdminDayOfReadOnly(entryData);
+        statusMessage.textContent = `Saved ${new Date().toLocaleTimeString()}.`;
+      } catch (error) {
+        console.error("Admin entry save failed", error);
+        alertUser(`Unable to save event form data for ${ensembleName || ensembleId}.`);
+        statusMessage.textContent = "Save failed.";
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+    form.appendChild(saveBtn);
+
+    details.appendChild(form);
+    return details;
+  }
+
   async function renderAdminSchoolDetail() {
     if (adminSchoolDetailRenderInFlight) {
       adminSchoolDetailRenderQueued = true;
@@ -1286,7 +1571,11 @@ export function createAdminRenderers({
         const scheduleEntry = scheduleByEnsemble.get(ensembleId);
         const performanceAt = toDateOrNull(scheduleEntry?.performanceAt);
         const perfValue = performanceAt ? toLocalDatetimeValue(performanceAt) : "";
-        const entryData = entryDataByEnsemble.get(ensembleId) || null;
+        const storedEntryData = entryDataByEnsemble.get(ensembleId);
+        const entryData = storedEntryData || {};
+        if (!storedEntryData) {
+          entryDataByEnsemble.set(ensembleId, entryData);
+        }
 
         const li = document.createElement("li");
         li.className = "panel";
@@ -1451,6 +1740,15 @@ export function createAdminRenderers({
         });
         actions.appendChild(openDirectorBtn);
         li.appendChild(actions);
+        const editPanel = buildAdminEntryEditPanel({
+          entryData,
+          eventId,
+          schoolId,
+          ensembleId,
+          ensembleName,
+          readOnlyElement: readOnly,
+        });
+        li.appendChild(editPanel);
 
         els.adminSchoolDetailList.appendChild(li);
       }
@@ -2351,5 +2649,8 @@ export function createAdminRenderers({
     renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
     renderRegisteredEnsemblesList,
+    renderAdminPizzaTotals,
+    renderAdminPizzaTotalsByDay,
+    renderAdminPizzaTotalsBySchool,
   };
 }

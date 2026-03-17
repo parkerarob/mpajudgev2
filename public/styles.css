@@ -872,6 +872,82 @@ h3 {
   justify-content: space-between;
 }
 
+.admin-entry-edit-details {
+  margin-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding-top: 1rem;
+}
+
+.admin-entry-edit-details summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.admin-entry-edit-form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.admin-entry-edit-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.admin-entry-edit-form textarea,
+.admin-entry-edit-form input,
+.admin-entry-edit-form select {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--text);
+  padding: 8px;
+}
+
+.admin-entry-edit-form textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.admin-pizza-totals-table {
+  min-height: 48px;
+}
+
+.admin-pizza-totals-grid {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.admin-pizza-totals-row {
+  display: grid;
+  grid-template-columns: 2fr repeat(3, 1fr);
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.admin-pizza-totals-row:last-child {
+  border-bottom: none;
+}
+
+.admin-pizza-totals-row--header {
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.admin-pizza-totals-value {
+  text-align: right;
+}
+
+.admin-pizza-totals-value--total {
+  font-weight: 600;
+}
+
 .gap-sm {
   gap: var(--space-2);
 }

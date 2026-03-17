@@ -14,6 +14,7 @@ export function createAdminViewController({
   renderLiveEventCheckinQueue,
   renderAdminSchoolDetail,
   renderRegisteredEnsemblesList,
+  renderAdminPizzaTotals,
   renderAdminLiveSubmissions,
   renderAdminPacketsBySchedule,
   renderAdminAnnouncerView,
@@ -34,6 +35,7 @@ export function createAdminViewController({
     els,
     renderAdminSchoolDetail,
     renderRegisteredEnsemblesList,
+    renderAdminPizzaTotals,
   });
   const liveController = createAdminLiveEventController({
     els,

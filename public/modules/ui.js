@@ -41,6 +41,7 @@ import {
   assignDirectorSchool,
   getPacketData,
   getLunchTotalsBySchool,
+  getLunchTotalsByDay,
   regenerateDirectorPacketExport,
   renameEvent,
   lockOpenPacket,
@@ -79,6 +80,7 @@ import {
   deleteRawAssessment,
   reassignRawAssessment,
   updateEntryCheckinFields,
+  updateEntryFields,
 } from "./admin.js";
 import { computeScheduleTimeline } from "./scheduleTimeline.js";
 import {
@@ -2027,6 +2029,7 @@ function getAdminViewController() {
     renderLiveEventCheckinQueue,
     renderAdminSchoolDetail,
     renderRegisteredEnsemblesList,
+    renderAdminPizzaTotals,
     renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
     renderAdminAnnouncerView,
@@ -2149,6 +2152,7 @@ function getAdminRenderers() {
     deriveAutoScheduleDayBreaks,
     mergeScheduleDayBreaks,
     formatPerformanceAt,
+    formatStartTime,
     getPacketData,
     officializeRawAssessment,
     excludeRawAssessment,
@@ -2182,6 +2186,9 @@ function getAdminRenderers() {
     createScheduleEntry,
     deleteScheduleEntry,
     updateScheduleEntryTime,
+    getLunchTotalsByDay,
+    getLunchTotalsBySchool,
+    updateEntryFields,
     computeScheduleTimeline,
     formatAdminDayOfReadOnly,
     openDirectorDayOfFromAdmin,
@@ -5649,6 +5656,10 @@ async function renderAdminSchoolDetail() {
 
 async function renderAdminPacketsBySchedule() {
   return getAdminRenderers().renderAdminPacketsBySchedule();
+}
+
+async function renderAdminPizzaTotals() {
+  return getAdminRenderers().renderAdminPizzaTotals();
 }
 
 async function renderAdminLiveSubmissions() {

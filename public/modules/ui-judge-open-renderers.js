@@ -137,8 +137,8 @@ export function createJudgeOpenRenderers({
       deleteBtn.type = "button";
       deleteBtn.className = "ghost";
       deleteBtn.textContent = "Delete";
-      const status = String(packet.status || "").trim();
-      if (["submitted", "locked", "released"].includes(status)) {
+      const packetStatus = String(packet.status || "").trim();
+      if (["submitted", "locked", "released"].includes(packetStatus)) {
         deleteBtn.disabled = true;
         deleteBtn.title = "Submitted or released assessments must be managed from admin review.";
       }

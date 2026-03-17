@@ -455,6 +455,40 @@ function drawSimpleValue({page, font, value, x, y, size = 9, color = null} = {})
   page.drawText(text, {x, y, size, font, color: color || pdfRgb(0.08, 0.08, 0.08)});
 }
 
+function drawFieldCommentOverlay({
+  page,
+  font,
+  rect,
+  text,
+  inset = 1.5,
+  size = 7.2,
+  lineHeight = 8.1,
+  maxLines = 4,
+} = {}) {
+  if (!page || !font || !rect) return;
+  page.drawRectangle({
+    x: rect.x + inset,
+    y: rect.y + inset,
+    width: Math.max(0, rect.width - (inset * 2)),
+    height: Math.max(0, rect.height - (inset * 2)),
+    color: pdfRgb(1, 1, 1),
+  });
+  const value = String(text || "").trim();
+  if (!value) return;
+  drawWrappedText({
+    page,
+    font,
+    text: value,
+    x: rect.x + 5,
+    y: rect.y + rect.height - 8,
+    maxWidth: Math.max(0, rect.width - 10),
+    size,
+    lineHeight,
+    color: pdfRgb(0.08, 0.08, 0.08),
+    maxLines,
+  });
+}
+
 function formatDateLabel(value) {
   if (!value) return "";
   const date = value.toDate ? value.toDate() : new Date(value);
@@ -586,6 +620,7 @@ async function renderStageSubmissionTemplatePdf({
   const scheduleTime = formatTimeLabel(schedule.performanceAt || null);
   const memberCount = computeEntryMemberCount(entry);
   const repertoire = entry.repertoire && typeof entry.repertoire === "object" ? entry.repertoire : {};
+  const commentOverlays = [];
   const setFieldText = (name, value, options = {}) => {
     const textField = form.getTextField(name);
     if (options.alignment !== undefined) {
@@ -634,7 +669,16 @@ async function renderStageSubmissionTemplatePdf({
 
   Object.entries(captionFieldMap).forEach(([key, fields]) => {
     const value = captions[key] || {};
-    setFieldText(fields.comment, String(value.comment || "").trim());
+    const commentField = form.getTextField(fields.comment);
+    const widget = commentField.acroField.getWidgets()[0] || null;
+    const rect = widget?.getRectangle ? widget.getRectangle() : null;
+    commentField.setText("");
+    if (rect) {
+      commentOverlays.push({
+        rect,
+        text: String(value.comment || "").trim(),
+      });
+    }
     setFieldText(
         fields.grade,
         `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim(),
@@ -644,6 +688,15 @@ async function renderStageSubmissionTemplatePdf({
 
   form.updateFieldAppearances(font);
   form.flatten();
+  const firstPage = pdfDoc.getPages()[0] || null;
+  commentOverlays.forEach(({rect, text}) => {
+    drawFieldCommentOverlay({
+      page: firstPage,
+      font,
+      rect,
+      text,
+    });
+  });
   return await pdfDoc.save();
 }
 

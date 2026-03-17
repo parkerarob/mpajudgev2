@@ -80,6 +80,7 @@ const APPCHECK_SENSITIVE_SECRET_OPTIONS = {
 
 let pdfLib = null;
 let stageFormTemplateBytesPromise = null;
+let sightFormTemplateBytesPromise = null;
 
 function getPdfLib() {
   if (!pdfLib) {
@@ -98,6 +99,14 @@ async function getStageFormTemplateBytes() {
     stageFormTemplateBytesPromise = fs.readFile(templatePath);
   }
   return stageFormTemplateBytesPromise;
+}
+
+async function getSightFormTemplateBytes() {
+  if (!sightFormTemplateBytesPromise) {
+    const templatePath = path.join(__dirname, "assets", "sight-form-template-fillable.pdf");
+    sightFormTemplateBytesPromise = fs.readFile(templatePath);
+  }
+  return sightFormTemplateBytesPromise;
 }
 
 function buildDirectorPacketExportId(eventId, ensembleId) {
@@ -449,12 +458,6 @@ function drawWrappedText({
   return y - (Math.min(lines.length, maxLines) * lineHeight);
 }
 
-function drawSimpleValue({page, font, value, x, y, size = 9, color = null} = {}) {
-  const text = String(value || "").trim();
-  if (!text) return;
-  page.drawText(text, {x, y, size, font, color: color || pdfRgb(0.08, 0.08, 0.08)});
-}
-
 function drawFieldCommentOverlay({
   page,
   font,
@@ -501,27 +504,6 @@ function formatTimeLabel(value) {
   const date = value.toDate ? value.toDate() : new Date(value);
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
   return date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
-}
-
-function computeEntryMemberCount(entry = {}) {
-  const instrumentation = entry.instrumentation || {};
-  const standardCounts = instrumentation.standardCounts && typeof instrumentation.standardCounts === "object" ?
-    instrumentation.standardCounts :
-    {};
-  let total = Object.values(standardCounts).reduce((sum, value) => {
-    const count = Number(value || 0);
-    return sum + (Number.isFinite(count) ? count : 0);
-  }, 0);
-  total += Number.isFinite(Number(instrumentation.totalPercussion)) ?
-    Number(instrumentation.totalPercussion) :
-    0;
-  if (Array.isArray(instrumentation.nonStandard)) {
-    total += instrumentation.nonStandard.reduce((sum, row) => {
-      const count = Number(row?.count || 0);
-      return sum + (Number.isFinite(count) ? count : 0);
-    }, 0);
-  }
-  return total > 0 ? String(total) : "";
 }
 
 async function loadStageSubmissionContext({
@@ -600,6 +582,12 @@ async function renderStageSubmissionTemplatePdf({
   const school = context.school && typeof context.school === "object" ? context.school : {};
   const director = context.director && typeof context.director === "object" ? context.director : {};
   const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge");
+  const displayEnsemble = String(
+      schedule.ensembleName ||
+      entry.ensembleName ||
+      ensembleId ||
+      "",
+  ).trim();
   const displaySchool = String(
       schedule.schoolName ||
       entry.schoolName ||
@@ -607,22 +595,64 @@ async function renderStageSubmissionTemplatePdf({
       schoolId ||
       "",
   ).trim();
-  const displayEnsemble = String(
-      schedule.ensembleName ||
-      entry.ensembleName ||
-      ensembleId ||
-      "",
-  ).trim();
   const displayDirector = String(director.displayName || director.email || "").trim();
   const performanceGrade = String(entry.performanceGrade || grade || "").trim();
   const finalRating = String(submission?.computedFinalRatingLabel || "").trim();
   const scheduleDate = formatDateLabel(schedule.performanceAt || context.event?.startAt || null);
   const scheduleTime = formatTimeLabel(schedule.performanceAt || null);
-  const memberCount = computeEntryMemberCount(entry);
   const repertoire = entry.repertoire && typeof entry.repertoire === "object" ? entry.repertoire : {};
   const commentOverlays = [];
-  const setFieldText = (name, value, options = {}) => {
-    const textField = form.getTextField(name);
+  const fieldNameMap = {
+    ensembleName: ["ensembleName", "01KKHMB0J9CB29FMWE20GBYYCW"],
+    schoolName: ["schoolName", "01KKHN0BA3G9JPJV7DG32Q9E6N"],
+    siteLabel: ["01KKY6AY2FXB7S7GRATV7HRSTK"],
+    directorName: ["directorName", "01KKHN0RKP65BWJ4T27Y8AH2ZN"],
+    eventDate: ["eventDate", "01KKHN11PFTBQ86FJ1YJKZ16WC"],
+    eventTime: ["eventTime", "01KKHN1D60CDKMR9QN6NBXZW0P"],
+    performanceGrade: ["performanceGrade", "01KKHN1VS3HVXJ487RSPZSN6BS"],
+    memberCount: ["memberCount", "01KKHN1NR98KS5SRRA619XGD3F"],
+    marchComposer: ["marchComposer", "01KKHN2Z4S2KSN2FGNX6HXP4ME"],
+    marchTitle: ["marchTitle", "01KKHN2C6Z8G09VWY1XN0H07TY"],
+    marchGrade: ["marchGrade", "01KKHN3Q4XD1HM86JVGMKBAE9Y"],
+    selection1Composer: ["selection1Composer", "01KKHN3B5QNKHGP48AJTFWW4PR"],
+    selection1Grade: ["selection1Grade", "01KKHN3ZMG0P97PBYE968KP3AN"],
+    selection1Title: ["selection1Title", "01KKHN2NG5BVQVRFTYFEEX1S7E"],
+    selection2Composer: ["selection2Composer", "01KKHN3FG3DHQ9NV468Q5714W1"],
+    selection2Grade: ["selection2Grade", "01KKHN44CCPR0W2B24G00BTS6J"],
+    selection2Title: ["selection2Title", "01KKHN2T203Y26PZJ1ZPX7ZY28"],
+    finalRating: ["finalRating", "01KKHMAEHMNV6JGSASBY304AMS"],
+    adjudicatorSignatureName: ["adjudicatorSignatureName", "01KKHM7Q2D9702C0T1NXD1R3EA"],
+    toneQualityComment: ["toneQualityComment", "01KKHM1WWE5BBPQEQXG3TBY0XF"],
+    toneQualityGrade: ["toneQualityGrade", "01KKHM89J6BG3PHXF55NCQ1M29"],
+    intonationComment: ["intonationComment", "01KKHM254TNG0FHDPVGWYBMWPS"],
+    intonationGrade: ["intonationGrade", "01KKHM967CD3DQZ0MWWCQVB2B8"],
+    balanceBlendComment: ["balanceBlendComment", "01KKHM2DPZG2TFMCTMD7Y3467V"],
+    balanceBlendGrade: ["balanceBlendGrade", "01KKHM9C1VP8Q8S72TEF68596D"],
+    precisionComment: ["precisionComment", "01KKHM2XF5HAEACREZ9HFZMYYS"],
+    precisionGrade: ["precisionGrade", "01KKHM9HWP34Q5ARQQ2G8GQ0NY"],
+    basicMusicianshipComment: ["basicMusicianshipComment", "01KKHM2JE46W3EWSBQP7283D52"],
+    basicMusicianshipGrade: ["basicMusicianshipGrade", "01KKHM9P6FFX7YNJMXYKRQXTWZ"],
+    interpretiveMusicianshipComment: [
+      "interpretiveMusicianshipComment",
+      "01KKHM343F5CWFAX44KYD2SN0J",
+    ],
+    interpretiveMusicianshipGrade: ["interpretiveMusicianshipGrade", "01KKHM9V4J3GPJM3A7EJDC33EK"],
+    generalFactorsComment: ["generalFactorsComment", "01KKHM7CDC5CW4RNCYKMF8YCVR"],
+    generalFactorsGrade: ["generalFactorsGrade", "01KKHM9ZWC19YN4S3AC83F8MRF"],
+  };
+  const getTextField = (semanticName) => {
+    const candidates = fieldNameMap[semanticName] || [semanticName];
+    for (const candidate of candidates) {
+      try {
+        return form.getTextField(candidate);
+      } catch {
+        continue;
+      }
+    }
+    throw new Error(`Missing PDF field for ${semanticName}`);
+  };
+  const setFieldText = (semanticName, value, options = {}) => {
+    const textField = getTextField(semanticName);
     if (options.alignment !== undefined) {
       textField.setAlignment(options.alignment);
     }
@@ -634,10 +664,15 @@ async function renderStageSubmissionTemplatePdf({
 
   setFieldText("ensembleName", displayEnsemble);
   setFieldText("schoolName", displaySchool);
+  try {
+    setFieldText("siteLabel", "South Site | Ashley High School, Wilmington, NC", {fontSize: 9});
+  } catch {
+    // Older template variant without the site field.
+  }
   setFieldText("directorName", displayDirector);
   setFieldText("eventDate", scheduleDate);
   setFieldText("eventTime", scheduleTime);
-  setFieldText("memberCount", memberCount);
+  setFieldText("memberCount", "NCBA Eastern");
   setFieldText("performanceGrade", performanceGrade);
   setFieldText("finalRating", finalRating, {alignment: TextAlignment.Center});
   setFieldText("marchTitle", repertoire.march?.title || "");
@@ -669,7 +704,7 @@ async function renderStageSubmissionTemplatePdf({
 
   Object.entries(captionFieldMap).forEach(([key, fields]) => {
     const value = captions[key] || {};
-    const commentField = form.getTextField(fields.comment);
+    const commentField = getTextField(fields.comment);
     const widget = commentField.acroField.getWidgets()[0] || null;
     const rect = widget?.getRectangle ? widget.getRectangle() : null;
     commentField.setText("");
@@ -695,87 +730,148 @@ async function renderStageSubmissionTemplatePdf({
       font,
       rect,
       text,
+      size: 7,
+      lineHeight: 8,
+      maxLines: 4,
     });
   });
   return await pdfDoc.save();
 }
 
-function renderSightTemplatePage({
-  page,
-  font,
+async function renderSightSubmissionTemplatePdf({
   eventId,
   ensembleId,
   schoolId,
   grade,
   position,
   submission,
+  context = {},
 } = {}) {
-  const dark = pdfRgb(0.07, 0.07, 0.07);
-  const pageWidth = page.getWidth();
-  const pageHeight = page.getHeight();
-  const margin = 40;
-  let y = pageHeight - margin;
+  const {PDFDocument, TextAlignment} = getPdfLib();
+  const pdfDoc = await PDFDocument.load(await getSightFormTemplateBytes());
+  const font = await pdfDoc.embedFont(getPdfLib().StandardFonts.Helvetica);
+  const form = pdfDoc.getForm();
   const captions = submission?.captions && typeof submission.captions === "object" ?
     submission.captions :
     {};
-  const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge");
-  drawSimpleValue({page, font, value: "NCBA Music Performance Adjudication - Sight Reading Form", x: margin, y, size: 16, color: dark});
-  y -= 24;
-  drawSimpleValue({page, font, value: `Event: ${eventId}   School: ${schoolId}   Ensemble: ${ensembleId}`, x: margin, y, size: 10, color: dark});
-  y -= 16;
-  drawSimpleValue({page, font, value: `Judge: ${judgeName}`, x: margin, y, size: 10, color: dark});
-  y -= 16;
-  drawSimpleValue({
-    page,
-    font,
-    value: `Slot: ${judgeLabelByPosition(position)}  Grade: ${grade || "N/A"}`,
-    x: margin,
-    y,
-    size: 10,
-    color: dark,
-  });
-  y -= 22;
+  const schedule = context.schedule && typeof context.schedule === "object" ? context.schedule : {};
+  const school = context.school && typeof context.school === "object" ? context.school : {};
+  const entry = context.entry && typeof context.entry === "object" ? context.entry : {};
+  const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge").trim();
+  const fieldNameMap = {
+    finalRating: ["01KKY6PKC6V2BQWB75QBZ837KB"],
+    schoolName: ["01KKHS9H5QKWN1K5PBZ4EQR1E7"],
+    ensembleName: ["01KKHS909B5XX1VGV95X0Y1RTA"],
+    eventTime: ["01KKHSAZQWFSB3D3C2P4JEEVEA"],
+    eventDate: ["01KKHSB5M0MPN1R4KS14F84EWP"],
+    memberCount: ["01KKHSATKZ30T6Q2DWBN2T6TNQ"],
+    performanceGrade: ["01KKHSAF0TGGGM5SX3469WZW6B"],
+    toneQualityGrade: ["01KKY6PVSRGPP61K5D9V681DK6"],
+    toneQualityComment: ["01KKHSBD94FCKZAA418GECW6WK"],
+    intonationGrade: ["01KKY6Q9VRRBCNK0TY92YY3SET"],
+    intonationComment: ["01KKHSC78KYSCBF64XDMKGPTA2"],
+    balanceGrade: ["01KKY6QV1VV2TF3AJGY0J4H06K"],
+    balanceComment: ["01KKHSCDFYHT373E8BPD58VQ5B"],
+    techniqueGrade: ["01KKY6R29G1F7SHNQPGH75J2VP"],
+    techniqueComment: ["01KKHSCKTV2DDF4145K6ZEFQXJ"],
+    rhythmGrade: ["01KKY6R8A1N8C30J0J43MMW1TJ"],
+    rhythmComment: ["01KKHSCZJ6DJBHSGXP490HS1QF"],
+    musicianshipGrade: ["01KKY6RR864K4M2E5DTWMD4R33"],
+    musicianshipComment: ["01KKHSD4JSH1CW0N9YW70ATY0F"],
+    prepTimeGrade: ["01KKY6RWN8G55E06SM9A7EGBZ0"],
+    prepTimeComment: ["01KKHSDW5B2SYYY10YXK2VAJ6R"],
+    adjudicatorSignatureName: ["01KKY6S7MDC9WWTSS8BCMFEFM0"],
+  };
+  const getTextField = (semanticName) => {
+    const candidates = fieldNameMap[semanticName] || [semanticName];
+    for (const candidate of candidates) {
+      try {
+        return form.getTextField(candidate);
+      } catch {
+        continue;
+      }
+    }
+    throw new Error(`Missing PDF field for ${semanticName}`);
+  };
+  const setFieldText = (semanticName, value, options = {}) => {
+    const textField = getTextField(semanticName);
+    if (options.alignment !== undefined) {
+      textField.setAlignment(options.alignment);
+    }
+    if (options.fontSize !== undefined) {
+      textField.setFontSize(options.fontSize);
+    }
+    textField.setText(String(value || "").trim());
+  };
 
-  const captionOrder = [
-    "toneQuality",
-    "intonation",
-    "balance",
-    "technique",
-    "rhythm",
-    "musicianship",
-    "prepTime",
-  ];
-  captionOrder.forEach((key) => {
+  const displayEnsemble = String(
+      schedule.ensembleName ||
+      entry.ensembleName ||
+      ensembleId ||
+      "",
+  ).trim();
+  const displaySchool = String(
+      schedule.schoolName ||
+      entry.schoolName ||
+      school.name ||
+      schoolId ||
+      "",
+  ).trim();
+  const scheduleDate = formatDateLabel(schedule.performanceAt || context.event?.startAt || null);
+  const scheduleTime = formatTimeLabel(schedule.performanceAt || null);
+
+  setFieldText("ensembleName", displayEnsemble);
+  setFieldText("schoolName", displaySchool);
+  setFieldText("eventDate", scheduleDate);
+  setFieldText("eventTime", scheduleTime);
+  setFieldText("memberCount", "NCBA Eastern");
+  setFieldText("performanceGrade", String(grade || "").trim());
+  setFieldText("finalRating", String(submission?.computedFinalRatingLabel || "N/A").trim(), {
+    alignment: TextAlignment.Center,
+  });
+  setFieldText("adjudicatorSignatureName", judgeName);
+
+  const commentOverlays = [];
+  const captionFieldMap = {
+    toneQuality: {comment: "toneQualityComment", grade: "toneQualityGrade"},
+    intonation: {comment: "intonationComment", grade: "intonationGrade"},
+    balance: {comment: "balanceComment", grade: "balanceGrade"},
+    technique: {comment: "techniqueComment", grade: "techniqueGrade"},
+    rhythm: {comment: "rhythmComment", grade: "rhythmGrade"},
+    musicianship: {comment: "musicianshipComment", grade: "musicianshipGrade"},
+    prepTime: {comment: "prepTimeComment", grade: "prepTimeGrade"},
+  };
+  Object.entries(captionFieldMap).forEach(([key, fields]) => {
     const value = captions[key] || {};
-    const label = key;
-    const gradeText = `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim() || "N/A";
-    const header = `${label}: ${gradeText}`;
-    drawSimpleValue({page, font, value: header, x: margin, y, size: 10.5, color: dark});
-    y -= 16;
-    y = drawWrappedText({
-      page,
-      font,
-      text: String(value.comment || "").trim(),
-      x: margin + 8,
-      y,
-      maxWidth: pageWidth - (margin * 2) - 8,
-      size: 9,
-      lineHeight: 11,
-      color: dark,
-      maxLines: 3,
-    });
-    y -= 8;
+    const commentField = getTextField(fields.comment);
+    const widget = commentField.acroField.getWidgets()[0] || null;
+    const rect = widget?.getRectangle ? widget.getRectangle() : null;
+    commentField.setText("");
+    if (rect) {
+      commentOverlays.push({rect, text: String(value.comment || "").trim()});
+    }
+    setFieldText(
+        fields.grade,
+        `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim(),
+        {alignment: TextAlignment.Center},
+    );
   });
 
-  drawSimpleValue({
-    page,
-    font,
-    value: `Caption Total: ${Number(submission?.captionScoreTotal || 0)}  Final Rating: ${String(submission?.computedFinalRatingLabel || "N/A")}`,
-    x: margin,
-    y: 52,
-    size: 10,
-    color: dark,
+  form.updateFieldAppearances(font);
+  form.flatten();
+  const firstPage = pdfDoc.getPages()[0] || null;
+  commentOverlays.forEach(({rect, text}) => {
+    drawFieldCommentOverlay({
+      page: firstPage,
+      font,
+      rect,
+      text,
+      size: 7,
+      lineHeight: 8,
+      maxLines: 4,
+    });
   });
+  return await pdfDoc.save();
 }
 
 async function renderSubmissionTemplatePdf({
@@ -787,7 +883,6 @@ async function renderSubmissionTemplatePdf({
   submission,
   context = {},
 } = {}) {
-  const {PDFDocument, StandardFonts} = getPdfLib();
   if (position !== JUDGE_POSITIONS.sight) {
     return renderStageSubmissionTemplatePdf({
       eventId,
@@ -799,20 +894,15 @@ async function renderSubmissionTemplatePdf({
       context,
     });
   }
-  const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([612, 792]); // US Letter
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  renderSightTemplatePage({
-    page,
-    font,
+  return renderSightSubmissionTemplatePdf({
     eventId,
     ensembleId,
     schoolId,
     grade,
     position,
     submission,
+    context,
   });
-  return await pdfDoc.save();
 }
 
 async function renderOpenPacketPrintablePdf({
@@ -869,13 +959,7 @@ async function renderOpenPacketPrintablePdf({
     });
   }
 
-  const {PDFDocument, StandardFonts} = getPdfLib();
-  const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([612, 792]);
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  renderSightTemplatePage({
-    page,
-    font,
+  return renderSightSubmissionTemplatePdf({
     eventId: String(resolvedPacket.officialEventId || resolvedPacket.assignmentEventId || "").trim(),
     ensembleId: String(resolvedPacket.ensembleName || resolvedPacket.ensembleId || packetId || "").trim(),
     schoolId: String(resolvedPacket.schoolName || resolvedPacket.schoolId || "").trim(),
@@ -890,8 +974,8 @@ async function renderOpenPacketPrintablePdf({
           resolvedPacket.judgePosition,
       ) || JUDGE_POSITIONS.sight,
     submission: submissionLike,
+    context: renderContext,
   });
-  return await pdfDoc.save();
 }
 
 async function generateDirectorPacketExportInternal({

@@ -266,6 +266,12 @@ export async function excludeRawAssessment({ rawAssessmentId, reason = "" }) {
   return response.data || {};
 }
 
+export async function deleteRawAssessment({ rawAssessmentId }) {
+  const fn = httpsCallable(functions, "deleteRawAssessment");
+  const response = await fn({ rawAssessmentId });
+  return response.data || {};
+}
+
 export async function reassignRawAssessment({
   rawAssessmentId,
   eventId,

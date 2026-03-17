@@ -20,6 +20,7 @@ export function createAdminRenderers({
   getPacketData,
   officializeRawAssessment,
   excludeRawAssessment,
+  deleteRawAssessment,
   reassignRawAssessment,
   fetchDirectorPacketAssets,
   generateOpenPacketPrintAsset,
@@ -526,9 +527,14 @@ export function createAdminRenderers({
     excludeBtn.type = "button";
     excludeBtn.className = "ghost";
     excludeBtn.textContent = "Exclude";
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "ghost";
+    deleteBtn.textContent = "Delete";
     actions.appendChild(reassignBtn);
     actions.appendChild(officializeBtn);
     actions.appendChild(excludeBtn);
+    actions.appendChild(deleteBtn);
     els.adminSubmissionDetail.appendChild(actions);
 
     const status = document.createElement("div");
@@ -545,6 +551,14 @@ export function createAdminRenderers({
         formType: formTypeSelect.value || selected.formType || "stage",
       };
     };
+
+    const isOfficialized =
+      Boolean(String(selected.officialAssessmentId || "").trim()) ||
+      String(selected.status || "").trim() === "officialized";
+    deleteBtn.disabled = isOfficialized;
+    if (isOfficialized) {
+      deleteBtn.title = "Officialized assessments cannot be deleted from Live Submissions.";
+    }
 
     reassignBtn.addEventListener("click", async () => {
       const next = getSelection();
@@ -584,6 +598,24 @@ export function createAdminRenderers({
         status.textContent = "Excluded.";
       } catch (error) {
         status.textContent = error?.message || "Unable to exclude.";
+      }
+    });
+
+    deleteBtn.addEventListener("click", async () => {
+      if (deleteBtn.disabled) return;
+      const confirmed = window.confirm(
+        "Delete this non-official assessment and its source sheet? This cannot be undone."
+      );
+      if (!confirmed) return;
+      status.textContent = "Deleting...";
+      try {
+        await deleteRawAssessment({
+          rawAssessmentId: selected.id,
+        });
+        state.admin.selectedRawAssessmentId = "";
+        status.textContent = "Deleted.";
+      } catch (error) {
+        status.textContent = error?.message || "Unable to delete.";
       }
     });
   }

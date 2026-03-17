@@ -76,6 +76,7 @@ import {
   watchRawAssessments,
   officializeRawAssessment,
   excludeRawAssessment,
+  deleteRawAssessment,
   reassignRawAssessment,
   updateEntryCheckinFields,
 } from "./admin.js";
@@ -2150,6 +2151,7 @@ function getAdminRenderers() {
     getPacketData,
     officializeRawAssessment,
     excludeRawAssessment,
+    deleteRawAssessment,
     reassignRawAssessment,
     fetchDirectorPacketAssets,
     generateOpenPacketPrintAsset,

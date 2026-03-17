@@ -3493,6 +3493,78 @@ exports.excludeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request
   return {ok: true, rawAssessmentId};
 });
 
+exports.deleteRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const rawAssessmentId = buildRawAssessmentId({rawAssessmentId: data.rawAssessmentId});
+  if (!rawAssessmentId) {
+    throw new HttpsError("invalid-argument", "rawAssessmentId is required.");
+  }
+
+  const db = admin.firestore();
+  const bucket = admin.storage().bucket();
+  const rawRef = db.collection(COLLECTIONS.rawAssessments).doc(rawAssessmentId);
+  const rawSnap = await rawRef.get();
+  if (!rawSnap.exists) {
+    throw new HttpsError("not-found", "Raw assessment not found.");
+  }
+
+  const raw = rawSnap.data() || {};
+  const officialAssessmentId = String(raw.officialAssessmentId || "").trim();
+  if (officialAssessmentId || String(raw.status || "").trim() === STATUSES.officialized) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Officialized assessments cannot be deleted from Live Submissions.",
+    );
+  }
+
+  const linkedOfficialSnap = await db
+      .collection(COLLECTIONS.officialAssessments)
+      .where(FIELDS.officialAssessments.sourceRawAssessmentId, "==", rawAssessmentId)
+      .limit(1)
+      .get();
+  if (!linkedOfficialSnap.empty) {
+    throw new HttpsError(
+        "failed-precondition",
+        "This assessment is already officialized into a results packet.",
+    );
+  }
+
+  let deletedPacket = false;
+  const packetId = String(raw.packetId || "").trim();
+  if (packetId) {
+    const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+    const packetSnap = await packetRef.get();
+    if (packetSnap.exists) {
+      const packet = packetSnap.data() || {};
+      const linkedPacketOfficialId = String(packet.officialAssessmentId || "").trim();
+      if (linkedPacketOfficialId) {
+        throw new HttpsError(
+            "failed-precondition",
+            "This sheet is already attached to an officialized results slot.",
+        );
+      }
+      if (isReleasedOpenPacketStatus(packet.status)) {
+        throw new HttpsError(
+            "failed-precondition",
+            "Released sheets cannot be deleted from Live Submissions.",
+        );
+      }
+      await deleteOpenPacketDocument({
+        db,
+        bucket,
+        packetRef,
+        packet,
+        packetId,
+      });
+      deletedPacket = true;
+    }
+  }
+
+  await rawRef.delete();
+  return {ok: true, rawAssessmentId, deletedPacket};
+});
+
 exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
   const profile = await assertOpsLead(request);
   const data = request.data || {};

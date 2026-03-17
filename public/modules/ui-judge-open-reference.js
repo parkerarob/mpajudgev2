@@ -32,9 +32,6 @@ export function createJudgeOpenDirectorReference({
       row.textContent = `${label}: ${value || "N/A"}`;
       summary.appendChild(row);
     };
-    addRow("School", selected.schoolName || "");
-    addRow("Ensemble", selected.ensembleName || "");
-
     if (!snapshot || status !== "loaded") {
       addRow("Grade", "N/A");
       addRow("Repertoire", "N/A");

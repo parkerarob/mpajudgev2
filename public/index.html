@@ -726,13 +726,7 @@
                     </div>
                   </div>
                 </div>
-                <div class="empty" id="judgeOpenTapeEmpty">
-                  <div id="judgeOpenTapeEmptyText">No assessment audio yet.</div>
-                  <div class="actions">
-                    <button type="button" class="ghost btn--sm" id="judgeOpenTapeEmptyPrimaryBtn">Start Recording</button>
-                    <button type="button" class="ghost btn--sm" id="judgeOpenTapeEmptySecondaryBtn">Review Ensemble Setup</button>
-                  </div>
-                </div>
+
                 <audio id="judgeOpenTapePlayback" controls preload="metadata" class="audio"></audio>
                 <details class="accordion-card readiness-details" id="judgeOpenSegmentsDetails">
                   <summary>
@@ -746,11 +740,9 @@
 
               <details class="panel transcript-panel judge-open-step-card" id="judgeOpenTranscriptPanel" open>
                 <summary class="step-heading">
-                  <span class="badge">Optional</span>
-                  <strong>Tape Transcript Reference</strong>
+                  <strong>Auto Transcript</strong>
                 </summary>
-                <div class="note">Auto transcript can help with tape notes, but required caption comments must be entered below even if AI is unavailable.</div>
-                <textarea id="judgeOpenTranscriptInput" rows="6" aria-label="Tape Transcript Reference"></textarea>
+                <textarea id="judgeOpenTranscriptInput" rows="6" aria-label="Auto Transcript"></textarea>
                 <div class="row">
                     <button type="button" id="judgeOpenTranscribeBtn" class="ghost btn--secondary">
                     Refresh Auto Transcript

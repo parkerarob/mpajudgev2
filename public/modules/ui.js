@@ -4587,7 +4587,7 @@ function generatePizzaInvoicePdf() {
   addText(money(totalCost), 500, y, 15, "F2");
 
   y += 46;
-  addText("Each lunch includes two slices of pizza, chips/snack, and soda or bottled water.", 54, y, 11, "F1");
+  addText("Each lunch includes two slices of pizza, chips/snack, and water.", 54, y, 11, "F1");
   y += 22;
   addText("Make checks payable to Ashley High School Band Boosters.", 54, y, 11, "F1");
   y += 22;

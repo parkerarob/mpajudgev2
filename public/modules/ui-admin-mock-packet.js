@@ -8,7 +8,7 @@ export function createAdminMockPacketPreviewRenderer({
   calculateCaptionTotal,
   computeFinalRating,
   levelToRoman,
-  renderSubmissionCard,
+  renderAssessmentCard,
 } = {}) {
   function buildMockPacketCaptions(formType, judgeLabel) {
     const template = CAPTION_TEMPLATES[formType] || CAPTION_TEMPLATES.stage || [];
@@ -84,7 +84,7 @@ export function createAdminMockPacketPreviewRenderer({
     Object.values(JUDGE_POSITIONS).forEach((position) => {
       const wrapper = document.createElement("div");
       wrapper.className = "packet-slot";
-      wrapper.appendChild(renderSubmissionCard(submissions[position], position));
+      wrapper.appendChild(renderAssessmentCard(submissions[position], position));
       grid.appendChild(wrapper);
     });
     els.adminPacketsMockPanel.appendChild(grid);

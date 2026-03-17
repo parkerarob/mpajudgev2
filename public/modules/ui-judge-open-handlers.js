@@ -102,6 +102,77 @@ export function createJudgeOpenHandlerBinder({
     if (judgeOpenHandlersBound) return;
     judgeOpenHandlersBound = true;
 
+    const handleOpenRecordStart = async (buttonEl = els.judgeOpenRecordBtn) => {
+      if (!buttonEl) return;
+      buttonEl.dataset.loadingLabel = "Starting...";
+      buttonEl.dataset.spinner = "true";
+      if (els.judgeOpenRecordingStatus) {
+        els.judgeOpenRecordingStatus.textContent = "Starting microphone...";
+      }
+      await withLoading(buttonEl, async () => {
+        const result = await startOpenRecording({
+          getPacketMeta: gatherOpenPacketMeta,
+          onSessions: renderOpenSegments,
+          onStatus: updateOpenRecordingStatus,
+        });
+        if (!result?.ok) {
+          setOpenPacketHint(result?.message || "Unable to start recording.");
+          if (els.judgeOpenRecordingStatus) {
+            els.judgeOpenRecordingStatus.textContent = "Unable to start recording.";
+          }
+          return;
+        }
+      });
+      updateOpenRecordingStatus();
+    };
+
+    const handleJudgeOpenWorkflowAction = async (action, buttonEl) => {
+      if (!action) return;
+      if (action === "back-to-landing") {
+        await backToJudgeOpenLanding();
+        return;
+      }
+      if (action === "open-setup") {
+        showOpenDetailView();
+        if (els.judgeOpenExistingSelect) {
+          try {
+            els.judgeOpenExistingSelect.focus();
+          } catch {
+            // no-op
+          }
+        }
+        setOpenPacketHint("Select an existing school and ensemble to continue.");
+        return;
+      }
+      if (action === "start-recording") {
+        showOpenDetailView();
+        if (!hasLinkedOpenEnsemble()) {
+          setOpenPacketHint("Select an existing school and ensemble first.");
+          if (els.judgeOpenExistingSelect) {
+            try {
+              els.judgeOpenExistingSelect.focus();
+            } catch {
+              // no-op
+            }
+          }
+          return;
+        }
+        await handleOpenRecordStart(buttonEl || els.judgeOpenRecordBtn);
+      }
+    };
+
+    [
+      els.judgeOpenEmptyPrimaryBtn,
+      els.judgeOpenEmptySecondaryBtn,
+      els.judgeOpenTapeEmptyPrimaryBtn,
+      els.judgeOpenTapeEmptySecondaryBtn,
+    ].forEach((buttonEl) => {
+      if (!buttonEl) return;
+      buttonEl.addEventListener("click", async () => {
+        await handleJudgeOpenWorkflowAction(buttonEl.dataset.action || "", buttonEl);
+      });
+    });
+
     if (els.judgeOpenPacketSelect) {
       els.judgeOpenPacketSelect.addEventListener("change", async () => {
         if (state.judgeOpen.packetMutationInFlight) return;
@@ -534,26 +605,7 @@ export function createJudgeOpenHandlerBinder({
 
     if (els.judgeOpenRecordBtn) {
       els.judgeOpenRecordBtn.addEventListener("click", async () => {
-        els.judgeOpenRecordBtn.dataset.loadingLabel = "Starting...";
-        els.judgeOpenRecordBtn.dataset.spinner = "true";
-        if (els.judgeOpenRecordingStatus) {
-          els.judgeOpenRecordingStatus.textContent = "Starting microphone...";
-        }
-        await withLoading(els.judgeOpenRecordBtn, async () => {
-          const result = await startOpenRecording({
-            getPacketMeta: gatherOpenPacketMeta,
-            onSessions: renderOpenSegments,
-            onStatus: updateOpenRecordingStatus,
-          });
-          if (!result?.ok) {
-            setOpenPacketHint(result?.message || "Unable to start recording.");
-            if (els.judgeOpenRecordingStatus) {
-              els.judgeOpenRecordingStatus.textContent = "Unable to start recording.";
-            }
-            return;
-          }
-        });
-        updateOpenRecordingStatus();
+        await handleOpenRecordStart(els.judgeOpenRecordBtn);
       });
     }
 

@@ -1,4 +1,5 @@
 const ADMIN_VIEWS = new Set([
+  "dashboard",
   "preEvent",
   "liveEvent",
   "submissions",
@@ -9,17 +10,24 @@ const ADMIN_VIEWS = new Set([
 ]);
 
 const ADMIN_VIEW_BY_SEGMENT = {
-  "": "preEvent",
+  "": "dashboard",
+  dashboard: "dashboard",
   "pre-event": "preEvent",
   "preevent": "preEvent",
+  registrations: "preEvent",
+  registration: "preEvent",
+  "check-in": "preEvent",
   eventchair: "preEvent",
   events: "preEvent",
   live: "liveEvent",
   "live-event": "liveEvent",
   liveevent: "liveEvent",
+  flow: "liveEvent",
+  "schedule-flow": "liveEvent",
+  "schedule-and-flow": "liveEvent",
   chair: "liveEvent",
   logistics: "liveEvent",
-  checkin: "liveEvent",
+  checkin: "preEvent",
   submissions: "submissions",
   reviews: "submissions",
   queue: "submissions",
@@ -36,29 +44,30 @@ const ADMIN_VIEW_BY_SEGMENT = {
 export function resolveAdminView(view, {
   liveEnabled = true,
   settingsEnabled = true,
-  fallback = "preEvent",
+  fallback = "dashboard",
 } = {}) {
-  const normalizedFallback = ADMIN_VIEWS.has(fallback) ? fallback : "preEvent";
+  const normalizedFallback = ADMIN_VIEWS.has(fallback) ? fallback : "dashboard";
   const normalizedView = String(view || "").trim();
   let resolved = ADMIN_VIEWS.has(normalizedView) ? normalizedView : normalizedFallback;
   if (resolved === "liveEvent" && !liveEnabled) {
-    resolved = normalizedFallback === "liveEvent" ? "preEvent" : normalizedFallback;
+    resolved = normalizedFallback === "liveEvent" ? "dashboard" : normalizedFallback;
   }
   if (resolved === "settings" && !settingsEnabled) {
-    resolved = normalizedFallback === "settings" ? "preEvent" : normalizedFallback;
+    resolved = normalizedFallback === "settings" ? "dashboard" : normalizedFallback;
   }
-  return ADMIN_VIEWS.has(resolved) ? resolved : "preEvent";
+  return ADMIN_VIEWS.has(resolved) ? resolved : "dashboard";
 }
 
 export function resolveAdminViewFromHashSegment(segment, options = {}) {
   const normalized = String(segment || "").trim().toLowerCase();
-  const mapped = ADMIN_VIEW_BY_SEGMENT[normalized] || "preEvent";
+  const mapped = ADMIN_VIEW_BY_SEGMENT[normalized] || "dashboard";
   return resolveAdminView(mapped, options);
 }
 
 export function getAdminHashForView(view) {
   const resolvedView = resolveAdminView(view);
-  if (resolvedView === "preEvent") return "#admin";
-  if (resolvedView === "liveEvent") return "#admin/live";
+  if (resolvedView === "dashboard") return "#admin";
+  if (resolvedView === "preEvent") return "#admin/registrations";
+  if (resolvedView === "liveEvent") return "#admin/flow";
   return `#admin/${resolvedView}`;
 }

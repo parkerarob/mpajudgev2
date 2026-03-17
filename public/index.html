@@ -43,7 +43,7 @@
 
     <main class="main">
       <div class="notice offline-banner is-hidden" id="offlineBanner" role="status" aria-live="polite">
-        Offline: submissions are disabled until you reconnect.
+        Offline: assessment actions are disabled until you reconnect.
       </div>
       <div class="notice notice--info" id="provisioningNotice" hidden role="status" aria-live="polite"></div>
       <div class="notice notice--info is-hidden" id="eventModeBanner" role="status" aria-live="polite">
@@ -67,7 +67,7 @@
         <div class="tab-header">
           <div>
             <h2>Admin Tools</h2>
-            <div class="tab-subtitle">Manage event setup, live operations, packet release, and settings.</div>
+            <div class="tab-subtitle">Manage registrations, schedule flow, results release, and settings.</div>
           </div>
           <div class="tab-header-actions">
             <span class="badge" id="adminStatusBadge">No active event</span>
@@ -75,10 +75,11 @@
           </div>
         </div>
         <nav class="admin-subnav" id="adminSubnav" role="tablist" aria-label="Admin views">
-          <button type="button" class="admin-subnav-btn" id="adminSubnavEventChairBtn" role="tab" data-admin-view="preEvent" aria-selected="true">Pre-Event</button>
-          <button type="button" class="admin-subnav-btn" id="adminSubnavChairBtn" role="tab" data-admin-view="liveEvent" aria-selected="false">Live Event</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavDashboardBtn" role="tab" data-admin-view="dashboard" aria-selected="true">Dashboard</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavEventChairBtn" role="tab" data-admin-view="preEvent" aria-selected="false">Registrations</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavChairBtn" role="tab" data-admin-view="liveEvent" aria-selected="false">Schedule &amp; Flow</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavSubmissionsBtn" role="tab" data-admin-view="submissions" aria-selected="false">Live Submissions</button>
-          <button type="button" class="admin-subnav-btn" id="adminSubnavPacketsBtn" role="tab" data-admin-view="packets" aria-selected="false">Packets</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavPacketsBtn" role="tab" data-admin-view="packets" aria-selected="false">Packets &amp; Results</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavAnnouncerBtn" role="tab" data-admin-view="announcer" aria-selected="false">Announcer</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavReadinessBtn" role="tab" data-admin-view="readiness" aria-selected="false">Readiness</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavSettingsBtn" role="tab" data-admin-view="settings" aria-selected="false">Settings</button>
@@ -91,9 +92,48 @@
         </div>
         <div class="ios-screen">
         <div class="stack">
+          <div id="adminViewDashboard" class="admin-view stack" data-admin-view="dashboard">
+          <div class="panel stack">
+            <div class="row row--between row--center">
+              <div>
+                <h3>Operational Dashboard</h3>
+                <p class="hint">High-signal event status with direct links into registrations, schedule flow, live submissions, and packets.</p>
+              </div>
+              <span class="badge" id="adminDashboardEventBadge">No active event</span>
+            </div>
+            <div class="note" id="adminDashboardEventMeta">Set an active event to begin.</div>
+            <div class="admin-dashboard-grid">
+              <div class="admin-dashboard-card">
+                <div class="admin-dashboard-label">Registrations</div>
+                <div class="admin-dashboard-value" id="adminDashboardRegistrationsValue">0</div>
+                <div class="hint" id="adminDashboardRegistrationsHint">No active event.</div>
+                <button type="button" class="ghost" data-admin-go-view="preEvent">Open Registrations</button>
+              </div>
+              <div class="admin-dashboard-card">
+                <div class="admin-dashboard-label">Schedule &amp; Flow</div>
+                <div class="admin-dashboard-value" id="adminDashboardScheduleValue">0</div>
+                <div class="hint" id="adminDashboardScheduleHint">No scheduled ensembles.</div>
+                <button type="button" class="ghost" data-admin-go-view="liveEvent">Open Schedule &amp; Flow</button>
+              </div>
+              <div class="admin-dashboard-card">
+                <div class="admin-dashboard-label">Live Submissions</div>
+                <div class="admin-dashboard-value" id="adminDashboardSubmissionsValue">0</div>
+                <div class="hint" id="adminDashboardSubmissionsHint">No assessments in queue.</div>
+                <button type="button" class="ghost" data-admin-go-view="submissions">Open Live Submissions</button>
+              </div>
+              <div class="admin-dashboard-card">
+                <div class="admin-dashboard-label">Director Input Ready</div>
+                <div class="admin-dashboard-value" id="adminDashboardReadyValue">0</div>
+                <div class="hint" id="adminDashboardReadyHint">No active event.</div>
+                <button type="button" class="ghost" data-admin-go-view="packets">Open Packets &amp; Results</button>
+              </div>
+            </div>
+          </div>
+          </div>
+
           <div id="adminViewEvents" class="admin-view stack" data-admin-view="preEvent">
           <div class="panel" id="preEventFlowPanel">
-            <h3>Pre-Event Guided Flow</h3>
+            <h3>Registrations Guided Flow</h3>
             <p class="hint" id="preEventFlowSummary">Set an active event to begin.</p>
             <div class="pre-event-workflow-card stack" id="preEventWorkflowCard">
               <div class="row row--between row--center">
@@ -102,6 +142,9 @@
               </div>
               <div class="pre-event-workflow-next" id="preEventNextStepTitle">Set an active event to begin.</div>
               <div class="hint" id="preEventNextStepHint">Then complete registration coverage, schedule, and director input checks.</div>
+              <div class="row">
+                <button type="button" class="ghost btn--sm" id="preEventWorkflowActionBtn">Open Next Step</button>
+              </div>
               <div class="pre-event-step-chips">
                 <span class="pre-event-step-chip" id="preEventStepChipRegistration">Registration</span>
                 <span class="pre-event-step-chip" id="preEventStepChipSchedule">Schedule</span>
@@ -127,8 +170,8 @@
             </div>
           </div>
           <div class="panel" id="adminRegisteredEnsemblesSection">
-            <h3>Step 1: Registration Coverage</h3>
-            <p class="hint">Registered schools and ensembles for the active event. Click a school to manage scheduling and review day-of details.</p>
+            <h3>Step 1: Registrations</h3>
+            <p class="hint">Registered schools and ensembles for the active event. Click a school to manage scheduling, director readiness, and ensemble workspace data.</p>
             <ul id="adminRegisteredEnsemblesList" class="list"></ul>
           </div>
           <div class="panel" id="adminScheduleSection">
@@ -158,7 +201,7 @@
           <div class="panel is-hidden" id="adminSchoolDetailSection">
             <div class="row row--between row--center">
               <h3 id="adminSchoolDetailTitle">School Detail</h3>
-              <button type="button" class="ghost" id="adminSchoolDetailBackBtn">Back to Registration Coverage</button>
+              <button type="button" class="ghost" id="adminSchoolDetailBackBtn">Back to Registrations</button>
             </div>
             <div class="note" id="adminSchoolDetailMeta"></div>
             <div class="hint" id="adminSchoolDetailHint"></div>
@@ -168,15 +211,18 @@
 
           <div id="adminViewPackets" class="admin-view stack is-hidden" data-admin-view="packets">
           <div class="panel">
-            <h3>Packet Review and Release</h3>
-            <p class="hint">Select a school, then review current-event packets for that school.</p>
+            <h3>Packets &amp; Results</h3>
+            <p class="hint">Select a school, then review current-event official packets and release state for that school.</p>
             <div class="admin-workflow-card stack" id="adminPacketsWorkflowCard">
               <div class="row row--between row--center">
                 <div class="admin-workflow-title">Next Step</div>
                 <span class="badge" id="adminPacketsCurrentStepPill">Start</span>
               </div>
               <div class="admin-workflow-next" id="adminPacketsNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminPacketsNextStepHint">Then select a school and review packet completion before release.</div>
+              <div class="hint" id="adminPacketsNextStepHint">Then select a school and review official results readiness before release.</div>
+              <div class="row">
+                <button type="button" class="ghost btn--sm" id="adminPacketsWorkflowActionBtn">Open Next Step</button>
+              </div>
               <div class="admin-step-chips">
                 <span class="admin-step-chip" id="adminPacketsStepChipEvent">Event</span>
                 <span class="admin-step-chip" id="adminPacketsStepChipSchool">School</span>
@@ -185,7 +231,7 @@
               </div>
             </div>
             <div class="row">
-              <button type="button" class="ghost" id="adminPacketsMockPreviewBtn">Preview Full Packet (Mock)</button>
+              <button type="button" class="ghost" id="adminPacketsMockPreviewBtn">Preview Full Results Packet (Mock)</button>
               <button type="button" class="ghost" id="adminPacketsReleaseAshleyMockBtn">Release Mock to Ashley HS</button>
             </div>
             <div class="panel is-hidden" id="adminPacketsMockPanel"></div>
@@ -200,19 +246,22 @@
 
           <div id="adminViewChair" class="admin-view stack is-hidden" data-admin-view="liveEvent">
           <div class="panel">
-            <h3>Live Event</h3>
-            <p class="hint">Manage check-in and stage transitions for scheduled ensembles.</p>
+            <h3>Schedule &amp; Flow</h3>
+            <p class="hint">Manage check-in, stage transitions, and running-order flow for scheduled ensembles.</p>
             <div class="admin-workflow-card stack" id="adminLiveWorkflowCard">
               <div class="row row--between row--center">
                 <div class="admin-workflow-title">Next Step</div>
                 <span class="badge" id="adminLiveCurrentStepPill">Start</span>
               </div>
               <div class="admin-workflow-next" id="adminLiveNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminLiveNextStepHint">Then run check-in and stage setup for scheduled ensembles.</div>
+              <div class="hint" id="adminLiveNextStepHint">Then run check-in and manage stage flow for scheduled ensembles.</div>
+              <div class="row">
+                <button type="button" class="ghost btn--sm" id="adminLiveWorkflowActionBtn">Open Next Step</button>
+              </div>
               <div class="admin-step-chips">
                 <span class="admin-step-chip" id="adminLiveStepChipEvent">Event</span>
-                <span class="admin-step-chip" id="adminLiveStepChipQueue">Check-in Queue</span>
-                <span class="admin-step-chip" id="adminLiveStepChipSetup">Stage Setup</span>
+                <span class="admin-step-chip" id="adminLiveStepChipQueue">Check-In Queue</span>
+                <span class="admin-step-chip" id="adminLiveStepChipSetup">Stage Flow</span>
               </div>
             </div>
             <div id="liveEventContent"></div>
@@ -223,8 +272,25 @@
           <div class="panel">
             <h3>Live Submissions</h3>
             <p class="hint">Review saved judge assessments, fix association, and officialize approved records.</p>
+            <div class="admin-workflow-card stack" id="adminSubmissionsWorkflowCard">
+              <div class="row row--between row--center">
+                <div class="admin-workflow-title">Next Step</div>
+                <span class="badge" id="adminSubmissionsCurrentStepPill">Start</span>
+              </div>
+              <div class="admin-workflow-next" id="adminSubmissionsNextStepTitle">Set an active event to begin.</div>
+              <div class="hint" id="adminSubmissionsNextStepHint">Then review incoming assessments and officialize approved records.</div>
+              <div class="row">
+                <button type="button" class="ghost btn--sm" id="adminSubmissionsWorkflowActionBtn">Open Next Step</button>
+              </div>
+              <div class="admin-step-chips">
+                <span class="admin-step-chip" id="adminSubmissionsStepChipEvent">Event</span>
+                <span class="admin-step-chip" id="adminSubmissionsStepChipQueue">Queue</span>
+                <span class="admin-step-chip" id="adminSubmissionsStepChipReview">Review</span>
+                <span class="admin-step-chip" id="adminSubmissionsStepChipOfficialize">Officialize</span>
+              </div>
+            </div>
             <div class="row row--between row--center">
-              <div class="note" id="adminSubmissionsHint">Waiting for judge submissions.</div>
+              <div class="note" id="adminSubmissionsHint">Waiting for judge assessments.</div>
               <label>
                 Filter
                 <select id="adminSubmissionsFilter">
@@ -240,7 +306,7 @@
             <div class="admin-submissions-layout">
               <ul id="adminSubmissionsList" class="list"></ul>
               <div id="adminSubmissionDetail" class="panel stack">
-                <div class="note">Select a submission to review.</div>
+                <div class="note">Select an assessment to review.</div>
               </div>
             </div>
           </div>
@@ -248,7 +314,7 @@
 
           <div id="adminViewAnnouncer" class="admin-view stack is-hidden" data-admin-view="announcer">
           <div class="panel">
-            <h3>Announcer</h3>
+            <h3>Announcer / Stage Flow</h3>
             <p class="hint">Read upcoming band information in performance order from the active event schedule.</p>
             <div id="adminAnnouncerContent"></div>
           </div>
@@ -268,7 +334,7 @@
                 <label>
                   Event Mode
                   <select id="eventModeInput">
-                    <option value="live">Live Event</option>
+                    <option value="live">Schedule &amp; Flow Event</option>
                     <option value="rehearsal">Rehearsal Event</option>
                   </select>
                 </label>
@@ -486,22 +552,22 @@
               <div class="readiness-walkthrough-item" data-readiness-step-row="judgeAudioCheck">
                 <div>
                   <strong>2. Judge Audio & Capture Check</strong>
-                  <div class="note">Verify judge sign-in, recording, transcript parse, and submission lock behavior.</div>
+                  <div class="note">Verify judge sign-in, recording, transcript parse, and assessment lock behavior.</div>
                 </div>
                 <div class="row">
                   <span class="badge" data-readiness-step-state>Pending</span>
-                  <button type="button" class="ghost" data-readiness-open-view="liveEvent">Open Live Event</button>
+                  <button type="button" class="ghost" data-readiness-open-view="liveEvent">Open Schedule &amp; Flow</button>
                   <button type="button" class="ghost" data-readiness-step="judgeAudioCheck">Mark Complete</button>
                 </div>
               </div>
               <div class="readiness-walkthrough-item" data-readiness-step-row="directorVisibilityCheck">
                 <div>
                   <strong>3. Director Visibility Check</strong>
-                  <div class="note">Confirm directors can only view released packets and blocked packets remain hidden.</div>
+                  <div class="note">Confirm directors can only view released results packets and blocked results remain hidden.</div>
                 </div>
                 <div class="row">
                   <span class="badge" data-readiness-step-state>Pending</span>
-                  <button type="button" class="ghost" data-readiness-open-view="packets">Open Packets</button>
+                  <button type="button" class="ghost" data-readiness-open-view="packets">Open Packets &amp; Results</button>
                   <button type="button" class="ghost" data-readiness-step="directorVisibilityCheck">Mark Complete</button>
                 </div>
               </div>
@@ -512,7 +578,7 @@
                 </div>
                 <div class="row">
                   <span class="badge" data-readiness-step-state>Pending</span>
-                  <button type="button" class="ghost" data-readiness-open-view="packets">Open Packets</button>
+                  <button type="button" class="ghost" data-readiness-open-view="packets">Open Packets &amp; Results</button>
                   <button type="button" class="ghost" data-readiness-step="releaseGateCheck">Mark Complete</button>
                 </div>
               </div>
@@ -570,7 +636,13 @@
                 <select id="judgeOpenPacketSelect" class="is-hidden"></select>
                 <div class="packet-card-list" id="judgeOpenPacketList"></div>
               </div>
-              <div class="empty" id="judgeOpenEmpty">Create or select an assessment to begin.</div>
+              <div class="empty" id="judgeOpenEmpty">
+                <div id="judgeOpenEmptyText">Create or select an assessment to begin.</div>
+                <div class="actions">
+                  <button type="button" class="ghost btn--sm" id="judgeOpenEmptyPrimaryBtn">Open Ensemble Setup</button>
+                  <button type="button" class="ghost btn--sm" id="judgeOpenEmptySecondaryBtn">Back to Judge Landing</button>
+                </div>
+              </div>
             </div>
 
             <div class="judge-open-detail" id="judgeOpenDetailView">
@@ -655,7 +727,13 @@
                     </div>
                   </div>
                 </div>
-                <div class="empty" id="judgeOpenTapeEmpty">No assessment audio yet.</div>
+                <div class="empty" id="judgeOpenTapeEmpty">
+                  <div id="judgeOpenTapeEmptyText">No assessment audio yet.</div>
+                  <div class="actions">
+                    <button type="button" class="ghost btn--sm" id="judgeOpenTapeEmptyPrimaryBtn">Start Recording</button>
+                    <button type="button" class="ghost btn--sm" id="judgeOpenTapeEmptySecondaryBtn">Review Ensemble Setup</button>
+                  </div>
+                </div>
                 <audio id="judgeOpenTapePlayback" controls preload="metadata" class="audio"></audio>
                 <details class="accordion-card readiness-details" id="judgeOpenSegmentsDetails">
                   <summary>
@@ -745,20 +823,21 @@
 
       <section class="card" id="directorCard" role="tabpanel" aria-labelledby="directorTab">
         <nav class="director-workspace-nav is-hidden" id="directorWorkspaceNav" aria-label="Director workspace navigation">
-          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceLandingBtn">Home</button>
-          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceRegisterBtn">Register for Event</button>
-          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceEnsemblesBtn">Ensembles and Forms</button>
-          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceInfoBtn">Event / Site Information</button>
-          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceResultsBtn">Results</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceLandingBtn">Dashboard</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceRegisterBtn">Registration</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceEnsemblesBtn">My Ensembles</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceInfoBtn">Event Info</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceResultsBtn">Results Packet</button>
         </nav>
         <div class="ios-screen" id="directorDashboardLayout">
 
           <!-- LANDING: school, directors, event selector -->
           <div class="panel director-summary director-context-panel stack" id="directorSummary">
             <div class="director-dashboard-header">
-              <p class="director-hero-kicker">Director Portal</p>
+              <p class="director-hero-kicker">Director Workspace</p>
               <div class="note" id="directorDashboardContextMeta">School: —</div>
               <div class="note" id="directorDashboardEventMeta">Event: —</div>
+              <div class="note" id="directorDashboardEnsembleMeta">Active Ensemble: —</div>
             </div>
             <div class="director-summary-school-row">
               <div class="director-hero-copy">
@@ -772,36 +851,54 @@
             </div>
             <div class="director-landing-actions" id="directorLandingActions">
               <button type="button" class="btn--secondary director-landing-btn" id="directorNavRegisterBtn">
-                <span class="director-landing-btn-title">Register for Event</span>
-                <span class="director-landing-btn-copy">Choose the current event and complete registration details.</span>
+                <span class="director-landing-btn-title">Registration</span>
+                <span class="director-landing-btn-copy">Choose the current event and confirm registration details for participating ensembles.</span>
               </button>
               <button type="button" class="btn--secondary director-landing-btn" id="directorNavEnsemblesBtn">
-                <span class="director-landing-btn-title">Ensembles and Forms</span>
-                <span class="director-landing-btn-copy">Manage ensembles and finish the required director forms.</span>
+                <span class="director-landing-btn-title">My Ensembles</span>
+                <span class="director-landing-btn-copy">Manage ensembles, choose the active ensemble, and open its workspace.</span>
               </button>
               <button type="button" class="btn--secondary director-landing-btn" id="directorNavInfoBtn">
-                <span class="director-landing-btn-title">Event / Site Information</span>
+                <span class="director-landing-btn-title">Event Info</span>
                 <span class="director-landing-btn-copy">View schedule, logistics, site details, and event documents.</span>
               </button>
               <button type="button" class="btn--secondary director-landing-btn" id="directorNavResultsBtn">
-                <span class="director-landing-btn-title">Results</span>
-                <span class="director-landing-btn-copy">Open released packets, adjudication materials, and results.</span>
+                <span class="director-landing-btn-title">Results Packet</span>
+                <span class="director-landing-btn-copy">Open released official results packets, adjudication materials, and audio.</span>
               </button>
             </div>
             <div class="director-summary-event-select stack" id="directorEventSelectBlock">
               <label for="directorEventSelect">Event</label>
               <div class="row">
                 <select id="directorEventSelect" class="grow"></select>
-                <button type="button" id="directorEventGoBtn" class="btn--secondary">Event Forms</button>
+                <button type="button" id="directorEventGoBtn" class="btn--secondary">Open Workspace</button>
                 <button type="button" id="directorScheduleBtn" class="ghost">View Schedule</button>
               </div>
-              <p class="hint">Open event forms for this school.</p>
+              <p class="hint">Choose the event, then open registration or the active ensemble workspace.</p>
+            </div>
+            <div class="panel stack" id="directorWorkflowCard">
+              <div class="row row--between row--center">
+                <div class="pre-event-workflow-title">Next Step</div>
+                <span class="badge" id="directorCurrentStepPill">Start</span>
+              </div>
+              <div class="pre-event-workflow-next" id="directorNextStepTitle">Attach a school to begin.</div>
+              <div class="hint" id="directorNextStepHint">Once attached, choose an event and open registration.</div>
+              <div class="row">
+                <button type="button" class="ghost btn--sm" id="directorWorkflowActionBtn">Open Next Step</button>
+              </div>
+              <div class="pre-event-step-chips">
+                <span class="pre-event-step-chip" id="directorStepChipSchool">School</span>
+                <span class="pre-event-step-chip" id="directorStepChipEvent">Event</span>
+                <span class="pre-event-step-chip" id="directorStepChipEnsemble">Ensemble</span>
+                <span class="pre-event-step-chip" id="directorStepChipForms">Workspace</span>
+                <span class="pre-event-step-chip" id="directorStepChipReady">Ready</span>
+              </div>
             </div>
           </div>
 
           <div class="panel stack is-hidden director-ensemble-panel" id="directorEnsemblesSection">
             <div class="row row--between row--center">
-              <h3>School Ensembles</h3>
+              <h3>My Ensembles</h3>
               <button type="button" class="ghost" id="directorShowEnsembleFormBtn">Add Ensemble</button>
             </div>
             <form id="directorEnsembleForm" class="stack is-hidden">
@@ -822,6 +919,10 @@
           <div class="panel stack is-hidden" id="directorRegistrationPanel">
             <h3>Event Registration</h3>
             <div class="note director-registration-meta" id="directorRegistrationMeta"></div>
+            <div class="panel director-registration-scope">
+              <div class="note">Registration covers participating ensembles, declared grade/scheduling preferences, and profile confirmation.</div>
+              <div class="hint">Use the Ensemble Workspace after registration for repertoire, instrumentation, seating, percussion, lunch, and ready checks.</div>
+            </div>
             <div class="panel director-registration-step">
               <h4>Step 1 -- Update your profile</h4>
               <p class="hint">Confirm your NAfME membership and cell phone are current.</p>
@@ -853,33 +954,63 @@
               <button type="button" class="btn--secondary" id="directorEditRegistrationBtn">Edit Registration</button>
               <button type="button" class="btn--secondary" id="directorPrintSignatureBtn">Print Signature Form / Invoice</button>
               <button type="button" class="btn--secondary" id="directorUploadSignedFormBtn">Upload signed form</button>
-              <button type="button" class="btn--secondary" id="directorEnsembleInfoBtn">Ensemble Info (Day-of Forms)</button>
+              <button type="button" class="btn--secondary" id="directorEnsembleInfoBtn">Open Ensemble Workspace</button>
             </div>
             <input type="file" id="directorSignedFormInput" accept=".pdf,.jpg,.jpeg,.png" class="is-hidden" />
             <p class="hint" id="directorSignedFormStatus"></p>
           </div>
 
-          <!-- DAY-OF FORMS: ensemble selector + entry form -->
+          <!-- ENSEMBLE WORKSPACE: ensemble selector + entry form -->
           <div class="stack is-hidden" id="directorDayOfFormsBlock">
             <div class="row director-dayof-selector">
               <label class="grow">
-                Ensemble
+                Active Ensemble
                 <select id="directorDayOfEnsembleSelect" class="grow"></select>
               </label>
               <button type="button" class="ghost is-hidden" id="directorBackToAdminPreEventBtn">
-                Back to Admin Pre-Event
+                Back to Admin Registrations
               </button>
             </div>
             <div class="panel group" id="directorEntryPanel">
-              <h3>Day-of Entry</h3>
-              <div class="note" id="directorEditorActiveEnsembleLabel">No active ensemble selected</div>
+              <h3>Ensemble Workspace</h3>
+              <div class="note" id="directorEditorActiveEnsembleLabel">Active Ensemble: none selected</div>
+              <div class="hint" id="directorWorkspaceContextNote">Choose an event and active ensemble to open the workspace.</div>
+              <div class="row row--between row--center director-workspace-boundary-row">
+                <div class="hint director-workspace-boundary-note">Need to change participating ensembles, declared grade, or scheduling preferences? Return to Registration.</div>
+                <button type="button" class="ghost btn--sm" id="directorWorkspaceRegistrationShortcutBtn">Open Registration</button>
+              </div>
               <div class="row director-entry-meta">
                 <div class="note">Status: <span id="directorEntryStatus">Incomplete</span></div>
                 <div class="note" id="directorSchoolLunchTotal"></div>
                 <div class="note" id="directorSaveStatus"></div>
                 <span class="autosave-indicator" id="directorAutosaveIndicator">Autosaved</span>
               </div>
-              <div class="note" id="directorEntryHint">Select an ensemble above to begin.</div>
+              <div class="note" id="directorEntryHint">Select an active ensemble above to open its workspace.</div>
+              <div class="panel stack" id="directorChecklistPanel">
+                <div class="row row--between row--center">
+                  <strong class="readiness-title">Workspace Progress</strong>
+                  <span class="pill">Incomplete</span>
+                </div>
+                <div class="panel stack director-workspace-focus">
+                  <div class="note">Current Focus: <span id="directorWorkspaceFocusLabel">Choose an active ensemble</span></div>
+                  <div class="hint" id="directorWorkspaceFocusHint">Select an event and active ensemble to begin the workspace.</div>
+                  <button type="button" class="ghost btn--sm" id="directorWorkspaceFocusBtn">Open Current Focus</button>
+                </div>
+                <div class="panel stack director-workspace-blockers">
+                  <div class="note">Ready Blockers</div>
+                  <ul id="directorWorkspaceBlockers" class="list"></ul>
+                </div>
+                <div class="row row--between row--center">
+                  <div class="note readiness-meta">0/7 complete</div>
+                  <div class="note">Status: <span id="directorSummaryStatus">Incomplete</span></div>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-bar" id="directorSummaryProgressBar" style="width: 0%;"></div>
+                </div>
+                <div class="note">Completion: <span id="directorSummaryCompletion">0%</span></div>
+                <div class="hint readiness-hint">Choose an event and active ensemble to begin.</div>
+                <ul id="directorChecklist" class="list"></ul>
+              </div>
               <form id="directorEntryForm" class="stack">
                 <label>
                   Performance Grade (auto-derived from repertoire grades)
@@ -887,9 +1018,15 @@
                 </label>
                 <input type="checkbox" id="directorPerformanceGradeFlex" hidden />
                 <div class="error" id="performanceGradeError"></div>
-                <details class="panel accordion-card" open>
-                  <summary><div><strong>Repertoire</strong></div></summary>
+                <details class="panel accordion-card" data-director-section="repertoire" data-director-panel="repertoire" open>
+                  <summary>
+                    <div class="director-section-summary">
+                      <strong>Program &amp; Repertoire</strong>
+                      <span class="director-section-status" data-director-section-status="repertoire">Next</span>
+                    </div>
+                  </summary>
                   <div class="form-section">
+                    <div class="hint">Confirm the march and selections that determine the ensemble's performance grade.</div>
                     <div id="repertoireFields" class="stack"></div>
                     <div class="actions">
                       <button type="button" id="saveRepertoireBtn">Save Repertoire</button>
@@ -897,19 +1034,30 @@
                     </div>
                   </div>
                 </details>
-                <details class="panel accordion-card">
-                  <summary><div><strong>Instrument Counts</strong></div></summary>
+                <details class="panel accordion-card" data-director-section="instrumentation" data-director-panel="instrumentation">
+                  <summary>
+                    <div class="director-section-summary">
+                      <strong>Instrumentation Overview</strong>
+                      <span class="director-section-status" data-director-section-status="instrumentation">Missing</span>
+                    </div>
+                  </summary>
                   <div class="form-section">
+                    <div class="hint">Enter standard section counts and total percussion for this active ensemble.</div>
                     <div id="instrumentationStandard" class="grid-inputs"></div>
                     <label>Total Percussion <input type="number" id="instrumentationTotalPercussion" min="0" value="0" /></label>
                     <div class="actions">
-                      <button type="button" id="saveInstrumentationBtn">Save Instrument Counts</button>
+                      <button type="button" id="saveInstrumentationBtn">Save Instrumentation Overview</button>
                       <div class="hint" id="saveInstrumentationStatus"></div>
                     </div>
                   </div>
                 </details>
-                <details class="panel accordion-card">
-                  <summary><div><strong>Non-Standard Instrumentation / Notes</strong></div></summary>
+                <details class="panel accordion-card" data-director-section="instrumentation" data-director-panel="instrumentation-notes">
+                  <summary>
+                    <div class="director-section-summary">
+                      <strong>Special Instrumentation &amp; Notes</strong>
+                      <span class="director-section-status" data-director-section-status="instrumentation-notes">Optional</span>
+                    </div>
+                  </summary>
                   <div class="form-section">
                     <div class="stack">
                       <div class="row">
@@ -920,35 +1068,52 @@
                     </div>
                     <label>Notes <textarea id="otherInstrumentationNotesInput" rows="3"></textarea></label>
                     <div class="actions">
-                      <button type="button" id="saveNonStandardBtn">Save Instrument Notes</button>
+                      <button type="button" id="saveNonStandardBtn">Save Special Instrumentation</button>
                       <div class="hint" id="saveNonStandardStatus"></div>
                     </div>
                   </div>
                 </details>
-                <details class="panel accordion-card">
-                  <summary><div><strong>Rule 3C Doubling</strong></div></summary>
+                <details class="panel accordion-card" data-director-section="ensemble" data-director-panel="rule3c">
+                  <summary>
+                    <div class="director-section-summary">
+                      <strong>Shared Players / Rule 3C</strong>
+                      <span class="director-section-status" data-director-section-status="rule3c">Review</span>
+                    </div>
+                  </summary>
                   <div class="form-section">
+                    <div class="hint">Track students doubling into this ensemble from other groups.</div>
                     <div id="rule3cRows" class="stack"></div>
                     <label>Rule 3C notes <textarea id="rule3cNotesInput" rows="3"></textarea></label>
                     <div class="actions">
-                      <button type="button" id="saveRule3cBtn">Save Rule 3C</button>
+                      <button type="button" id="saveRule3cBtn">Save Shared Players</button>
                       <div class="hint" id="saveRule3cStatus"></div>
                     </div>
                   </div>
                 </details>
-                <details class="panel accordion-card">
-                  <summary><div><strong>Seating Chart</strong></div></summary>
+                <details class="panel accordion-card" data-director-section="seating" data-director-panel="seating">
+                  <summary>
+                    <div class="director-section-summary">
+                      <strong>Seating &amp; Setup</strong>
+                      <span class="director-section-status" data-director-section-status="seating">Missing</span>
+                    </div>
+                  </summary>
                   <div class="form-section">
+                    <div class="hint">Capture chair and stand counts along with any setup notes needed on event day.</div>
                     <div id="seatingRows" class="stack"></div>
                     <label>Seating / setup notes <textarea id="seatingNotesInput" rows="3"></textarea></label>
                     <div class="actions">
-                      <button type="button" id="saveSeatingBtn">Save Seating</button>
+                      <button type="button" id="saveSeatingBtn">Save Seating &amp; Setup</button>
                       <div class="hint" id="saveSeatingStatus"></div>
                     </div>
                   </div>
                 </details>
-                <details class="panel accordion-card">
-                  <summary><div><strong>Percussion</strong></div></summary>
+                <details class="panel accordion-card" data-director-section="percussion" data-director-panel="percussion">
+                  <summary>
+                    <div class="director-section-summary">
+                      <strong>Percussion &amp; Equipment</strong>
+                      <span class="director-section-status" data-director-section-status="percussion">Missing</span>
+                    </div>
+                  </summary>
                   <div class="form-section">
                     <div id="percussionOptions" class="grid-options"></div>
                     <div class="hint">
@@ -959,13 +1124,18 @@
                     </div>
                     <label>Other percussion requests <textarea id="percussionNotesInput" rows="3"></textarea></label>
                     <div class="actions">
-                      <button type="button" id="savePercussionBtn">Save Percussion</button>
+                      <button type="button" id="savePercussionBtn">Save Percussion &amp; Equipment</button>
                       <div class="hint" id="savePercussionStatus"></div>
                     </div>
                   </div>
                 </details>
-                <details class="panel accordion-card">
-                  <summary><div><strong>Pizza Order</strong></div></summary>
+                <details class="panel accordion-card" data-director-section="lunch" data-director-panel="lunch">
+                  <summary>
+                    <div class="director-section-summary">
+                      <strong>Lunch Order &amp; Check-In Pickup</strong>
+                      <span class="director-section-status" data-director-section-status="lunch">Missing</span>
+                    </div>
+                  </summary>
                   <div class="form-section">
                     <div class="hint" id="pizzaOrderWindowStatus"></div>
                     <div class="hint">Each lunch includes two slices of pizza, chips/snack, and soda or bottled water. Cost per meal is $8.00.</div>
@@ -980,7 +1150,7 @@
                       </select>
                     </label>
                     <div class="actions">
-                      <button type="button" id="saveLunchBtn">Save Pizza Order</button>
+                      <button type="button" id="saveLunchBtn">Save Lunch Order</button>
                       <button type="button" class="ghost" id="directorPrintPizzaInvoiceBtn">Download Pizza Invoice</button>
                       <div class="hint" id="lunchTotalCost">$0.00</div>
                       <div class="hint">Make checks payable to Ashley High School Band Boosters.</div>
@@ -1000,7 +1170,20 @@
             <details class="panel accordion-card group director-results-card" id="directorResultsPanel" open>
               <summary><div><strong>Official Results Packet</strong></div></summary>
               <div class="form-section">
-                <div class="empty" id="directorEmpty">No results released yet.</div>
+                <div class="note">Released official adjudication, results packet PDFs, and judge audio for your registered ensembles appear here.</div>
+                <div class="hint">If nothing is listed yet, results have not been released for your ensemble or event.</div>
+                <div class="panel stack director-results-summary">
+                  <div class="note" id="directorResultsContextMeta">School: —</div>
+                  <div class="note" id="directorResultsEventMeta">Event: —</div>
+                  <div class="note" id="directorResultsCountMeta">Released results: 0</div>
+                </div>
+                <div class="empty stack" id="directorEmpty">
+                  <div>No results released yet.</div>
+                  <div class="row">
+                    <button type="button" class="ghost btn--sm" id="directorResultsOpenEnsemblesBtn">Open My Ensembles</button>
+                    <button type="button" class="ghost btn--sm" id="directorResultsOpenInfoBtn">Open Event Info</button>
+                  </div>
+                </div>
                 <div id="directorPackets" class="stack"></div>
               </div>
             </details>
@@ -1011,14 +1194,14 @@
 
       <section class="card is-hidden" id="eventDetailPage">
         <nav class="director-workspace-nav is-hidden" id="eventDetailDirectorNav" aria-label="Director event navigation">
-          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorLandingBtn">Home</button>
-          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorRegisterBtn">Register for Event</button>
-          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorEnsemblesBtn">Ensembles and Forms</button>
-          <button type="button" class="ghost director-workspace-nav-btn is-active" id="eventDetailDirectorInfoBtn">Event / Site Information</button>
-          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorResultsBtn">Results</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorLandingBtn">Dashboard</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorRegisterBtn">Registration</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorEnsemblesBtn">My Ensembles</button>
+          <button type="button" class="ghost director-workspace-nav-btn is-active" id="eventDetailDirectorInfoBtn">Event Info</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorResultsBtn">Results Packet</button>
         </nav>
         <div class="row event-detail-topbar">
-          <p class="director-hero-kicker">Event Resources</p>
+          <p class="director-hero-kicker">Event Info</p>
           <button type="button" class="ghost" id="eventDetailBackBtn">Back to Dashboard</button>
         </div>
         <div class="panel director-info-shell">
@@ -1054,7 +1237,13 @@
                 <a id="eventScheduleLink" href="#" target="_blank" rel="noopener">Open Schedule PDF</a>
               </div>
               <iframe id="eventScheduleFrame" class="event-schedule-frame" title="Event Schedule PDF"></iframe>
-              <div class="empty" id="eventScheduleEmpty">No schedule PDF uploaded yet.</div>
+              <div class="empty stack" id="eventScheduleEmpty">
+                <div>No schedule PDF uploaded yet.</div>
+                <div class="row">
+                  <button type="button" class="ghost btn--sm" id="eventScheduleOpenRegistrationBtn">Open Registration</button>
+                  <button type="button" class="ghost btn--sm" id="eventScheduleOpenEnsemblesBtn">Open My Ensembles</button>
+                </div>
+              </div>
             </div>
           </div>
           <div class="director-sightreading-reminders stack" id="directorSightReadingReminders">
@@ -1529,7 +1718,7 @@
 
       <div class="modal" id="liveEventCheckinModal" aria-hidden="true">
         <div class="modal-backdrop" id="liveEventCheckinBackdrop"></div>
-        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Live Event Check-in">
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Schedule and Flow Check-In">
           <div class="modal-header">
             <h2 id="liveEventCheckinTitle">Ensemble Check-in</h2>
             <button type="button" class="ghost" id="liveEventCheckinClose">Close</button>

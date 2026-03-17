@@ -148,6 +148,24 @@ export function createJudgeOpenCore({
         els.judgeOpenSubmitHint.textContent = "Ready to submit.";
       }
     }
+    if (els.judgeOpenTapeEmptyText) {
+      els.judgeOpenTapeEmptyText.textContent = readiness.linkedEnsemble
+        ? "No assessment audio yet. Start recording when ready."
+        : "Select an ensemble before recording.";
+    }
+    if (els.judgeOpenTapeEmptyPrimaryBtn) {
+      els.judgeOpenTapeEmptyPrimaryBtn.textContent = readiness.linkedEnsemble
+        ? "Start Recording"
+        : "Select Ensemble";
+      els.judgeOpenTapeEmptyPrimaryBtn.dataset.action = readiness.linkedEnsemble
+        ? "start-recording"
+        : "open-setup";
+    }
+    if (els.judgeOpenTapeEmptySecondaryBtn) {
+      els.judgeOpenTapeEmptySecondaryBtn.hidden = !readiness.linkedEnsemble;
+      els.judgeOpenTapeEmptySecondaryBtn.textContent = "Review Ensemble Setup";
+      els.judgeOpenTapeEmptySecondaryBtn.dataset.action = "open-setup";
+    }
     return readiness;
   }
 

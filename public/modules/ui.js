@@ -115,6 +115,7 @@ import {
   selectDirectorEnsemble,
   uploadDirectorProfileCard,
   uploadSignedSignatureForm,
+  validateEntryReady,
   fetchDirectorPacketAssets,
   fetchDirectorAudioResultAsset,
   upsertRegistrationForEnsemble,
@@ -520,6 +521,15 @@ async function handleDirectorEnsembleSelection(ensembleId) {
 
 async function handleDirectorEnsembleOpenForms(ensembleId) {
   if (!ensembleId) return;
+  if (!state.director.selectedEventId) {
+    const nextEventId = state.event.active?.id || state.event.list?.[0]?.id || "";
+    if (!nextEventId) {
+      alertUser("Select or create an event first.");
+      return;
+    }
+    setDirectorEvent(nextEventId);
+    updateDirectorEventMeta();
+  }
   if (ensembleId !== state.director.selectedEnsembleId) {
     await handleDirectorEnsembleSelection(ensembleId);
   }
@@ -626,6 +636,13 @@ function applyDirectorEntryClear({ hint, status, readyStatus } = {}) {
   refreshDirectorSchoolLunchTotal();
 }
 
+function syncDirectorEntryStatusCache(status = "") {
+  const eventId = String(state.director.selectedEventId || "").trim();
+  const ensembleId = String(state.director.selectedEnsembleId || "").trim();
+  if (!eventId || !ensembleId || !(state.director.entryStatusCache instanceof Map)) return;
+  state.director.entryStatusCache.set(`${eventId}::${ensembleId}`, String(status || "").trim());
+}
+
 function applyDirectorSaveResult(section, result) {
   if (!result) return;
   let messageShown = false;
@@ -645,6 +662,7 @@ function applyDirectorSaveResult(section, result) {
   if (!messageShown) {
     showDirectorSectionStatus(section, "");
   }
+  syncDirectorEntryStatusCache(state.director.entryDraft?.status || "");
   if (result.performanceGrade) {
     setDirectorPerformanceGradeValue(result.performanceGrade);
   }
@@ -663,6 +681,7 @@ function applyDirectorSaveResult(section, result) {
     });
     refreshDirectorSchoolLunchTotal();
   }
+  renderDirectorEnsembles(state.director.ensemblesCache || []);
 }
 
 export function setRoleHint(message) {
@@ -920,28 +939,54 @@ function renderDirectorWorkflowGuidance() {
 
   let currentStep = "Start";
   let nextTitle = "Attach a school to begin.";
-  let nextHint = "Once attached, choose an event and open Event Forms.";
+  let nextHint = "Once attached, choose an event and open registration.";
+  let nextActionLabel = "Attach School";
+  let nextAction = () => {
+    els.directorAttachSelect?.focus();
+  };
 
   if (hasSchool && !hasEvent) {
     currentStep = "Choose Event";
     nextTitle = "Select the event you are preparing for.";
-    nextHint = "Use Event Forms to open registration or day-of forms for that event.";
+    nextHint = "Use Registration to confirm participation, then move into the ensemble workspace.";
+    nextActionLabel = "Choose Event";
+    nextAction = () => {
+      els.directorEventSelect?.focus();
+    };
   } else if (hasSchool && hasEvent && !hasEnsemble) {
     currentStep = "Choose Ensemble";
     nextTitle = "Select or create an ensemble.";
-    nextHint = "Pick an active ensemble so forms and readiness can be tracked.";
+    nextHint = "Pick an active ensemble so its workspace and readiness can be tracked.";
+    nextActionLabel = "Open My Ensembles";
+    nextAction = () => {
+      state.director.view = "ensembles";
+      state.director.activePath = "ensembles";
+      updateDirectorAttachUI();
+    };
   } else if (hasSchool && hasEvent && hasEnsemble && !inFormsView) {
-    currentStep = "Open Forms";
-    nextTitle = "Open Event Forms to continue.";
-    nextHint = "Directors should work from Event Forms to complete and verify day-of details.";
+    currentStep = "Open Workspace";
+    nextTitle = "Open the active ensemble workspace to continue.";
+    nextHint = "Directors should work from the ensemble workspace to complete and verify required details.";
+    nextActionLabel = "Open Workspace";
+    nextAction = () => {
+      handleDirectorEnsembleOpenForms(state.director.selectedEnsembleId);
+    };
   } else if (hasSchool && hasEvent && hasEnsemble && !completion.ready) {
-    currentStep = "Complete Forms";
-    nextTitle = "Finish required day-of sections for this ensemble.";
+    currentStep = "Complete Workspace";
+    nextTitle = "Finish the required sections for this ensemble.";
     nextHint = "Repertoire, instrumentation, seating, percussion, lunch, and grade must be complete.";
+    nextActionLabel = "Continue Workspace";
+    nextAction = () => {
+      handleDirectorEnsembleOpenForms(state.director.selectedEnsembleId);
+    };
   } else if (hasSchool && hasEvent && hasEnsemble && completion.ready) {
     currentStep = "Ready";
-    nextTitle = "This ensemble is ready for the event.";
-    nextHint = "Review schedule times and update forms only when details change.";
+    nextTitle = "This ensemble workspace is ready.";
+    nextHint = "Review schedule times and update details only when something changes.";
+    nextActionLabel = "Review Workspace";
+    nextAction = () => {
+      handleDirectorEnsembleOpenForms(state.director.selectedEnsembleId);
+    };
   }
 
   if (els.directorCurrentStepPill) {
@@ -952,6 +997,14 @@ function renderDirectorWorkflowGuidance() {
   }
   if (els.directorNextStepHint) {
     els.directorNextStepHint.textContent = nextHint;
+  }
+  if (els.directorWorkflowActionBtn) {
+    els.directorWorkflowActionBtn.textContent = nextActionLabel;
+    els.directorWorkflowActionBtn.disabled = !hasSchool && typeof nextAction !== "function";
+    els.directorWorkflowActionBtn.onclick = (event) => {
+      event.preventDefault();
+      nextAction?.();
+    };
   }
 
   setDirectorStepChip(els.directorStepChipSchool, {
@@ -970,7 +1023,7 @@ function renderDirectorWorkflowGuidance() {
     active: hasEvent && !hasEnsemble,
   });
   setDirectorStepChip(els.directorStepChipForms, {
-    label: "Forms",
+    label: "Workspace",
     done: inFormsView || completion.ready,
     active: hasSchool && hasEvent && hasEnsemble && !inFormsView,
   });
@@ -985,13 +1038,13 @@ export function setDirectorReadyControls({ status } = {}) {
   if (!els.directorEntryReadyBtn) return;
   if (els.directorEntryReadyBtn) {
     if (status === "ready") {
-      els.directorEntryReadyBtn.textContent = "Mark as Incomplete";
+      els.directorEntryReadyBtn.textContent = "Mark Workspace Incomplete";
       els.directorEntryReadyBtn.disabled = false;
     } else if (status === "disabled") {
-      els.directorEntryReadyBtn.textContent = "Mark as Ready";
+      els.directorEntryReadyBtn.textContent = "Mark Workspace Ready";
       els.directorEntryReadyBtn.disabled = true;
     } else {
-      els.directorEntryReadyBtn.textContent = "Mark as Ready";
+      els.directorEntryReadyBtn.textContent = "Mark Workspace Ready";
       els.directorEntryReadyBtn.disabled = false;
     }
   }
@@ -1768,7 +1821,8 @@ export function updateDirectorAttachUI() {
     if (!hasSchool) els.directorSchoolDirectors.innerHTML = "";
   }
   if (els.directorWorkflowCard) {
-    els.directorWorkflowCard.style.display = "none";
+    els.directorWorkflowCard.style.display =
+      isDirector && hasSchool && isLandingView ? "grid" : "none";
   }
   if (els.directorEventSelectBlock) {
     els.directorEventSelectBlock.style.display =
@@ -2351,6 +2405,7 @@ function getDirectorEnsembleRenderer() {
     els,
     state,
     withLoading,
+    fetchEntryStatus,
     handleDirectorEnsembleDelete,
     setDirectorEnsembleFormMode,
     handleDirectorEnsembleSelection,
@@ -2514,6 +2569,7 @@ function getDirectorEntryFormRenderers() {
     normalizeGrade,
     getMpaRepertoireForGrade,
     applyDirectorDirty,
+    validateEntryReady,
     setDirectorPerformanceGradeValue,
     setPerformanceGradeError,
     updateLunchTotalCost,
@@ -2537,10 +2593,14 @@ function applyAdminView(view) {
   return getAdminViewController().applyAdminView(view);
 }
 
+function renderAdminDashboard() {
+  return getAdminViewController().renderDashboardView();
+}
+
 function updateTabUI(tabName, role) {
   if (tabName === "judge-open" && state.app.features?.enableJudgeOpen === false) {
     setTab("admin", { force: true });
-    const adminHash = getAdminHashForView("preEvent");
+    const adminHash = getAdminHashForView("dashboard");
     if (window.location.hash !== adminHash) window.location.hash = adminHash;
     return;
   }
@@ -2985,12 +3045,12 @@ export function handleHashChange() {
       const nextAdminView = resolveAdminView(action.adminView, {
         liveEnabled: isAdminLiveEventEnabled(),
         settingsEnabled: isAdminSettingsEnabled(),
-        fallback: "preEvent",
+        fallback: "dashboard",
       });
       const activeView = resolveAdminView(state.admin.currentView, {
         liveEnabled: isAdminLiveEventEnabled(),
         settingsEnabled: isAdminSettingsEnabled(),
-        fallback: "preEvent",
+        fallback: "dashboard",
       });
       if (state.admin.readinessInFlight && nextAdminView !== activeView) {
         const activeHash = getAdminHashForView(activeView);
@@ -3246,11 +3306,14 @@ export function startWatchers() {
   const onRosterUpdate = (entries) => {
     if (state.app.currentTab !== "admin") return;
     const shouldRenderScheduleData =
-      state.admin.currentView === "preEvent" &&
+      (state.admin.currentView === "dashboard" || state.admin.currentView === "preEvent") &&
       isAdminHeavyViewLoaded("preEvent") &&
       !isAdminSchoolDetailOpen();
     if (shouldRenderScheduleData) {
       renderAdminScheduleList(entries);
+    }
+    if (state.admin.currentView === "dashboard") {
+      renderAdminDashboard();
     }
     if (state.admin.currentView === "preEvent" && isAdminHeavyViewLoaded("preEvent")) {
       if (isAdminSchoolDetailOpen()) {
@@ -3278,6 +3341,9 @@ export function startWatchers() {
   watchEvents(() => {
     if (settingsEnabled && state.app.currentTab === "admin" && state.admin.currentView === "settings") {
       renderEventList();
+    }
+    if (state.app.currentTab === "admin" && state.admin.currentView === "dashboard") {
+      renderAdminDashboard();
     }
     if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent" && !isAdminSchoolDetailOpen()) {
       if (isAdminHeavyViewLoaded("preEvent")) renderRegisteredEnsemblesList();
@@ -3326,6 +3392,9 @@ export function startWatchers() {
     updateEventModeBanner();
     updateAdminEmptyState();
     renderDirectorEventOptions();
+    if (state.app.currentTab === "admin" && state.admin.currentView === "dashboard") {
+      renderAdminDashboard();
+    }
     if (state.app.currentTab === "admin" && state.admin.currentView === "announcer") {
       renderAdminAnnouncerView();
     }
@@ -3429,6 +3498,9 @@ export function startWatchers() {
   if (getEffectiveRole(state.auth.userProfile) === "admin") {
     state.subscriptions.rawAssessments = watchRawAssessments((items) => {
       state.admin.rawAssessments = Array.isArray(items) ? items : [];
+      if (state.app.currentTab === "admin" && state.admin.currentView === "dashboard") {
+        renderAdminDashboard();
+      }
       if (state.app.currentTab === "admin" && state.admin.currentView === "submissions") {
         renderAdminLiveSubmissions();
       }
@@ -3572,8 +3644,22 @@ export function renderEventList() {
   els.eventList.innerHTML = "";
   if (!state.event.list.length) {
     const li = document.createElement("li");
-    li.className = "note";
-    li.textContent = "No events yet.";
+    li.className = "stack";
+    const note = document.createElement("div");
+    note.className = "note";
+    note.textContent = "No events yet.";
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const createBtn = document.createElement("button");
+    createBtn.type = "button";
+    createBtn.className = "ghost btn--sm";
+    createBtn.textContent = "Create Event";
+    createBtn.addEventListener("click", () => {
+      els.eventNameInput?.focus();
+    });
+    actions.appendChild(createBtn);
+    li.appendChild(note);
+    li.appendChild(actions);
     els.eventList.appendChild(li);
     return;
   }
@@ -3828,7 +3914,7 @@ export async function renderAdminReadinessView() {
       fixBtn.className = "ghost";
       fixBtn.textContent = goToView === "settings" ?
         "Fix in Settings" :
-        "Fix in Pre-Event";
+        "Fix in Registrations";
       fixBtn.addEventListener("click", () => {
         state.admin.currentView = goToView;
         applyAdminView(goToView);
@@ -3952,7 +4038,40 @@ export function setOpenPacketHint(message) {
 export function updateOpenEmptyState() {
   if (!els.judgeOpenEmpty) return;
   const show = !state.judgeOpen.currentPacketId;
+  const hasLinkedEnsemble = Boolean(
+    state.judgeOpen.selectedExisting?.schoolId && state.judgeOpen.selectedExisting?.ensembleId
+  );
+  const hasExistingPackets = Array.isArray(state.judgeOpen.packets) && state.judgeOpen.packets.length > 0;
   els.judgeOpenEmpty.style.display = show ? "block" : "none";
+  if (els.judgeOpenEmptyText) {
+    if (hasExistingPackets) {
+      els.judgeOpenEmptyText.textContent = "Select an assessment from the list, or keep moving by starting a new one from an ensemble.";
+    } else if (hasLinkedEnsemble) {
+      els.judgeOpenEmptyText.textContent = "Selected ensemble is ready. Start recording to create this assessment.";
+    } else {
+      els.judgeOpenEmptyText.textContent = "Select an ensemble first, then start recording to create the assessment.";
+    }
+  }
+  if (els.judgeOpenEmptyPrimaryBtn) {
+    if (hasLinkedEnsemble) {
+      els.judgeOpenEmptyPrimaryBtn.textContent = "Start Recording";
+      els.judgeOpenEmptyPrimaryBtn.dataset.action = "start-recording";
+    } else {
+      els.judgeOpenEmptyPrimaryBtn.textContent = "Open Ensemble Setup";
+      els.judgeOpenEmptyPrimaryBtn.dataset.action = "open-setup";
+    }
+  }
+  if (els.judgeOpenEmptySecondaryBtn) {
+    if (hasLinkedEnsemble || hasExistingPackets) {
+      els.judgeOpenEmptySecondaryBtn.hidden = false;
+      els.judgeOpenEmptySecondaryBtn.textContent = "Review Ensemble Setup";
+      els.judgeOpenEmptySecondaryBtn.dataset.action = "open-setup";
+    } else {
+      els.judgeOpenEmptySecondaryBtn.hidden = false;
+      els.judgeOpenEmptySecondaryBtn.textContent = "Back to Judge Landing";
+      els.judgeOpenEmptySecondaryBtn.dataset.action = "back-to-landing";
+    }
+  }
   if (els.judgeOpenStatusBadge) {
     if (!state.judgeOpen.mode) {
       els.judgeOpenStatusBadge.textContent = "Choose Mode";
@@ -4632,29 +4751,59 @@ function renderPreEventWorkflowGuidance({
 
   let step = "Start";
   let nextTitle = "Set an active event to begin.";
-  let nextHint = "Then complete registration coverage, schedule, and director input checks.";
+  let nextHint = "Then complete registrations, scheduling, and director input checks.";
+  let nextActionLabel = "Open Settings";
+  let nextAction = () => {
+    window.location.hash = "#admin/settings";
+  };
 
   if (hasActiveEvent && !registrationDone) {
     step = "Registration";
     nextTitle = "Confirm all expected schools and ensembles are registered.";
-    nextHint = "Use Registration Coverage to verify sign form/payment and catch missing entries.";
+    nextHint = "Use Registrations to verify sign form/payment and catch missing entries.";
+    nextActionLabel = "Review Registrations";
+    nextAction = () => {
+      els.adminRegisteredEnsemblesSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
   } else if (hasActiveEvent && registrationDone && !scheduleDone) {
     step = "Schedule";
     nextTitle = "Complete the full event schedule.";
     nextHint = "Assign performance times and recalculate so all registered ensembles are scheduled.";
+    nextActionLabel = "Open Schedule";
+    nextAction = () => {
+      els.adminScheduleSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
   } else if (hasActiveEvent && registrationDone && scheduleDone && !directorInputDone) {
     step = "Director Input";
-    nextTitle = "Verify day-of form readiness for scheduled ensembles.";
-    nextHint = "Use school detail to review director data and resolve incomplete entries.";
+    nextTitle = "Verify ensemble workspace readiness for scheduled ensembles.";
+    nextHint = "Use school detail to review director workspace data and resolve incomplete entries.";
+    nextActionLabel = "Review Director Data";
+    nextAction = () => {
+      const target = els.adminSchoolDetailSection?.style.display !== "none"
+        ? els.adminSchoolDetailSection
+        : els.adminRegisteredEnsemblesSection;
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
   } else if (hasActiveEvent && registrationDone && scheduleDone && directorInputDone) {
     step = "Ready";
-    nextTitle = "Pre-Event setup is complete.";
-    nextHint = "You can move to Live Event operations when check-in begins.";
+    nextTitle = "Registrations setup is complete.";
+    nextHint = "You can move to Schedule & Flow operations when check-in begins.";
+    nextActionLabel = "Open Schedule & Flow";
+    nextAction = () => {
+      window.location.hash = "#admin/flow";
+    };
   }
 
   if (els.preEventCurrentStepPill) els.preEventCurrentStepPill.textContent = step;
   if (els.preEventNextStepTitle) els.preEventNextStepTitle.textContent = nextTitle;
   if (els.preEventNextStepHint) els.preEventNextStepHint.textContent = nextHint;
+  if (els.preEventWorkflowActionBtn) {
+    els.preEventWorkflowActionBtn.textContent = nextActionLabel;
+    els.preEventWorkflowActionBtn.onclick = (event) => {
+      event.preventDefault();
+      nextAction?.();
+    };
+  }
 
   setPreEventStepChip(els.preEventStepChipRegistration, {
     label: "Registration",
@@ -4778,7 +4927,7 @@ export async function renderPreEventGuidedFlow() {
     els.preEventStatusDirectorInputHint,
     directorInputTarget.length
       ? `${directorReadyCount} of ${directorInputTarget.length} target ensemble(s) marked ready.`
-      : "Schedule at least one ensemble to track day-of readiness."
+      : "Schedule at least one ensemble to track director workspace readiness."
   );
   renderPreEventWorkflowGuidance({
     hasActiveEvent: true,
@@ -4795,8 +4944,25 @@ export function updateDirectorActiveEnsembleLabel() {
   const active = state.director.ensemblesCache.find(
     (ensemble) => ensemble.id === state.director.selectedEnsembleId
   );
+  const event =
+    state.event.list.find((item) => item.id === state.director.selectedEventId) ||
+    state.event.active ||
+    null;
+  const schoolName =
+    String(els.directorSummarySchool?.textContent || "").trim() ||
+    String(state.director.directorSchool?.name || "").trim() ||
+    "School";
   if (els.directorEditorActiveEnsembleLabel) {
-    els.directorEditorActiveEnsembleLabel.textContent = active?.name || "No active ensemble selected";
+    els.directorEditorActiveEnsembleLabel.textContent = active
+      ? `Active Ensemble: ${active.name}`
+      : "Active Ensemble: none selected";
+  }
+  if (els.directorWorkspaceContextNote) {
+    els.directorWorkspaceContextNote.textContent = active && event
+      ? `${schoolName} • ${event.name || event.id || "Event"} • Editing ${active.name}`
+      : active
+        ? `${schoolName} • Select an event to finish opening this workspace.`
+        : "Choose an event and active ensemble to open the workspace.";
   }
   renderDirectorWorkflowGuidance();
 }
@@ -5342,7 +5508,7 @@ export function renderAdminScheduleList(entries) {
 
 function formatAdminDayOfReadOnly(entryData = {}) {
   if (!entryData || typeof entryData !== "object") {
-    return "No day-of information saved yet.";
+    return "No workspace information saved yet.";
   }
   const bits = [];
   const status = entryData.status || "draft";
@@ -5466,7 +5632,7 @@ function renderMockAdminPacketPreview() {
   return getAdminMockPacketPreviewRenderer().renderMockAdminPacketPreview();
 }
 
-export function renderSubmissionCard(submission, position, { showTranscript = true } = {}) {
+export function renderAssessmentCard(submission, position, { showTranscript = true } = {}) {
   const card = document.createElement("div");
   card.className = "packet-card";
   if (!submission) {
@@ -5475,7 +5641,7 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
     badge.textContent = JUDGE_POSITION_LABELS[position];
     const note = document.createElement("div");
     note.className = "note";
-    note.textContent = "No submission yet.";
+    note.textContent = "No official assessment yet.";
     card.appendChild(badge);
     card.appendChild(note);
     return card;
@@ -5635,6 +5801,8 @@ export function renderSubmissionCard(submission, position, { showTranscript = tr
   return card;
 }
 
+export const renderSubmissionCard = renderAssessmentCard;
+
 function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) {
   const captionSummary = document.createElement("div");
   captionSummary.className = "caption-grid";
@@ -5705,7 +5873,7 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
     actionRow.className = "actions";
     const releaseBtn = document.createElement("button");
     const shouldRelease = !summary?.requiredReleased;
-    releaseBtn.textContent = shouldRelease ? "Release Packet" : "Unrelease Packet";
+    releaseBtn.textContent = shouldRelease ? "Release Results Packet" : "Unrelease Results Packet";
     releaseBtn.disabled = shouldRelease ? !summary?.requiredComplete : false;
     releaseBtn.addEventListener("click", async () => {
       releaseBtn.disabled = true;
@@ -5718,7 +5886,7 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
         await renderAdminPacketsBySchedule();
       } catch (error) {
         console.error("Admin packet detail release toggle failed", error);
-        alert(error?.message || "Unable to update packet release state.");
+        alert(error?.message || "Unable to update results release state.");
       } finally {
         releaseBtn.disabled = false;
       }
@@ -5732,7 +5900,7 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
       const submission = submissions[position];
       const wrapper = document.createElement("div");
       wrapper.className = "packet-slot";
-      wrapper.appendChild(renderSubmissionCard(submission, position));
+      wrapper.appendChild(renderAssessmentCard(submission, position));
       if (submission) {
         const lockRow = document.createElement("div");
         lockRow.className = "actions";

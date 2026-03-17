@@ -41,7 +41,7 @@ export function createAdminRenderers({
   repairOpenSubmissionAudioMetadata,
   deleteAllUnreleasedPackets,
   cleanupTestArtifacts,
-  renderSubmissionCard,
+  renderAssessmentCard,
   loadAdminPacketView,
   confirmUser,
   alertUser,
@@ -247,13 +247,27 @@ export function createAdminRenderers({
       state.admin.selectedRawAssessmentId = items[0]?.id || "";
     }
     const selected = items.find((item) => item.id === state.admin.selectedRawAssessmentId) || null;
+    const totalCount = items.length;
+    const pendingCount = items.filter((item) => {
+      const reviewState = String(item.reviewState || "").trim();
+      const status = String(item.status || "").trim();
+      return reviewState === "pending" || status === "submitted";
+    }).length;
+    const officializedCount = items.filter((item) => String(item.status || "").trim() === "officialized").length;
+    renderAdminSubmissionsWorkflowGuidance({
+      hasActiveEvent: Boolean(state.event.active?.id),
+      totalCount,
+      pendingCount,
+      officializedCount,
+      hasSelection: Boolean(selected),
+    });
     if (els.adminSubmissionsFilter && els.adminSubmissionsFilter.value !== (state.admin.rawAssessmentFilter || "pending")) {
       els.adminSubmissionsFilter.value = state.admin.rawAssessmentFilter || "pending";
     }
     if (els.adminSubmissionsHint) {
       els.adminSubmissionsHint.textContent = items.length
-        ? `${items.length} submission${items.length === 1 ? "" : "s"} in queue.`
-        : "No submissions in this filter.";
+        ? `${items.length} assessment${items.length === 1 ? "" : "s"} in queue.`
+        : "No assessments in this filter.";
     }
     els.adminSubmissionsList.innerHTML = "";
     items.forEach((item) => {
@@ -301,8 +315,43 @@ export function createAdminRenderers({
     els.adminSubmissionDetail.innerHTML = "";
     if (!selected) {
       const empty = document.createElement("div");
-      empty.className = "note";
-      empty.textContent = "Select a submission to review.";
+      empty.className = "stack";
+      const emptyNote = document.createElement("div");
+      emptyNote.className = "note";
+      emptyNote.textContent = items.length
+        ? "Select an assessment to review."
+        : state.event.active?.id
+          ? "No assessments are waiting in this queue."
+          : "Set an active event to begin reviewing assessments.";
+      empty.appendChild(emptyNote);
+      const actions = document.createElement("div");
+      actions.className = "row";
+      const primaryBtn = document.createElement("button");
+      primaryBtn.type = "button";
+      primaryBtn.className = "ghost";
+      if (state.event.active?.id) {
+        primaryBtn.textContent = "Open Judge Workspace";
+        primaryBtn.addEventListener("click", () => {
+          window.location.hash = "#judge-open";
+        });
+      } else {
+        primaryBtn.textContent = "Open Settings";
+        primaryBtn.addEventListener("click", () => {
+          window.location.hash = "#admin/settings";
+        });
+      }
+      actions.appendChild(primaryBtn);
+      if (state.event.active?.id) {
+        const packetsBtn = document.createElement("button");
+        packetsBtn.type = "button";
+        packetsBtn.className = "ghost";
+        packetsBtn.textContent = "Open Packets & Results";
+        packetsBtn.addEventListener("click", () => {
+          window.location.hash = "#admin/packets";
+        });
+        actions.appendChild(packetsBtn);
+      }
+      empty.appendChild(actions);
       els.adminSubmissionDetail.appendChild(empty);
       return;
     }
@@ -378,7 +427,7 @@ export function createAdminRenderers({
     if (!captionKeys.length) {
       const emptyCaption = document.createElement("div");
       emptyCaption.className = "note";
-      emptyCaption.textContent = "No caption scores saved on this raw submission.";
+      emptyCaption.textContent = "No caption scores saved on this raw assessment.";
       captionSection.appendChild(emptyCaption);
     } else {
       captionKeys.forEach((key) => {
@@ -575,11 +624,11 @@ export function createAdminRenderers({
     const section = document.createElement("div");
     section.className = "panel stack";
     const title = document.createElement("strong");
-    title.textContent = "Printable Judge Sheets";
+    title.textContent = "Printable Results Packet Files";
     const hint = document.createElement("div");
     hint.className = "note";
     hint.textContent =
-      "Generate or load the exact-match stage form PDFs for pre-printing and packet review.";
+      "Generate or load the exact-match stage form PDFs and audio files for results review and release.";
     section.appendChild(title);
     section.appendChild(hint);
 
@@ -621,13 +670,13 @@ export function createAdminRenderers({
         openCombined.href = assets.combined.url;
         openCombined.target = "_blank";
         openCombined.rel = "noopener";
-        openCombined.textContent = "Open Full Packet PDF";
+        openCombined.textContent = "Open Full Results Packet PDF";
         const printCombined = document.createElement("a");
         printCombined.className = "ghost";
         printCombined.href = assets.combined.url;
         printCombined.target = "_blank";
         printCombined.rel = "noopener";
-        printCombined.textContent = "Print Full Packet PDF";
+        printCombined.textContent = "Print Full Results Packet PDF";
         combinedRow.appendChild(openCombined);
         combinedRow.appendChild(printCombined);
         output.appendChild(combinedRow);
@@ -673,7 +722,7 @@ export function createAdminRenderers({
         if (!item.pdfUrl && !item.audioUrl) {
           const unavailable = document.createElement("div");
           unavailable.className = "note";
-          unavailable.textContent = "No packet files available for this judge yet.";
+          unavailable.textContent = "No results packet files available for this judge yet.";
           row.appendChild(unavailable);
         }
         row.appendChild(fileActions);
@@ -748,11 +797,11 @@ export function createAdminRenderers({
     const section = document.createElement("div");
     section.className = "panel stack";
     const title = document.createElement("strong");
-    title.textContent = "Printable Open Sheet";
+    title.textContent = "Printable Open Judge Sheet";
     const hint = document.createElement("div");
     hint.className = "note";
     hint.textContent =
-      "Generate a printable PDF for this Open Judge sheet. Stage packets use the exact-match stage form template.";
+      "Generate a printable PDF for this Open Judge sheet. Stage assessments use the exact-match stage form template.";
     section.appendChild(title);
     section.appendChild(hint);
 
@@ -887,6 +936,97 @@ export function createAdminRenderers({
     el.classList.toggle("is-active", Boolean(active));
   }
 
+  function renderAdminSubmissionsWorkflowGuidance({
+    hasActiveEvent = false,
+    totalCount = 0,
+    pendingCount = 0,
+    officializedCount = 0,
+    hasSelection = false,
+  } = {}) {
+    if (!els.adminSubmissionsWorkflowCard) return;
+    let step = "Start";
+    let nextTitle = "Set an active event to begin.";
+    let nextHint = "Then review incoming assessments and officialize approved records.";
+    let nextActionLabel = "Open Settings";
+    let nextAction = () => {
+      window.location.hash = "#admin/settings";
+    };
+
+    if (hasActiveEvent && totalCount === 0) {
+      step = "Queue";
+      nextTitle = "No assessments are waiting in the queue.";
+      nextHint = "Use the judge workspace to submit a fresh assessment, then return here for review.";
+      nextActionLabel = "Open Judge Workspace";
+      nextAction = () => {
+        window.location.hash = "#judge-open";
+      };
+    } else if (hasActiveEvent && pendingCount > 0 && !hasSelection) {
+      step = "Queue";
+      nextTitle = "Select an assessment to review.";
+      nextHint = `${pendingCount}/${totalCount} assessments currently need review.`;
+      nextActionLabel = "Open Review Queue";
+      nextAction = () => {
+        els.adminSubmissionsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    } else if (hasActiveEvent && pendingCount > 0 && hasSelection) {
+      step = "Review";
+      nextTitle = "Review the selected assessment and fix association if needed.";
+      nextHint = "Confirm ensemble, judge position, caption scoring, and audio before officializing.";
+      nextActionLabel = "Open Assessment Detail";
+      nextAction = () => {
+        els.adminSubmissionDetail?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    } else if (hasActiveEvent && totalCount > 0 && officializedCount < totalCount) {
+      step = "Officialize";
+      nextTitle = "Officialize approved assessments from the review queue.";
+      nextHint = `${officializedCount}/${totalCount} assessments already officialized.`;
+      nextActionLabel = "Open Review Queue";
+      nextAction = () => {
+        els.adminSubmissionsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    } else if (hasActiveEvent && totalCount > 0 && officializedCount >= totalCount) {
+      step = "Done";
+      nextTitle = "All queued assessments are officialized.";
+      nextHint = "Move to Packets & Results to manage release-ready results packets.";
+      nextActionLabel = "Open Packets & Results";
+      nextAction = () => {
+        window.location.hash = "#admin/packets";
+      };
+    }
+
+    if (els.adminSubmissionsCurrentStepPill) els.adminSubmissionsCurrentStepPill.textContent = step;
+    if (els.adminSubmissionsNextStepTitle) els.adminSubmissionsNextStepTitle.textContent = nextTitle;
+    if (els.adminSubmissionsNextStepHint) els.adminSubmissionsNextStepHint.textContent = nextHint;
+    if (els.adminSubmissionsWorkflowActionBtn) {
+      els.adminSubmissionsWorkflowActionBtn.textContent = nextActionLabel;
+      els.adminSubmissionsWorkflowActionBtn.onclick = (event) => {
+        event.preventDefault();
+        nextAction?.();
+      };
+    }
+
+    setAdminStepChip(els.adminSubmissionsStepChipEvent, {
+      label: "Event",
+      done: hasActiveEvent,
+      active: !hasActiveEvent,
+    });
+    setAdminStepChip(els.adminSubmissionsStepChipQueue, {
+      label: "Queue",
+      done: hasActiveEvent && totalCount > 0,
+      active: hasActiveEvent && totalCount > 0 && pendingCount > 0 && !hasSelection,
+    });
+    setAdminStepChip(els.adminSubmissionsStepChipReview, {
+      label: "Review",
+      done: hasActiveEvent && totalCount > 0 && pendingCount === 0,
+      active: hasActiveEvent && pendingCount > 0 && hasSelection,
+    });
+    setAdminStepChip(els.adminSubmissionsStepChipOfficialize, {
+      label: "Officialize",
+      done: hasActiveEvent && totalCount > 0 && officializedCount >= totalCount,
+      active: hasActiveEvent && totalCount > 0 && pendingCount === 0 && officializedCount < totalCount,
+    });
+  }
+
   function renderAdminPacketsWorkflowGuidance({
     hasActiveEvent = false,
     hasSchoolSelected = false,
@@ -898,33 +1038,64 @@ export function createAdminRenderers({
     if (!els.adminPacketsWorkflowCard) return;
     let step = "Start";
     let nextTitle = "Set an active event to begin.";
-    let nextHint = "Then select a school and review packet completion before release.";
+    let nextHint = "Then select a school and review official results readiness before release.";
+    let nextActionLabel = "Open Settings";
+    let nextAction = () => {
+      window.location.hash = "#admin/settings";
+    };
 
     if (hasActiveEvent && !hasSchoolSelected) {
       step = "Select School";
-      nextTitle = "Select a school to load packet review.";
-      nextHint = "Packets are grouped by school to reduce noise and keep release review focused.";
+      nextTitle = "Select a school to load official results packets.";
+      nextHint = "Results packets are grouped by school to reduce noise and keep release review focused.";
+      nextActionLabel = "Choose School";
+      nextAction = () => {
+        els.adminPacketsSchoolSelect?.focus();
+      };
     } else if (hasActiveEvent && hasSchoolSelected && totalCount === 0) {
       step = "Review";
-      nextTitle = "No scheduled packets found for this school.";
-      nextHint = "Confirm schedules and submissions, then return to packet release.";
+      nextTitle = "No official results packets found for this school.";
+      nextHint = "Confirm schedules and officialized assessments, then return to results release.";
+      nextActionLabel = "Open Live Submissions";
+      nextAction = () => {
+        window.location.hash = "#admin/submissions";
+      };
     } else if (hasActiveEvent && hasSchoolSelected && releaseReadyCount < totalCount) {
       step = "Review";
-      nextTitle = "Review incomplete packets before release.";
-      nextHint = `${releaseReadyCount}/${totalCount} packet(s) are ready to release.`;
+      nextTitle = "Review incomplete results packets before release.";
+      nextHint = `${releaseReadyCount}/${totalCount} results packets are ready to release.`;
+      nextActionLabel = "Review Results";
+      nextAction = () => {
+        els.adminPacketsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
     } else if (hasActiveEvent && hasSchoolSelected && releasedCount < totalCount) {
       step = "Release";
-      nextTitle = "Release ready packets for the selected school.";
-      nextHint = `${releasedCount}/${totalCount} packet(s) currently released.`;
+      nextTitle = "Release ready results packets for the selected school.";
+      nextHint = `${releasedCount}/${totalCount} results packets currently released.`;
+      nextActionLabel = "Open Release Queue";
+      nextAction = () => {
+        els.adminPacketsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
     } else if (hasActiveEvent && hasSchoolSelected && totalCount > 0 && releasedCount >= totalCount) {
       step = "Done";
-      nextTitle = "All packets for this school are released.";
-      nextHint = "Use View Packet to spot-check content or manage Open Judge sheets.";
+      nextTitle = "All results packets for this school are released.";
+      nextHint = "Use View Results Packet to spot-check content or manage Open Judge sheets.";
+      nextActionLabel = "Review Released Results";
+      nextAction = () => {
+        els.adminPacketsList?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
     }
 
     if (els.adminPacketsCurrentStepPill) els.adminPacketsCurrentStepPill.textContent = step;
     if (els.adminPacketsNextStepTitle) els.adminPacketsNextStepTitle.textContent = nextTitle;
     if (els.adminPacketsNextStepHint) els.adminPacketsNextStepHint.textContent = nextHint;
+    if (els.adminPacketsWorkflowActionBtn) {
+      els.adminPacketsWorkflowActionBtn.textContent = nextActionLabel;
+      els.adminPacketsWorkflowActionBtn.onclick = (event) => {
+        event.preventDefault();
+        nextAction?.();
+      };
+    }
 
     setAdminStepChip(els.adminPacketsStepChipEvent, {
       label: "Event",
@@ -992,9 +1163,9 @@ export function createAdminRenderers({
       }
 
       const schoolName = state.admin.selectedSchoolName || getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
-      els.adminSchoolDetailTitle.textContent = `${schoolName} - Scheduling & Day-of`;
-      els.adminSchoolDetailMeta.textContent = `Event: ${state.event.active?.name || "Active Event"}`;
-      els.adminSchoolDetailHint.textContent = "Read-only day-of snapshot appears below each ensemble. Use \"Open in Director\" to edit.";
+      els.adminSchoolDetailTitle.textContent = `${schoolName} - Registrations`;
+      els.adminSchoolDetailMeta.textContent = `Event: ${state.event.active?.name || "Active Event"} • Review ensemble readiness, scheduling, and director workspace state for this school.`;
+      els.adminSchoolDetailHint.textContent = "Use this workspace to confirm scheduling, director workspace readiness, and director-entered data before results release.";
       els.adminSchoolDetailList.innerHTML = "";
 
       const [registered, scheduleEntries, entriesSnap] = await Promise.all([
@@ -1091,6 +1262,23 @@ export function createAdminRenderers({
         header.appendChild(title);
         header.appendChild(meta);
         li.appendChild(header);
+
+        const statusRow = document.createElement("div");
+        statusRow.className = "row";
+        const registeredBadge = document.createElement("span");
+        registeredBadge.className = "badge";
+        registeredBadge.textContent = "Registered";
+        const scheduleBadge = document.createElement("span");
+        scheduleBadge.className = "badge";
+        scheduleBadge.textContent = performanceAt ? "Scheduled" : "Needs Schedule";
+        const readyBadge = document.createElement("span");
+        readyBadge.className = "badge";
+        readyBadge.textContent =
+          String(entryData?.status || "").trim().toLowerCase() === "ready" ? "Director Ready" : "Director In Progress";
+        statusRow.appendChild(registeredBadge);
+        statusRow.appendChild(scheduleBadge);
+        statusRow.appendChild(readyBadge);
+        li.appendChild(statusRow);
 
         const scheduleRow = document.createElement("div");
         scheduleRow.className = "row";
@@ -1197,6 +1385,13 @@ export function createAdminRenderers({
         scheduleRow.appendChild(scheduleDelete);
         li.appendChild(scheduleRow);
 
+        const scheduleMeta = document.createElement("div");
+        scheduleMeta.className = "note";
+        scheduleMeta.textContent = performanceAt
+          ? `Performance time set for ${formatStartTime(performanceAt)}.`
+          : "No performance time assigned yet.";
+        li.appendChild(scheduleMeta);
+
         const readOnly = document.createElement("div");
         readOnly.className = "note";
         readOnly.textContent = formatAdminDayOfReadOnly(entryData);
@@ -1257,19 +1452,19 @@ export function createAdminRenderers({
         const cleanupRow = document.createElement("li");
         cleanupRow.className = "panel";
         const cleanupTitle = document.createElement("h4");
-        cleanupTitle.textContent = "Packet Cleanup";
+        cleanupTitle.textContent = "Results Packet Cleanup";
         cleanupRow.appendChild(cleanupTitle);
         const cleanupHint = document.createElement("p");
         cleanupHint.className = "hint";
-        cleanupHint.textContent = "Delete all unreleased scheduled packets and Open Judge sheets across the entire database.";
+        cleanupHint.textContent = "Delete all unreleased scheduled results packets and Open Judge sheets across the entire database.";
         cleanupRow.appendChild(cleanupHint);
         const cleanupBtn = document.createElement("button");
         cleanupBtn.type = "button";
         cleanupBtn.className = "ghost";
-        cleanupBtn.textContent = "Delete All Unreleased Packets";
+        cleanupBtn.textContent = "Delete All Unreleased Results Packets";
         cleanupBtn.addEventListener("click", async () => {
           const confirmed = confirmUser(
-            "Delete all unreleased packets across the entire database? Released packets will be skipped."
+            "Delete all unreleased results packets across the entire database? Released packets will be skipped."
           );
           if (!confirmed) return;
           const phrase = window.prompt("Type DELETE UNRELEASED to confirm bulk cleanup.");
@@ -1324,7 +1519,7 @@ export function createAdminRenderers({
               `Events: ${eventCount}\n` +
               `Schools: ${schoolCount}\n` +
               `Open packets: ${packetCount}\n` +
-              `Scheduled submissions: ${submissionCount}\n` +
+              `Scheduled assessment mirrors: ${submissionCount}\n` +
               `Official assessments: ${officialAssessmentCount}\n` +
               `Strict mode: ${preview.strictMode === true ? "on" : "off"}\n` +
               `Active event skipped: ${Number(preview.activeEventSkipped?.length || 0)}\n\n` +
@@ -1343,7 +1538,7 @@ export function createAdminRenderers({
               `Deleted events: ${result.deletedEvents || 0}\n` +
               `Deleted schools: ${result.deletedSchools || 0}\n` +
               `Deleted open packets: ${result.deletedOpenPackets || 0}\n` +
-              `Deleted scheduled submissions: ${result.deletedSubmissions || 0}\n` +
+              `Deleted scheduled assessment mirrors: ${result.deletedSubmissions || 0}\n` +
               `Deleted official assessments: ${result.deletedOfficialAssessments || 0}\n` +
               `Deleted audio-only rows: ${result.deletedAudioResults || 0}`
             );
@@ -1369,7 +1564,7 @@ export function createAdminRenderers({
             await renderAdminPacketsBySchedule();
             alertUser(
               `${runDry ? "Dry run complete" : "Audio repair complete"}.\n` +
-              `Submissions updated: ${result.submissionsUpdated || 0}\n` +
+              `Assessment mirrors updated: ${result.submissionsUpdated || 0}\n` +
               `Open packets updated: ${result.packetsUpdated || 0}\n` +
               `Skipped (no canonical tape found): ${result.skippedNoCanonical || 0}`
             );
@@ -1397,7 +1592,7 @@ export function createAdminRenderers({
               `${runDry ? "Dry run complete" : "Open tape metadata repair complete"}.\n` +
               `Open packets updated: ${result.packetsUpdated || 0}\n` +
               `Official assessments updated: ${result.submissionsUpdated || 0}\n` +
-              `Packet exports updated: ${result.exportsUpdated || 0}\n` +
+              `Results packet exports updated: ${result.exportsUpdated || 0}\n` +
               `Skipped (no sessions): ${result.skippedNoSessions || 0}\n` +
               `Skipped (no official assessment): ${result.skippedNoSubmission || 0}`
             );
@@ -1479,7 +1674,7 @@ export function createAdminRenderers({
       }
 
       if (!state.admin.packetsSchoolId) {
-        els.adminPacketsHint.textContent = "Select a school to load packet review.";
+        els.adminPacketsHint.textContent = "Select a school to load official results review.";
         renderAdminPacketsWorkflowGuidance({
           hasActiveEvent: true,
           hasSchoolSelected: false,
@@ -1491,7 +1686,7 @@ export function createAdminRenderers({
         els.adminPacketsHint.textContent =
           "No scheduled ensembles found for this school. Loading Open Judge sheets...";
       } else {
-        els.adminPacketsHint.textContent = "Loading packet status for selected school...";
+        els.adminPacketsHint.textContent = "Loading results packet status for selected school...";
       }
       const packetDataByEntryId = new Map();
       if (filtered.length) {
@@ -1582,7 +1777,7 @@ export function createAdminRenderers({
             ? `Blocking positions: ${
               blockers.map((position) => JUDGE_POSITION_LABELS[position] || position).join(", ")
             }`
-            : "Blocking positions: Packet is incomplete.";
+            : "Blocking positions: Results packet is incomplete.";
           li.appendChild(blockerNote);
         }
 
@@ -1591,7 +1786,7 @@ export function createAdminRenderers({
         const releaseBtn = document.createElement("button");
         releaseBtn.type = "button";
         const shouldRelease = !summary?.requiredReleased;
-        releaseBtn.textContent = shouldRelease ? "Release Packet" : "Unrelease Packet";
+        releaseBtn.textContent = shouldRelease ? "Release Results Packet" : "Unrelease Results Packet";
         releaseBtn.disabled = shouldRelease ? !summary?.requiredComplete : false;
 
         releaseBtn.addEventListener("click", async () => {
@@ -1605,8 +1800,8 @@ export function createAdminRenderers({
             scheduleAdminPreflightRefresh?.({ immediate: true });
             await renderAdminPacketsBySchedule();
           } catch (error) {
-            console.error("Update packet release failed", error);
-            alertUser(formatBlockerError(error, "Unable to update packet release state."));
+            console.error("Update results release failed", error);
+            alertUser(formatBlockerError(error, "Unable to update results release state."));
           } finally {
             releaseBtn.disabled = false;
           }
@@ -1616,14 +1811,14 @@ export function createAdminRenderers({
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
         deleteBtn.className = "ghost";
-        deleteBtn.textContent = "Delete Packet";
+        deleteBtn.textContent = "Delete Results Packet";
         if (summary?.requiredReleased) {
           deleteBtn.disabled = true;
-          deleteBtn.title = "Unrelease packet first.";
+          deleteBtn.title = "Unrelease results packet first.";
         }
         deleteBtn.addEventListener("click", async () => {
           const ok = confirmUser(
-            `Delete scheduled packet for ${schoolName} - ${ensembleName}? This removes official assessments, supporting release records, and the packet export.`
+            `Delete scheduled results packet for ${schoolName} - ${ensembleName}? This removes official assessments, supporting release records, and the packet export.`
           );
           if (!ok) return;
           deleteBtn.disabled = true;
@@ -1632,8 +1827,8 @@ export function createAdminRenderers({
             scheduleAdminPreflightRefresh?.({ immediate: true });
             await renderAdminPacketsBySchedule();
           } catch (error) {
-            console.error("Delete scheduled packet failed", error);
-            alertUser(error?.message || "Unable to delete scheduled packet.");
+            console.error("Delete scheduled results packet failed", error);
+            alertUser(error?.message || "Unable to delete scheduled results packet.");
           } finally {
             deleteBtn.disabled = false;
           }
@@ -1645,17 +1840,17 @@ export function createAdminRenderers({
         const viewBtn = document.createElement("button");
         viewBtn.type = "button";
         viewBtn.className = "ghost";
-        viewBtn.textContent = "View Packet";
+        viewBtn.textContent = "View Results Packet";
         viewBtn.addEventListener("click", async () => {
           const isHidden = panel.classList.contains("is-hidden");
           if (isHidden) {
             panel.classList.remove("is-hidden");
-            viewBtn.textContent = "Hide Packet";
+            viewBtn.textContent = "Hide Results Packet";
             await loadAdminPacketView(entry, panel, eventId);
             renderAdminPacketAssetsSection({ eventId, ensembleId }, panel);
           } else {
             panel.classList.add("is-hidden");
-            viewBtn.textContent = "View Packet";
+            viewBtn.textContent = "View Results Packet";
           }
         });
         actions.appendChild(viewBtn);
@@ -1889,7 +2084,7 @@ export function createAdminRenderers({
             "Unknown judge";
           const ratingLabel = packet.computedFinalRatingLabel || "N/A";
           const updatedLabel = formatPacketTimestamp(packet.updatedAt) || "Recently updated";
-          meta.textContent = `Judge: ${judgeLabel} - Rating: ${ratingLabel} - Updated: ${updatedLabel}`;
+          meta.textContent = `Judge: ${judgeLabel} - Judge Overall Rating: ${ratingLabel} - Updated: ${updatedLabel}`;
           row.appendChild(meta);
 
           const actions = document.createElement("div");
@@ -1908,9 +2103,9 @@ export function createAdminRenderers({
               detail.innerHTML = "";
               const topMeta = document.createElement("div");
               topMeta.className = "note";
-              topMeta.textContent = `Packet ID: ${packet.id} - Updated: ${formatPacketTimestamp(packet.updatedAt) || "Recently updated"}`;
+              topMeta.textContent = `Open Sheet ID: ${packet.id} - Updated: ${formatPacketTimestamp(packet.updatedAt) || "Recently updated"}`;
               detail.appendChild(topMeta);
-              const summaryCard = renderSubmissionCard(
+              const summaryCard = renderAssessmentCard(
                 toOpenSubmission(packet),
                 packet.judgePosition || (packet.formType === "sight" ? "sight" : "stage1"),
                 { showTranscript: true }
@@ -1935,7 +2130,7 @@ export function createAdminRenderers({
                   scheduleAdminPreflightRefresh?.({ immediate: true });
                   await renderAdminPacketsBySchedule();
                 } catch (error) {
-                  console.error("Open packet lock/unlock failed", error);
+                  console.error("Open sheet lock/unlock failed", error);
                   alertUser(error?.message || "Unable to update open sheet lock state.");
                 } finally {
                   lockBtn.disabled = false;
@@ -1959,7 +2154,7 @@ export function createAdminRenderers({
                   scheduleAdminPreflightRefresh?.({ immediate: true });
                   await renderAdminPacketsBySchedule();
                 } catch (error) {
-                  console.error("Open packet release/unrelease failed", error);
+                  console.error("Open sheet release/unrelease failed", error);
                   alertUser(formatBlockerError(error, "Unable to update open sheet release state."));
                 } finally {
                   releaseBtn.disabled = false;
@@ -1997,7 +2192,7 @@ export function createAdminRenderers({
               setManualAudioStatus(openStatusKey, "Upload complete. Audio attached to open sheet.");
               await renderAdminPacketsBySchedule();
             } catch (error) {
-              console.error("Attach open packet audio failed", error);
+              console.error("Attach open sheet audio failed", error);
               setManualAudioStatus(
                 openStatusKey,
                 `Upload failed: ${error?.message || "Unable to attach open sheet audio."}`,
@@ -2022,7 +2217,7 @@ export function createAdminRenderers({
           deleteBtn.addEventListener("click", async () => {
             const label = `${packet.schoolName || "School"} - ${packet.ensembleName || "Ensemble"}`;
             const ok = confirmUser(
-              `Delete Open Judge sheet for ${label}? This removes packet audio and sessions.`
+              `Delete Open Judge sheet for ${label}? This removes recorded audio and sessions.`
             );
             if (!ok) return;
             deleteBtn.disabled = true;
@@ -2031,7 +2226,7 @@ export function createAdminRenderers({
               scheduleAdminPreflightRefresh?.({ immediate: true });
               await renderAdminPacketsBySchedule();
             } catch (error) {
-              console.error("Delete open packet failed", error);
+              console.error("Delete open sheet failed", error);
               alertUser(error?.message || "Unable to delete open sheet.");
             } finally {
               deleteBtn.disabled = false;
@@ -2064,7 +2259,7 @@ export function createAdminRenderers({
     } catch (error) {
       console.error("renderAdminPacketsBySchedule failed", error);
       if (els.adminPacketsHint) {
-        els.adminPacketsHint.textContent = "Unable to load packet review right now.";
+        els.adminPacketsHint.textContent = "Unable to load results review right now.";
       }
       renderAdminPacketsWorkflowGuidance({
         hasActiveEvent: Boolean(state.event.active?.id),
@@ -2154,6 +2349,7 @@ export function createAdminRenderers({
         const button = document.createElement("button");
         button.type = "button";
         button.className = "admin-school-row-btn";
+        button.setAttribute("aria-label", `Open registrations for ${schoolName}`);
         const row = document.createElement("div");
         row.className = "row";
         const title = document.createElement("strong");
@@ -2175,6 +2371,13 @@ export function createAdminRenderers({
         row.appendChild(title);
         row.appendChild(meta);
         button.appendChild(row);
+        const summary = document.createElement("div");
+        summary.className = "note";
+        summary.textContent =
+          scheduledCount === 0
+            ? "No scheduled ensembles yet. Open to assign times and review director data."
+            : `${scheduledCount} scheduled ensemble${scheduledCount === 1 ? "" : "s"} • ${readyCount} director-ready • open to manage registrations and check-in readiness.`;
+        button.appendChild(summary);
         button.addEventListener("click", () => {
           state.admin.selectedSchoolId = schoolId;
           state.admin.selectedSchoolName = schoolName;

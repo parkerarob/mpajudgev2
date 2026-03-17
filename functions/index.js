@@ -60,9 +60,6 @@ const APP_CHECK_ENFORCEMENT_MODE = String(
     process.env.APP_CHECK_ENFORCEMENT_MODE || "deferred",
 ).trim().toLowerCase();
 const ENFORCE_APP_CHECK = APP_CHECK_ENFORCEMENT_MODE === "enforced";
-const ALLOW_STORAGE_TOKEN_FALLBACK = String(
-    process.env.ALLOW_STORAGE_TOKEN_FALLBACK || "0",
-).trim() === "1";
 const CANONICAL_AUDIO_STATUS = {
   pending: "pending",
   ready: "ready",
@@ -131,20 +128,30 @@ async function signStorageReadPath(path, {expiresAtMs = Date.now() + DIRECTOR_PA
     } catch (signedErr) {
       logger.warn("signStorageReadPath signed URL unavailable", {
         path: value,
-        allowTokenFallback: ALLOW_STORAGE_TOKEN_FALLBACK,
         error: signedErr?.message || String(signedErr),
       });
     }
-    if (!ALLOW_STORAGE_TOKEN_FALLBACK) return "";
     const [metadata] = await file.getMetadata();
+    const existingMetadata = metadata?.metadata && typeof metadata.metadata === "object" ?
+      metadata.metadata :
+      {};
     const existingTokenRaw =
-      metadata?.metadata?.firebaseStorageDownloadTokens ||
+      existingMetadata.firebaseStorageDownloadTokens ||
       metadata?.firebaseStorageDownloadTokens ||
       "";
-    const token = String(existingTokenRaw || "")
+    let token = String(existingTokenRaw || "")
         .split(",")
         .map((item) => item.trim())
         .find(Boolean);
+    if (!token) {
+      token = crypto.randomUUID();
+      await file.setMetadata({
+        metadata: {
+          ...existingMetadata,
+          firebaseStorageDownloadTokens: token,
+        },
+      });
+    }
     if (!token) return "";
     return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(value)}?alt=media&token=${token}`;
   } catch (error) {

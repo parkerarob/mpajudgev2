@@ -838,11 +838,11 @@ export function createDirectorEntryFormRenderers({
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     renderStatusSummary({
       rootId: "directorChecklistPanel",
-      title: done === total ? "Ensemble Workspace Ready" : "Ensemble Workspace In Progress",
+      title: done === total ? "Entry Complete" : "Entry In Progress",
       done,
       total,
       pillText: done === total ? "Complete" : "Incomplete",
-      hintText: done === total ? "All required ensemble sections are complete." : `${total - done} required section(s) still missing.`,
+      hintText: done === total ? "All required sections are complete." : `${total - done} section(s) still need attention.`,
     });
 
     if (els.directorSummaryStatus) {
@@ -857,12 +857,12 @@ export function createDirectorEntryFormRenderers({
     if (els.directorWorkspaceFocusLabel) {
       els.directorWorkspaceFocusLabel.textContent = nextIncomplete
         ? nextIncomplete.label
-        : "Workspace review and ready check";
+        : "Review ensemble forms and mark ready";
     }
     if (els.directorWorkspaceFocusHint) {
       els.directorWorkspaceFocusHint.textContent = nextIncomplete
         ? `Complete ${nextIncomplete.label.toLowerCase()} next to keep this ensemble moving toward ready.`
-        : "All required sections are complete. Review details, then mark the workspace ready.";
+        : "All required sections are complete. Review your entry, then mark it ready.";
     }
     const sectionStatusMap = {
       repertoire: s.repertoire ? "Complete" : nextIncomplete?.key === "repertoire" ? "Next" : "Missing",
@@ -894,8 +894,8 @@ export function createDirectorEntryFormRenderers({
     if (els.directorWorkspaceFocusBtn) {
       els.directorWorkspaceFocusBtn.disabled = !nextPanelKey;
       els.directorWorkspaceFocusBtn.textContent = nextIncomplete
-        ? `Open ${nextIncomplete.label}`
-        : "Review Workspace";
+        ? `Go to ${nextIncomplete.label}`
+        : "Review Entry";
       els.directorWorkspaceFocusBtn.onclick = () => openPanelByKey(nextPanelKey);
     }
     const workspaceContextKey = `${state.director.selectedEventId || ""}:${state.director.selectedEnsembleId || ""}`;

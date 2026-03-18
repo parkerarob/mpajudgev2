@@ -46,7 +46,7 @@ export function renderDirectorEnsembleTable({
     empty.className = "empty stack";
     empty.innerHTML = `
       <div>No ensembles yet.</div>
-      <div class="hint">Add your first ensemble, then open its workspace to complete event details.</div>
+      <div class="hint">Add your first ensemble, then open its entry forms to complete event details.</div>
     `;
     const actions = document.createElement("div");
     actions.className = "actions";
@@ -64,7 +64,7 @@ export function renderDirectorEnsembleTable({
     <thead>
       <tr>
         <th>Name</th>
-        <th>Workspace Status</th>
+        <th>Entry Status</th>
         <th>Next Step</th>
         <th>Actions</th>
       </tr>
@@ -82,18 +82,18 @@ export function renderDirectorEnsembleTable({
     tr.appendChild(nameCell);
 
     let workspaceStatus = "Available";
-    let nextStep = selectedEventId ? "Open workspace" : "Select event";
+    let nextStep = selectedEventId ? "Open forms" : "Select event";
     const savedStatus = statusByEnsembleId instanceof Map ? statusByEnsembleId.get(ensemble.id) || "" : "";
     if (isActive && selectedEventId) {
-      if (activeCompletionState?.ready || activeEntryStatus === "ready") {
+      if (activeCompletionState?.ready || activeEntryStatus === "ready" || savedStatus === "ready") {
         workspaceStatus = "Ready";
         nextStep = "Review or update details";
       } else if (activeEntryStatus || activeCompletionState) {
         workspaceStatus = "In Progress";
         nextStep = "Finish required sections";
       } else {
-        workspaceStatus = "Active Workspace";
-        nextStep = "Open workspace";
+        workspaceStatus = "In Progress";
+        nextStep = "Open forms";
       }
     } else if (isActive) {
       workspaceStatus = "Active";
@@ -106,7 +106,7 @@ export function renderDirectorEnsembleTable({
       nextStep = "Finish required sections";
     } else if (selectedEventId) {
       workspaceStatus = "Not Started";
-      nextStep = "Open workspace";
+      nextStep = "Open forms";
     }
 
     const statusCell = createCell("td", workspaceStatus);
@@ -119,7 +119,7 @@ export function renderDirectorEnsembleTable({
       nextCell.textContent = nextStep;
     } else {
       const nextActionLabel =
-        workspaceStatus === "Ready" ? "Review Workspace" : "Open Workspace";
+        workspaceStatus === "Ready" ? "Review Entry" : "Open Forms";
       nextCell.appendChild(
         createStepButton(nextActionLabel, () => onOpenForms?.(ensemble.id))
       );
@@ -136,14 +136,6 @@ export function renderDirectorEnsembleTable({
     editBtn.textContent = "Edit";
     editBtn.addEventListener("click", () => onEdit?.(ensemble));
     actions.appendChild(editBtn);
-
-    if (!isActive) {
-      const activeBtn = document.createElement("button");
-      activeBtn.type = "button";
-      activeBtn.textContent = "Set Active";
-      activeBtn.addEventListener("click", () => onSetActive?.(ensemble.id));
-      actions.appendChild(activeBtn);
-    }
 
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";

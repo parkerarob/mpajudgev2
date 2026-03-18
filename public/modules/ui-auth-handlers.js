@@ -168,5 +168,28 @@ export function createAuthHandlerBinder({
         await signOut();
       });
     }
+
+    const userMenu = document.getElementById("headerUserMenu");
+    const userMenuBtn = document.getElementById("headerUserMenuBtn");
+    const userMenuDropdown = document.getElementById("headerAuthButtons");
+    if (userMenu && userMenuBtn) {
+      userMenuBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const isOpen = userMenu.classList.toggle("is-open");
+        userMenuBtn.setAttribute("aria-expanded", String(isOpen));
+      });
+      if (userMenuDropdown) {
+        userMenuDropdown.addEventListener("click", () => {
+          userMenu.classList.remove("is-open");
+          userMenuBtn.setAttribute("aria-expanded", "false");
+        });
+      }
+      document.addEventListener("click", () => {
+        if (userMenu.classList.contains("is-open")) {
+          userMenu.classList.remove("is-open");
+          userMenuBtn.setAttribute("aria-expanded", "false");
+        }
+      });
+    }
   };
 }

@@ -606,6 +606,7 @@ function applyDirectorEntryUpdate({
   completionState,
   updatedAt,
 } = {}) {
+  syncDirectorEntryStatusCache(state.director.entryDraft?.status || "");
   if (entry) {
     renderDirectorEntryForm(entry);
   }
@@ -941,7 +942,7 @@ function renderDirectorWorkflowGuidance() {
   const hasEvent = Boolean(state.director.selectedEventId);
   const hasEnsemble = Boolean(state.director.selectedEnsembleId);
   const completion = computeDirectorCompletionState(state.director.entryDraft);
-  const view = state.director.view || "landing";
+  const view = state.director.view || "ensembles";
   const inFormsView = view === "dayOfForms";
 
   let currentStep = "Start";
@@ -955,7 +956,7 @@ function renderDirectorWorkflowGuidance() {
   if (hasSchool && !hasEvent) {
     currentStep = "Choose Event";
     nextTitle = "Select the event you are preparing for.";
-    nextHint = "Use Registration to confirm participation, then move into the ensemble workspace.";
+    nextHint = "Use Registration to confirm participation, then fill out ensemble forms for each ensemble.";
     nextActionLabel = "Choose Event";
     nextAction = () => {
       els.directorEventSelect?.focus();
@@ -963,7 +964,7 @@ function renderDirectorWorkflowGuidance() {
   } else if (hasSchool && hasEvent && !hasEnsemble) {
     currentStep = "Choose Ensemble";
     nextTitle = "Select or create an ensemble.";
-    nextHint = "Pick an active ensemble so its workspace and readiness can be tracked.";
+    nextHint = "Pick an ensemble to track its ensemble forms and readiness.";
     nextActionLabel = "Open My Ensembles";
     nextAction = () => {
       state.director.view = "ensembles";
@@ -971,34 +972,31 @@ function renderDirectorWorkflowGuidance() {
       updateDirectorAttachUI();
     };
   } else if (hasSchool && hasEvent && hasEnsemble && !inFormsView) {
-    currentStep = "Open Workspace";
-    nextTitle = "Open the active ensemble workspace to continue.";
-    nextHint = "Directors should work from the ensemble workspace to complete and verify required details.";
-    nextActionLabel = "Open Workspace";
+    currentStep = "Open Ensemble Forms";
+    nextTitle = "Open ensemble forms for this ensemble.";
+    nextHint = "Complete and verify required details before the event.";
+    nextActionLabel = "Open Ensemble Forms";
     nextAction = () => {
       handleDirectorEnsembleOpenForms(state.director.selectedEnsembleId);
     };
   } else if (hasSchool && hasEvent && hasEnsemble && !completion.ready) {
-    currentStep = "Complete Workspace";
+    currentStep = "Complete Ensemble Forms";
     nextTitle = "Finish the required sections for this ensemble.";
     nextHint = "Repertoire, instrumentation, seating, percussion, lunch, and grade must be complete.";
-    nextActionLabel = "Continue Workspace";
+    nextActionLabel = "Continue Ensemble Forms";
     nextAction = () => {
       handleDirectorEnsembleOpenForms(state.director.selectedEnsembleId);
     };
   } else if (hasSchool && hasEvent && hasEnsemble && completion.ready) {
     currentStep = "Ready";
-    nextTitle = "This ensemble workspace is ready.";
+    nextTitle = "This ensemble is marked ready.";
     nextHint = "Review schedule times and update details only when something changes.";
-    nextActionLabel = "Review Workspace";
+    nextActionLabel = "Review Entry";
     nextAction = () => {
       handleDirectorEnsembleOpenForms(state.director.selectedEnsembleId);
     };
   }
 
-  if (els.directorCurrentStepPill) {
-    els.directorCurrentStepPill.textContent = currentStep;
-  }
   if (els.directorNextStepTitle) {
     els.directorNextStepTitle.textContent = nextTitle;
   }
@@ -1014,44 +1012,19 @@ function renderDirectorWorkflowGuidance() {
     };
   }
 
-  setDirectorStepChip(els.directorStepChipSchool, {
-    label: "School",
-    done: hasSchool,
-    active: !hasSchool,
-  });
-  setDirectorStepChip(els.directorStepChipEvent, {
-    label: "Event",
-    done: hasEvent,
-    active: hasSchool && !hasEvent,
-  });
-  setDirectorStepChip(els.directorStepChipEnsemble, {
-    label: "Ensemble",
-    done: hasEnsemble,
-    active: hasEvent && !hasEnsemble,
-  });
-  setDirectorStepChip(els.directorStepChipForms, {
-    label: "Workspace",
-    done: inFormsView || completion.ready,
-    active: hasSchool && hasEvent && hasEnsemble && !inFormsView,
-  });
-  setDirectorStepChip(els.directorStepChipReady, {
-    label: "Ready",
-    done: completion.ready,
-    active: inFormsView && hasEnsemble && !completion.ready,
-  });
 }
 
 export function setDirectorReadyControls({ status } = {}) {
   if (!els.directorEntryReadyBtn) return;
   if (els.directorEntryReadyBtn) {
     if (status === "ready") {
-      els.directorEntryReadyBtn.textContent = "Mark Workspace Incomplete";
+      els.directorEntryReadyBtn.textContent = "Mark Entry Incomplete";
       els.directorEntryReadyBtn.disabled = false;
     } else if (status === "disabled") {
-      els.directorEntryReadyBtn.textContent = "Mark Workspace Ready";
+      els.directorEntryReadyBtn.textContent = "Mark Entry Ready";
       els.directorEntryReadyBtn.disabled = true;
     } else {
-      els.directorEntryReadyBtn.textContent = "Mark Workspace Ready";
+      els.directorEntryReadyBtn.textContent = "Mark Entry Ready";
       els.directorEntryReadyBtn.disabled = false;
     }
   }
@@ -1712,6 +1685,9 @@ export function updateAuthUI() {
     if (els.signInBtn) {
       els.signInBtn.style.display = "none";
     }
+    if (els.headerAuthActions) {
+      els.headerAuthActions.classList.remove("is-hidden");
+    }
   } else {
     els.signOutBtn.disabled = true;
     closeDirectorProfileModal();
@@ -1761,6 +1737,9 @@ export function updateAuthUI() {
     if (els.signInBtn) {
       els.signInBtn.style.display = "inline-flex";
     }
+    if (els.headerAuthActions) {
+      els.headerAuthActions.classList.add("is-hidden");
+    }
   }
 }
 
@@ -1772,19 +1751,18 @@ export function updateDirectorAttachUI() {
   renderDirectorDashboardLayout();
   const isDirector = isDirectorManager();
   const hasSchool = Boolean(getDirectorSchoolId());
-  const view = state.director.view; // "landing" | "registration" | "registered" | "dayOfForms"
-  const isLandingView = view === "landing";
-  const hasActivePath = Boolean(state.director.activePath);
-  const isChildView = isDirector && (hasActivePath || !isLandingView);
-  const showLandingChrome = isDirector && !isChildView;
+  const view = state.director.view; // "ensembles" | "registration" | "registered" | "dayOfForms" | "results" | "siteInfo"
+  const isHomeView = !view || view === "ensembles";
+  const isChildView = isDirector && !isHomeView;
   const activePath = state.director.activePath || (
     view === "registration" || view === "registered" ? "register" :
     view === "ensembles" ? "ensembles" :
     view === "results" ? "results" :
+    view === "siteInfo" ? "siteInfo" :
     view === "dayOfForms" ? "ensembles" :
     null
   );
-  const showWorkspaceNav = isChildView;
+  const showWorkspaceNav = isDirector && hasSchool;
   const showBackToAdminPreEvent =
     state.auth.userProfile?.role === "admin" &&
     Boolean(state.director.adminLaunchContext) &&
@@ -1793,24 +1771,15 @@ export function updateDirectorAttachUI() {
     {el: els.directorWorkspaceRegisterBtn, path: "register"},
     {el: els.directorWorkspaceEnsemblesBtn, path: "ensembles"},
     {el: els.directorWorkspaceInfoBtn, path: "info"},
+    {el: els.directorWorkspaceSiteBtn, path: "siteInfo"},
     {el: els.directorWorkspaceResultsBtn, path: "results"},
   ];
 
   if (els.directorCard) {
     els.directorCard.classList.toggle("is-child-view", isChildView);
   }
-  if (els.directorTabHeader) {
-    els.directorTabHeader.style.display = showLandingChrome ? "flex" : "none";
-  }
-  if (els.directorSummary) {
-    els.directorSummary.classList.toggle("is-landing", isLandingView);
-    els.directorSummary.style.display = showLandingChrome ? "grid" : "none";
-  }
   if (els.directorWorkspaceNav) {
     els.directorWorkspaceNav.classList.toggle("is-hidden", !showWorkspaceNav);
-  }
-  if (els.directorWorkspaceLandingBtn) {
-    els.directorWorkspaceLandingBtn.disabled = !showWorkspaceNav;
   }
   workspaceNavButtons.forEach(({el, path}) => {
     if (!el) return;
@@ -1824,20 +1793,11 @@ export function updateDirectorAttachUI() {
   }
   if (els.directorSchoolDirectors) {
     els.directorSchoolDirectors.style.display =
-      isDirector && hasSchool && isLandingView ? "grid" : "none";
+      isDirector && hasSchool && isHomeView ? "grid" : "none";
     if (!hasSchool) els.directorSchoolDirectors.innerHTML = "";
   }
-  if (els.directorWorkflowCard) {
-    els.directorWorkflowCard.style.display =
-      isDirector && hasSchool && isLandingView ? "grid" : "none";
-  }
-  if (els.directorEventSelectBlock) {
-    els.directorEventSelectBlock.style.display =
-      isDirector && hasSchool && view === "ensembles" ? "block" : "none";
-  }
   if (els.directorLandingActions) {
-    els.directorLandingActions.style.display =
-      isDirector && hasSchool && isLandingView ? "grid" : "none";
+    els.directorLandingActions.style.display = "none";
   }
   if (els.directorNavRegisterBtn) {
     els.directorNavRegisterBtn.disabled = !(isDirector && hasSchool);
@@ -1852,7 +1812,7 @@ export function updateDirectorAttachUI() {
     els.directorNavResultsBtn.disabled = !(isDirector && hasSchool);
   }
   if (els.directorEnsemblesSection) {
-    const showEnsembles = isDirector && hasSchool && view === "ensembles";
+    const showEnsembles = isDirector && hasSchool && isHomeView;
     els.directorEnsemblesSection.style.display = showEnsembles ? "grid" : "none";
     if (showEnsembles) {
       renderDirectorEnsembles(state.director.ensemblesCache || []);
@@ -1879,6 +1839,10 @@ export function updateDirectorAttachUI() {
   if (els.directorBackToAdminPreEventBtn) {
     els.directorBackToAdminPreEventBtn.classList.toggle("is-hidden", !showBackToAdminPreEvent);
     els.directorBackToAdminPreEventBtn.disabled = !showBackToAdminPreEvent;
+  }
+  if (els.directorSiteInfoSection) {
+    els.directorSiteInfoSection.style.display =
+      isDirector && hasSchool && view === "siteInfo" ? "block" : "none";
   }
   if (els.directorResultsSection) {
     els.directorResultsSection.style.display =
@@ -2997,6 +2961,7 @@ export function showEventDetail(eventId, viewMode = EVENT_DETAIL_VIEW_MODE.admin
     {el: els.eventDetailDirectorRegisterBtn, path: "register"},
     {el: els.eventDetailDirectorEnsemblesBtn, path: "ensembles"},
     {el: els.eventDetailDirectorInfoBtn, path: "info"},
+    {el: els.eventDetailDirectorSiteBtn, path: "siteInfo"},
     {el: els.eventDetailDirectorResultsBtn, path: "results"},
   ].forEach(({el, path}) => {
     if (!el) return;
@@ -5002,8 +4967,8 @@ export function updateDirectorActiveEnsembleLabel() {
     els.directorWorkspaceContextNote.textContent = active && event
       ? `${schoolName} • ${event.name || event.id || "Event"} • Editing ${active.name}`
       : active
-        ? `${schoolName} • Select an event to finish opening this workspace.`
-        : "Choose an event and active ensemble to open the workspace.";
+        ? `${schoolName} • Select an event to open ensemble forms.`
+        : "Choose an event and ensemble to open ensemble forms.";
   }
   renderDirectorWorkflowGuidance();
 }
@@ -5635,7 +5600,7 @@ function returnToAdminPreEventFromDirector() {
   state.director.adminViewSchoolId = null;
   state.director.adminLaunchContext = null;
   state.director.activePath = null;
-  state.director.view = "landing";
+  state.director.view = "ensembles";
   state.admin.currentView = targetView;
   state.admin.selectedSchoolId = context.selectedSchoolId || null;
   state.admin.selectedSchoolName = context.selectedSchoolName || "";

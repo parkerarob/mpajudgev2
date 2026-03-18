@@ -18,23 +18,28 @@
       </div>
       <div class="auth-controls">
         <div class="note" id="authSuccess" hidden></div>
-        <div class="row">
-          <button type="button" id="signInBtn" class="btn--lg">Sign In / Create Account</button>
-          <div id="headerAuthActions" class="auth-actions">
-            <div class="auth-identity is-hidden" id="authIdentityBanner">
-              <div class="auth-identity-name" id="authIdentityName">Signed in</div>
-              <div class="auth-identity-email" id="authIdentityEmail"></div>
-            </div>
-            <div class="auth-action-row" id="headerAuthButtons">
-              <div class="role-switcher is-hidden" id="roleSwitcherWrap">
-                <label for="roleSwitcherSelect">View</label>
-                <select id="roleSwitcherSelect" aria-label="Switch role view">
-                  <option value="admin">Admin</option>
-                  <option value="judge-open">Judge</option>
-                  <option value="director">Director</option>
-                </select>
+        <button type="button" id="signInBtn" class="ghost">Sign In</button>
+        <div id="headerAuthActions" class="auth-actions is-hidden">
+          <div class="role-switcher is-hidden" id="roleSwitcherWrap">
+            <label for="roleSwitcherSelect">View</label>
+            <select id="roleSwitcherSelect" aria-label="Switch role view">
+              <option value="admin">Admin</option>
+              <option value="judge-open">Judge</option>
+              <option value="director">Director</option>
+            </select>
+          </div>
+          <div class="header-user-menu" id="headerUserMenu">
+            <button type="button" class="header-user-btn" id="headerUserMenuBtn" aria-haspopup="true" aria-expanded="false">
+              <div class="auth-identity" id="authIdentityBanner">
+                <span class="auth-identity-name" id="authIdentityName">Account</span>
+                <span class="auth-identity-email" id="authIdentityEmail"></span>
               </div>
-              <button type="button" class="ghost" id="directorProfileToggleBtn">Update Profile</button>
+              <svg class="header-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M2 4.5L6 8.5L10 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div class="header-user-dropdown" id="headerAuthButtons">
+              <button type="button" class="header-menu-item" id="directorProfileToggleBtn">Update Profile</button>
             </div>
           </div>
         </div>
@@ -786,84 +791,29 @@
 
       <section class="card" id="directorCard" role="tabpanel" aria-labelledby="directorTab">
         <nav class="director-workspace-nav is-hidden" id="directorWorkspaceNav" aria-label="Director workspace navigation">
-          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceLandingBtn">Dashboard</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceRegisterBtn">Registration</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceEnsemblesBtn">My Ensembles</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceInfoBtn">Event Info</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceSiteBtn">Site Info</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceResultsBtn">Results Packet</button>
         </nav>
         <div class="ios-screen" id="directorDashboardLayout">
 
           <!-- LANDING: school, directors, event selector -->
-          <div class="panel director-summary director-context-panel stack" id="directorSummary">
-            <div class="director-dashboard-header">
-              <p class="director-hero-kicker">Director Workspace</p>
-              <div class="note" id="directorDashboardContextMeta">School: —</div>
-              <div class="note" id="directorDashboardEventMeta">Event: —</div>
-              <div class="note" id="directorDashboardEnsembleMeta">Active Ensemble: —</div>
-            </div>
-            <div class="director-summary-school-row">
-              <div class="director-hero-copy">
-                <div class="director-summary-school-name" id="directorSummarySchool">No school attached</div>
+          <div class="stack is-hidden" id="directorEnsemblesSection">
+            <h2>My Ensembles</h2>
+            <div class="row row--between row--center">
+              <div class="stack">
+                <h3 id="directorSummarySchool">No school attached</h3>
+                <div class="director-summary-directors" id="directorSchoolDirectors"></div>
               </div>
+              <button type="button" class="ghost" id="directorShowEnsembleFormBtn">Add Ensemble</button>
             </div>
-            <div class="director-summary-directors" id="directorSchoolDirectors"></div>
             <div class="row" id="directorAttachControls">
               <select id="directorAttachSelect"></select>
               <button type="button" id="directorAttachBtn">Confirm School</button>
             </div>
-            <div class="director-landing-actions" id="directorLandingActions">
-              <button type="button" class="btn--secondary director-landing-btn" id="directorNavRegisterBtn">
-                <span class="director-landing-btn-title">Registration</span>
-                <span class="director-landing-btn-copy">Choose the current event and confirm registration details for participating ensembles.</span>
-              </button>
-              <button type="button" class="btn--secondary director-landing-btn" id="directorNavEnsemblesBtn">
-                <span class="director-landing-btn-title">My Ensembles</span>
-                <span class="director-landing-btn-copy">Manage ensembles, choose the active ensemble, and open its workspace.</span>
-              </button>
-              <button type="button" class="btn--secondary director-landing-btn" id="directorNavInfoBtn">
-                <span class="director-landing-btn-title">Event Info</span>
-                <span class="director-landing-btn-copy">View schedule, logistics, site details, and event documents.</span>
-              </button>
-              <button type="button" class="btn--secondary director-landing-btn" id="directorNavResultsBtn">
-                <span class="director-landing-btn-title">Results Packet</span>
-                <span class="director-landing-btn-copy">Open released official results packets, adjudication materials, and audio.</span>
-              </button>
-            </div>
-            <div class="director-summary-event-select stack" id="directorEventSelectBlock">
-              <label for="directorEventSelect">Event</label>
-              <div class="row">
-                <select id="directorEventSelect" class="grow"></select>
-                <button type="button" id="directorEventGoBtn" class="btn--secondary">Open Workspace</button>
-                <button type="button" id="directorScheduleBtn" class="ghost">View Schedule</button>
-              </div>
-              <p class="hint">Choose the event, then open registration or the active ensemble workspace.</p>
-            </div>
-            <div class="panel stack" id="directorWorkflowCard">
-              <div class="row row--between row--center">
-                <div class="pre-event-workflow-title">Next Step</div>
-                <span class="badge" id="directorCurrentStepPill">Start</span>
-              </div>
-              <div class="pre-event-workflow-next" id="directorNextStepTitle">Attach a school to begin.</div>
-              <div class="hint" id="directorNextStepHint">Once attached, choose an event and open registration.</div>
-              <div class="row">
-                <button type="button" class="ghost btn--sm" id="directorWorkflowActionBtn">Open Next Step</button>
-              </div>
-              <div class="pre-event-step-chips">
-                <span class="pre-event-step-chip" id="directorStepChipSchool">School</span>
-                <span class="pre-event-step-chip" id="directorStepChipEvent">Event</span>
-                <span class="pre-event-step-chip" id="directorStepChipEnsemble">Ensemble</span>
-                <span class="pre-event-step-chip" id="directorStepChipForms">Workspace</span>
-                <span class="pre-event-step-chip" id="directorStepChipReady">Ready</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="panel stack is-hidden director-ensemble-panel" id="directorEnsemblesSection">
-            <div class="row row--between row--center">
-              <h3>My Ensembles</h3>
-              <button type="button" class="ghost" id="directorShowEnsembleFormBtn">Add Ensemble</button>
-            </div>
+            <select id="directorEventSelect" class="is-hidden"></select>
             <form id="directorEnsembleForm" class="stack is-hidden">
               <label>
                 Ensemble Name
@@ -879,29 +829,29 @@
           </div>
 
           <!-- REGISTRATION: multi-step form -->
-          <div class="panel stack is-hidden" id="directorRegistrationPanel">
-            <h3>Event Registration</h3>
+          <div class="stack is-hidden" id="directorRegistrationPanel">
+            <h2>Event Registration</h2>
             <div class="note director-registration-meta" id="directorRegistrationMeta"></div>
-            <div class="panel director-registration-scope">
+            <div class="director-registration-scope stack">
               <div class="note">Registration covers participating ensembles, declared grade/scheduling preferences, and profile confirmation.</div>
-              <div class="hint">Use the Ensemble Workspace after registration for repertoire, instrumentation, seating, percussion, lunch, and ready checks.</div>
+              <div class="hint">After registration, complete ensemble forms for repertoire, instrumentation, seating, percussion, and lunch.</div>
             </div>
-            <div class="panel director-registration-step">
+            <div class="director-registration-step stack">
               <h4>Step 1 -- Update your profile</h4>
               <p class="hint">Confirm your NAfME membership and cell phone are current.</p>
               <button type="button" class="ghost" id="directorRegistrationProfileBtn">Update Profile</button>
             </div>
-            <div class="panel director-registration-step">
+            <div class="director-registration-step stack">
               <h4>Step 2 -- Choose ensembles</h4>
               <p class="hint">Select participating ensembles or create a new one below.</p>
               <div id="directorRegistrationEnsembleList" class="stack"></div>
             </div>
-            <div class="panel director-registration-step">
+            <div class="director-registration-step stack">
               <h4>Step 3 -- Registration preferences</h4>
               <p class="hint">Set grade, participation options, and scheduling preferences for each selected ensemble.</p>
               <div id="directorRegistrationGradeFlexList" class="stack"></div>
             </div>
-            <div class="panel director-registration-step director-registration-fees">
+            <div class="director-registration-step director-registration-fees stack">
               <h4>Step 4 -- Fees</h4>
               <p class="hint" id="directorRegistrationFeesHint">Each registered ensemble is $225. A Signature Form must be signed by your school's principal.</p>
             </div>
@@ -909,15 +859,15 @@
           </div>
 
           <!-- POST-REGISTRATION: summary + action buttons -->
-          <div class="panel stack is-hidden" id="directorPostRegistration">
-            <h3 id="directorRegisteredEventName"></h3>
+          <div class="stack is-hidden" id="directorPostRegistration">
+            <h2 id="directorRegisteredEventName"></h2>
             <div class="note" id="directorRegisteredEventDates"></div>
             <div id="directorRegisteredEnsemblesSummary" class="stack"></div>
             <div class="row">
               <button type="button" class="btn--secondary" id="directorEditRegistrationBtn">Edit Registration</button>
               <button type="button" class="btn--secondary" id="directorPrintSignatureBtn">Print Signature Form / Invoice</button>
               <button type="button" class="btn--secondary" id="directorUploadSignedFormBtn">Upload signed form</button>
-              <button type="button" class="btn--secondary" id="directorEnsembleInfoBtn">Open Ensemble Workspace</button>
+              <button type="button" class="btn--secondary" id="directorEnsembleInfoBtn">Open Ensemble Forms</button>
             </div>
             <input type="file" id="directorSignedFormInput" accept=".pdf,.jpg,.jpeg,.png" class="is-hidden" />
             <p class="hint" id="directorSignedFormStatus"></p>
@@ -934,10 +884,10 @@
                 Back to Admin Registrations
               </button>
             </div>
-            <div class="panel group" id="directorEntryPanel">
-              <h3>Ensemble Workspace</h3>
-              <div class="note" id="directorEditorActiveEnsembleLabel">Active Ensemble: none selected</div>
-              <div class="hint" id="directorWorkspaceContextNote">Choose an event and active ensemble to open the workspace.</div>
+            <div class="stack" id="directorEntryPanel">
+              <h2>Ensemble Forms</h2>
+              <div class="note" id="directorEditorActiveEnsembleLabel">Selected Ensemble: none selected</div>
+              <div class="hint" id="directorWorkspaceContextNote">Choose an event and ensemble to open the ensemble forms.</div>
               <div class="row row--between row--center director-workspace-boundary-row">
                 <div class="hint director-workspace-boundary-note">Need to change participating ensembles, declared grade, or scheduling preferences? Return to Registration.</div>
                 <button type="button" class="ghost btn--sm" id="directorWorkspaceRegistrationShortcutBtn">Open Registration</button>
@@ -948,19 +898,19 @@
                 <div class="note" id="directorSaveStatus"></div>
                 <span class="autosave-indicator" id="directorAutosaveIndicator">Autosaved</span>
               </div>
-              <div class="note" id="directorEntryHint">Select an active ensemble above to open its workspace.</div>
-              <div class="panel stack" id="directorChecklistPanel">
+              <div class="note" id="directorEntryHint">Select an ensemble above to open its ensemble forms.</div>
+              <div class="stack" id="directorChecklistPanel">
                 <div class="row row--between row--center">
-                  <strong class="readiness-title">Workspace Progress</strong>
+                  <strong class="readiness-title">Entry Progress</strong>
                   <span class="pill">Incomplete</span>
                 </div>
-                <div class="panel stack director-workspace-focus">
-                  <div class="note">Current Focus: <span id="directorWorkspaceFocusLabel">Choose an active ensemble</span></div>
-                  <div class="hint" id="directorWorkspaceFocusHint">Select an event and active ensemble to begin the workspace.</div>
-                  <button type="button" class="ghost btn--sm" id="directorWorkspaceFocusBtn">Open Current Focus</button>
+                <div class="stack director-workspace-focus">
+                  <div class="note">Next Step: <span id="directorWorkspaceFocusLabel">Choose an ensemble</span></div>
+                  <div class="hint" id="directorWorkspaceFocusHint">Select an event and ensemble to begin filling out ensemble forms.</div>
+                  <button type="button" class="ghost btn--sm" id="directorWorkspaceFocusBtn">Go There</button>
                 </div>
-                <div class="panel stack director-workspace-blockers">
-                  <div class="note">Ready Blockers</div>
+                <div class="stack director-workspace-blockers">
+                  <div class="note">What's Still Needed</div>
                   <ul id="directorWorkspaceBlockers" class="list"></ul>
                 </div>
                 <div class="row row--between row--center">
@@ -971,13 +921,13 @@
                   <div class="progress-bar" id="directorSummaryProgressBar" style="width: 0%;"></div>
                 </div>
                 <div class="note">Completion: <span id="directorSummaryCompletion">0%</span></div>
-                <div class="hint readiness-hint">Choose an event and active ensemble to begin.</div>
+                <div class="hint readiness-hint">Choose an event and ensemble to begin.</div>
                 <ul id="directorChecklist" class="list"></ul>
               </div>
               <form id="directorEntryForm" class="stack">
                 <label>
-                  Performance Grade (auto-derived from repertoire grades)
-                  <input type="text" id="directorPerformanceGradeInput" placeholder="Auto-derived" readonly />
+                  Performance Grade (calculated from your music selections)
+                  <input type="text" id="directorPerformanceGradeInput" placeholder="Set by your selections" readonly />
                 </label>
                 <input type="checkbox" id="directorPerformanceGradeFlex" hidden />
                 <div class="error" id="performanceGradeError"></div>
@@ -1129,17 +1079,98 @@
             </div>
           </div>
 
-          <div class="panel stack is-hidden director-results-shell" id="directorResultsSection">
-            <details class="panel accordion-card group director-results-card" id="directorResultsPanel" open>
+          <!-- SITE INFO: maps, directions -->
+          <div class="stack is-hidden" id="directorSiteInfoSection">
+            <h2>Site Info</h2>
+
+            <div class="director-site-maps stack" id="directorSiteMaps">
+              <h3>Traffic Flow Maps</h3>
+              <div class="director-site-map-pair">
+                <figure class="director-site-map-card stack">
+                  <img
+                    src="/director-campus-flow.png"
+                    alt="Ashley High School campus traffic flow and parking map"
+                    class="director-site-map-image"
+                  />
+                  <figcaption>Campus Flow and Parking</figcaption>
+                </figure>
+                <figure class="director-site-map-card stack">
+                  <img
+                    src="/director-student-dropoff.png"
+                    alt="Ashley High School student drop-off traffic map"
+                    class="director-site-map-image"
+                  />
+                  <figcaption>Student Drop-Off</figcaption>
+                </figure>
+              </div>
+              <figure class="director-site-map-card stack">
+                <img
+                  src="/director-meac-flow.jpg"
+                  alt="Murray and Ashley campus interior flow map for warm-up, stage performance, sight-reading, and holding"
+                  class="director-site-map-image"
+                />
+                <figcaption>MEAC Interior Flow</figcaption>
+              </figure>
+            </div>
+
+            <div class="director-site-directions stack" id="directorSiteDirections">
+              <h3>Driving Directions to Ashley High School</h3>
+
+              <section class="director-site-route stack">
+                <h4>From I-40 (Option 1 - Most Direct Route)</h4>
+                <ol>
+                  <li>Start at the Eastern Terminus of I-40 (N College Rd, Wilmington, NC 28405).</li>
+                  <li>Head south on NC-132 S / N College Rd for 9.4 miles.</li>
+                  <li>Continue straight onto Carolina Beach Rd (US-421 S) for 2.6 miles.</li>
+                  <li>Turn right onto Halyburton Memorial Parkway (Veterans Park entrance).</li>
+                  <li>Turn right at the first fork (next to the soccer fields).</li>
+                  <li>Follow this road to the back of the school.</li>
+                  <li>Enter the loading dock area using the second entrance.</li>
+                </ol>
+              </section>
+
+              <section class="director-site-route stack">
+                <h4>From I-40 (Option 2 - via Randall Pkwy &amp; Independence Blvd)</h4>
+                <p class="note">This route provides a smoother flow of traffic compared to staying on College Road the entire way.</p>
+                <ol>
+                  <li>Start at the Eastern Terminus of I-40 (N College Rd, Wilmington, NC 28405).</li>
+                  <li>Turn right onto Randall Parkway and continue for 1.7 miles.</li>
+                  <li>Use the left 2 lanes to turn left onto Independence Blvd and continue for 4.1 miles.</li>
+                  <li>Use the left 2 lanes to turn left onto US-421 S / Carolina Beach Rd.</li>
+                  <li>Continue on Carolina Beach Rd for 3.0 miles.</li>
+                  <li>At Monkey Junction, merge right to stay on Carolina Beach Rd (US-421 S).</li>
+                  <li>Continue for 2.7 more miles.</li>
+                  <li>Turn right onto Halyburton Memorial Parkway (Ashley High School entrance).</li>
+                  <li>Turn right at the first fork (next to the soccer fields).</li>
+                  <li>Follow this road to the back of the school.</li>
+                  <li>Enter the loading dock area using the second entrance.</li>
+                </ol>
+              </section>
+
+              <section class="director-site-route stack">
+                <h4>From US-17/US-76/US-421 Cape Fear Memorial Bridge</h4>
+                <ol>
+                  <li>Continue south over the Cape Fear Memorial Bridge on US-17/US-76/US-421.</li>
+                  <li>Turn right onto US-421 S / S 3rd St (signs for Carolina Beach/Kure Beach).</li>
+                  <li>Continue on US-421 S for 0.9 miles.</li>
+                  <li>Use the left 2 lanes to turn left onto US-421 S / Carolina Beach Rd.</li>
+                  <li>Pass by McDonald&apos;s (on the left in 1.5 miles).</li>
+                  <li>Continue on Carolina Beach Rd for 5.7 miles.</li>
+                  <li>At Monkey Junction, merge right to stay on Carolina Beach Rd (US-421 S).</li>
+                  <li>Continue for 2.7 more miles.</li>
+                  <li>Turn right onto Halyburton Memorial Parkway (Ashley High School entrance).</li>
+                  <li>Turn right at the first fork (next to the soccer fields).</li>
+                  <li>Follow this road to the back of the school.</li>
+                  <li>Enter the loading dock area using the second entrance.</li>
+                </ol>
+              </section>
+            </div>
+          </div>
+
+          <div class="stack is-hidden director-results-shell" id="directorResultsSection">
+            <details class="accordion-card group director-results-card" id="directorResultsPanel" open>
               <summary><div><strong>Official Results Packet</strong></div></summary>
-              <div class="form-section">
-                <div class="note">Released official adjudication, results packet PDFs, and judge audio for your registered ensembles appear here.</div>
-                <div class="hint">If nothing is listed yet, results have not been released for your ensemble or event.</div>
-                <div class="panel stack director-results-summary">
-                  <div class="note" id="directorResultsContextMeta">School: —</div>
-                  <div class="note" id="directorResultsEventMeta">Event: —</div>
-                  <div class="note" id="directorResultsCountMeta">Released results: 0</div>
-                </div>
+              <div class="stack">
                 <div class="empty stack" id="directorEmpty">
                   <div>No results released yet.</div>
                   <div class="row">
@@ -1157,17 +1188,17 @@
 
       <section class="card is-hidden" id="eventDetailPage">
         <nav class="director-workspace-nav is-hidden" id="eventDetailDirectorNav" aria-label="Director event navigation">
-          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorLandingBtn">Dashboard</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorRegisterBtn">Registration</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorEnsemblesBtn">My Ensembles</button>
           <button type="button" class="ghost director-workspace-nav-btn is-active" id="eventDetailDirectorInfoBtn">Event Info</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorSiteBtn">Site Info</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorResultsBtn">Results Packet</button>
         </nav>
         <div class="row event-detail-topbar">
           <p class="director-hero-kicker">Event Info</p>
           <button type="button" class="ghost" id="eventDetailBackBtn">Back to Dashboard</button>
         </div>
-        <div class="panel director-info-shell">
+        <div class="director-info-shell stack">
           <div class="director-state-resources stack">
             <p class="director-state-resources-kicker">Official NCBA State Resource</p>
             <a
@@ -1209,324 +1240,224 @@
               </div>
             </div>
           </div>
-          <div class="director-sightreading-reminders stack" id="directorSightReadingReminders">
-            <h3>Sight-Reading Reminders</h3>
-            <div class="director-sr-overview stack">
-              <p class="director-sr-kicker">At A Glance</p>
-              <ul class="director-sr-overview-list">
+          <div class="director-key-info stack">
+            <h3>Concert Band MPA: Key Information</h3>
+
+            <section class="director-key-info-section stack">
+              <h4>Eligibility</h4>
+              <ul>
+                <li>Director must be a current NCMEA member.</li>
+                <li>The director of record must register students and be present at the event.</li>
+                <li>Students must be regularly enrolled in band at the school.</li>
+              </ul>
+            </section>
+
+            <section class="director-key-info-section stack">
+              <h4>Performance Format</h4>
+              <ul>
+                <li>Bands may participate for rating or comments only.</li>
+                <li>Comments-only groups may choose whether to sight-read.</li>
+                <li>Comments-only groups do not receive a rating.</li>
+              </ul>
+            </section>
+
+            <section class="director-key-info-section stack">
+              <h4>Music Requirements</h4>
+              <ul>
+                <li>Perform 1 march and 2 selections from the current NCBA approved list.</li>
+                <li>A Grade VI masterwork may be used in place of the 2 listed selections when permitted.</li>
+                <li>Selections must come from the same grade level or two adjacent grade levels.</li>
+                <li>Use of unapproved music results in comments only and no rating.</li>
+              </ul>
+            </section>
+
+            <section class="director-key-info-section stack">
+              <h4>Required Materials</h4>
+              <ul>
+                <li>Bring 3 conductor's scores for each concert selection.</li>
+                <li>All scores must have measure numbers.</li>
+                <li>Copied scores require publisher permission.</li>
+                <li>E-print scores require proof of purchase.</li>
+                <li>Submit instrumentation and 4-year repertoire history at least 1 hour before performance.</li>
+              </ul>
+            </section>
+
+            <section class="director-key-info-section stack">
+              <h4>Time Limits</h4>
+              <p class="director-key-info-note">Performance time includes staging and performance.</p>
+              <table class="director-key-info-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Group</th>
+                    <th scope="col">Warm-Up</th>
+                    <th scope="col">Performance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>Groups I–II</td><td>25 min</td><td>25 min</td></tr>
+                  <tr><td>Groups III–IV</td><td>30 min</td><td>30 min</td></tr>
+                  <tr><td>Group V</td><td>35 min</td><td>35 min</td></tr>
+                  <tr><td>Group VI</td><td>40 min</td><td>40 min</td></tr>
+                </tbody>
+              </table>
+              <p class="director-key-info-note">Additional time must be approved at least 30 days in advance.</p>
+            </section>
+
+            <section class="director-key-info-section stack">
+              <h4>Sight-Reading Rules</h4>
+              <ul>
+                <li>Required for Grades II–VI. Grade I does not sight-read.</li>
+                <li>During prep, students may clap, sing, count aloud, and finger. Students may not play.</li>
+                <li>One brief warm-up scale is allowed before reading.</li>
+                <li>Only one director may instruct in the sight-reading room.</li>
+              </ul>
+              <table class="director-key-info-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Grade</th>
+                    <th scope="col">Prep Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>Grades II–IV</td><td>5 minutes</td></tr>
+                  <tr><td>Grade V</td><td>6 minutes</td></tr>
+                  <tr><td>Grade VI</td><td>7 minutes</td></tr>
+                </tbody>
+              </table>
+            </section>
+          </div>
+          <div class="director-key-info stack">
+            <h3>Sight-Reading Preparation</h3>
+
+            <section class="director-key-info-section stack">
+              <h4>Reminders</h4>
+              <ul>
                 <li>Assign percussion parts before arrival.</li>
                 <li>Pre-plan all wind part splits and section coverage.</li>
                 <li>Practice sight-reading at your current registered MPA level.</li>
               </ul>
-            </div>
+            </section>
 
-            <details class="director-sr-card stack" open>
-              <summary>
-                <span class="director-sr-summary-title">Preparation Expectations</span>
-              </summary>
-              <div class="director-sr-card-body stack">
-                <section class="director-sightreading-section stack">
-                  <h4>Instrumentation and Percussion Assignments</h4>
-                  <p>
-                    In the sight-reading document, there is a list of instruments included in each piece. Please be
-                    sure that before arriving at MPA, you have assigned percussion parts so your percussionists know
-                    exactly what they will be playing when they enter the sight-reading room.
-                  </p>
-                </section>
+            <section class="director-key-info-section stack">
+              <h4>Resources</h4>
+              <ul>
+                <li><a href="https://drive.google.com/drive/folders/0B8MCjRGEWkOnaW5iN0d4enY0ZkE?resourcekey=0-e460Kn3V2Vdjf59NHpCavg" target="_blank" rel="noopener">Past UIL Sightreading Music</a></li>
+                <li><a href="/director-sightreading-script.pdf" target="_blank" rel="noopener">View Sight-Reading Script PDF</a></li>
+              </ul>
+            </section>
 
-                <section class="director-sightreading-section stack">
-                  <h4>Wind Part Splits</h4>
-                  <p>
-                    Please review and plan for any part splits ahead of time. For example, if there are only two
-                    clarinet parts and a student is assigned to Clarinet 3 in your band, you should already know
-                    whether that student will cover Clarinet 1 or 2, and how any additional clarinet players will be
-                    assigned. This applies to all sections as needed.
-                  </p>
-                </section>
+            <section class="director-key-info-section stack">
+              <h4>Auxiliary Percussion by Grade</h4>
+              <table class="director-key-info-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Grade / UIL Level</th>
+                    <th scope="col">Possible Players</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>Grade 2 / UIL Level 2</td><td>1 player could play both Triangle and Crash Cymbals.</td></tr>
+                  <tr><td>Grade 3 / UIL Level 3</td><td>2 players minimum — Crash Cymbals, Suspended Cymbal, and Triangle.</td></tr>
+                  <tr><td>Grade 4 / UIL Level 4</td><td>2 players minimum — Crash Cymbals, Triangle, and Suspended Cymbal.</td></tr>
+                  <tr><td>Grade 5 / UIL Level 5</td><td>1 player could play both Crash Cymbals and Suspended Cymbals.</td></tr>
+                  <tr><td>Grade 6 / UIL Level 6</td><td>2 players — Wood Block, Suspended Cymbal, and Crash Cymbals.</td></tr>
+                </tbody>
+              </table>
+            </section>
 
-                <section class="director-sightreading-section stack">
-                  <h4>Sight-Reading Level Reminder</h4>
-                  <p>
-                    As a reminder, ensembles now sight-read at the same level at which they are registered to perform.
-                    Prior to 2024, ensembles sight-read one level below, but that is no longer the case. For best
-                    preparation, please practice sight-reading at your ensemble&apos;s current MPA level with your
-                    students.
-                  </p>
-                </section>
-              </div>
-            </details>
-
-            <details class="director-sr-card stack">
-              <summary>
-                <span class="director-sr-summary-title">Access and Script</span>
-              </summary>
-              <div class="director-sr-card-body stack">
-                <section class="director-sightreading-section stack">
-                  <h4>Sight-Reading Music Access</h4>
-                  <p>
-                    The Eastern District sight-reading music that has been purchased and scanned for preparation
-                    purposes is avaliable through this link.
-                  </p>
-                  <div class="director-sr-script-actions row">
-                    <a
-                      href="https://drive.google.com/drive/folders/0B8MCjRGEWkOnaW5iN0d4enY0ZkE?resourcekey=0-e460Kn3V2Vdjf59NHpCavg"
-                      target="_blank"
-                      rel="noopener"
-                    >Past UIL Sightreading Music</a>
-                  </div>
-                </section>
-
-                <section class="director-sightreading-section stack">
-                  <h4>Sight-Reading Script</h4>
-                  <p>
-                    Please take time to review the official sight-reading script and consider reading it to your
-                    students so they understand what to expect and are familiar with the procedures and rules before
-                    entering the room.
-                  </p>
-                  <div class="director-sr-script-actions row">
-                    <a
-                      href="/director-sightreading-script.pdf"
-                      target="_blank"
-                      rel="noopener"
-                    >View Script PDF</a>
-                    <a href="/director-sightreading-script.pdf" download="director-sightreading-script.pdf">Download Script PDF</a>
-                  </div>
-                </section>
-              </div>
-            </details>
-
-            <details class="director-sr-card stack">
-              <summary>
-                <span class="director-sr-summary-title">Additional Notes from Richard Holmes</span>
-              </summary>
-              <div class="director-sr-card-body stack">
-                <ul class="director-sr-list">
-                  <li>
-                    There is not an E-flat Contra Bass Clarinet printed part for NCBA Grade 2 and Grade 3. A Baritone
-                    Saxophone part and a Tuba part are included in the folder, and directors may choose which one to
-                    use.
-                  </li>
-                  <li>There is an E-flat Contra Bass Clarinet part for NCBA Grade Levels 4, 5, and 6.</li>
-                  <li>
-                    For 2026, there is a string bass part for each level.
-                    <span class="director-sr-tag">2026 Update</span>
-                  </li>
-                </ul>
-              </div>
-            </details>
-
-            <details class="director-sr-card stack">
-              <summary>
-                <span class="director-sr-summary-title">Auxiliary Percussion by Grade</span>
-              </summary>
-              <div class="director-sr-card-body stack">
-                <div class="director-sr-table-wrap">
-                  <table class="director-sr-table">
-                    <thead>
-                      <tr>
-                        <th scope="col">Grade / UIL Level</th>
-                        <th scope="col">Possible Number of Players</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <th scope="row">Grade 2 / UIL Level 2</th>
-                        <td>1 player could play both Triangle and Crash Cymbals.</td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Grade 3 / UIL Level 3</th>
-                        <td>2 players minimum to play Crash Cymbals, Suspended Cymbal, and Triangle.</td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Grade 4 / UIL Level 4</th>
-                        <td>2 players minimum to play Crash Cymbals, Triangle, and Suspended Cymbal.</td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Grade 5 / UIL Level 5</th>
-                        <td>1 player could play both Crash Cymbals and Suspended Cymbals.</td>
-                      </tr>
-                      <tr>
-                        <th scope="row">Grade 6 / UIL Level 6</th>
-                        <td>2 players could play Wood Block, Suspended Cymbal, and Crash Cymbals.</td>
-                      </tr>
-                    </tbody>
-                  </table>
+            <section class="director-key-info-section stack">
+              <h4>Instrumentation by Level</h4>
+              <div class="director-key-info-grade-grid">
+                <div class="director-key-info-grade stack">
+                  <strong>Grade 2 (UIL 2)</strong>
+                  <ul>
+                    <li>2 Clarinet parts</li>
+                    <li>2 Trumpet parts</li>
+                    <li>Snare Drum</li>
+                    <li>Bass Drum</li>
+                    <li>Crash Cymbals</li>
+                    <li>Triangle</li>
+                    <li>Bells</li>
+                    <li>Timpani (2)</li>
+                  </ul>
+                </div>
+                <div class="director-key-info-grade stack">
+                  <strong>Grade 3 (UIL 3)</strong>
+                  <ul>
+                    <li>2 Clarinet parts</li>
+                    <li>2 Trumpet parts</li>
+                    <li>Snare Drum</li>
+                    <li>Bass Drum</li>
+                    <li>Crash Cymbals</li>
+                    <li>Triangle</li>
+                    <li>Suspended Cymbal</li>
+                    <li>Bells</li>
+                    <li>Timpani (2)</li>
+                  </ul>
+                </div>
+                <div class="director-key-info-grade stack">
+                  <strong>Grade 4 (UIL 4)</strong>
+                  <ul>
+                    <li>2 Flutes</li>
+                    <li>2 Clarinets</li>
+                    <li>2 Alto Saxophones</li>
+                    <li>2 Trumpets</li>
+                    <li>2 Trombones</li>
+                    <li>Snare Drum</li>
+                    <li>Bass Drum</li>
+                    <li>Crash Cymbals</li>
+                    <li>Suspended Cymbal</li>
+                    <li>Triangle</li>
+                    <li>Bells</li>
+                    <li>Timpani (3)</li>
+                  </ul>
+                </div>
+                <div class="director-key-info-grade stack">
+                  <strong>Grade 5 (UIL 5)</strong>
+                  <ul>
+                    <li>2 Flute parts</li>
+                    <li>3 Clarinet parts</li>
+                    <li>2 Alto Sax parts</li>
+                    <li>3 Trumpet parts</li>
+                    <li>2 French Horn parts</li>
+                    <li>2 Trombone parts</li>
+                    <li>Snare Drum</li>
+                    <li>Bass Drum</li>
+                    <li>Suspended Cymbal</li>
+                    <li>Crash Cymbals</li>
+                    <li>Bells</li>
+                    <li>Timpani (4) (5 pitches)</li>
+                  </ul>
+                </div>
+                <div class="director-key-info-grade stack">
+                  <strong>Grade 6 (UIL 6)</strong>
+                  <ul>
+                    <li>3 Clarinet parts</li>
+                    <li>3 Trumpet parts</li>
+                    <li>2 French Horn parts</li>
+                    <li>2 Trombone parts</li>
+                    <li>Snare Drum</li>
+                    <li>Bass Drum</li>
+                    <li>Suspended Cymbal</li>
+                    <li>Crash Cymbals</li>
+                    <li>Wood Block</li>
+                    <li>Bells</li>
+                    <li>Timpani (3)</li>
+                  </ul>
                 </div>
               </div>
-            </details>
-
-            <details class="director-sr-card stack">
-              <summary>
-                <span class="director-sr-summary-title">Instrumentation by Level</span>
-              </summary>
-              <div class="director-sr-card-body stack">
-                <div class="director-sr-instrument-grid">
-                  <section class="director-sr-grade-card stack">
-                    <h4>Grade 2 Bands (UIL Level 2)</h4>
-                    <ul class="director-sr-bullet-list">
-                      <li>2 Clarinet parts</li>
-                      <li>2 Trumpet parts</li>
-                      <li>Snare Drum</li>
-                      <li>Bass Drum</li>
-                      <li>Crash Cymbals</li>
-                      <li>Triangle</li>
-                      <li>Bells</li>
-                      <li>Timpani (2)</li>
-                    </ul>
-                  </section>
-
-                  <section class="director-sr-grade-card stack">
-                    <h4>Grade 3 Bands (UIL Level 3)</h4>
-                    <ul class="director-sr-bullet-list">
-                      <li>2 Clarinet parts</li>
-                      <li>2 Trumpet parts</li>
-                      <li>Snare Drum</li>
-                      <li>Bass Drum</li>
-                      <li>Crash Cymbals</li>
-                      <li>Triangle</li>
-                      <li>Suspended Cymbal</li>
-                      <li>Bells</li>
-                      <li>Timpani (2)</li>
-                    </ul>
-                  </section>
-
-                  <section class="director-sr-grade-card stack">
-                    <h4>Grade 4 Bands (UIL Level 4)</h4>
-                    <ul class="director-sr-bullet-list">
-                      <li>2 Flutes</li>
-                      <li>2 Clarinets</li>
-                      <li>2 Alto Saxophones</li>
-                      <li>2 Trumpets</li>
-                      <li>2 Trombones</li>
-                      <li>Snare Drum</li>
-                      <li>Bass Drum</li>
-                      <li>Crash Cymbals</li>
-                      <li>Suspended Cymbal</li>
-                      <li>Triangle</li>
-                      <li>Bells</li>
-                      <li>Timpani (3)</li>
-                    </ul>
-                  </section>
-
-                  <section class="director-sr-grade-card stack">
-                    <h4>Grade 5 Bands (UIL Level 5)</h4>
-                    <ul class="director-sr-bullet-list">
-                      <li>2 Flute parts</li>
-                      <li>3 Clarinet parts</li>
-                      <li>2 Alto Sax parts</li>
-                      <li>3 Trumpet parts</li>
-                      <li>2 French Horn parts</li>
-                      <li>2 Trombone parts</li>
-                      <li>Snare Drum</li>
-                      <li>Bass Drum</li>
-                      <li>Suspended Cymbal</li>
-                      <li>Crash Cymbals</li>
-                      <li>Bells</li>
-                      <li>Timpani (4) (5 pitches)</li>
-                    </ul>
-                  </section>
-
-                  <section class="director-sr-grade-card stack">
-                    <h4>Grade 6 Bands (UIL Level 6)</h4>
-                    <ul class="director-sr-bullet-list">
-                      <li>3 Clarinet parts</li>
-                      <li>3 Trumpet parts</li>
-                      <li>2 French Horn parts</li>
-                      <li>2 Trombone parts</li>
-                      <li>Snare Drum</li>
-                      <li>Bass Drum</li>
-                      <li>Suspended Cymbal</li>
-                      <li>Crash Cymbals</li>
-                      <li>Wood Block</li>
-                      <li>Bells</li>
-                      <li>Timpani (3)</li>
-                    </ul>
-                  </section>
-                </div>
-              </div>
-            </details>
-          </div>
-          <div class="director-site-maps stack" id="directorSiteMaps">
-            <h3>Traffic Flow Maps</h3>
-            <figure class="director-site-map-card stack">
-              <img
-                src="/director-campus-flow.png"
-                alt="Ashley High School campus traffic flow and parking map"
-                class="director-site-map-image"
-              />
-              <figcaption>Campus Flow and Parking</figcaption>
-            </figure>
-            <figure class="director-site-map-card stack">
-              <img
-                src="/director-student-dropoff.png"
-                alt="Ashley High School student drop-off traffic map"
-                class="director-site-map-image"
-              />
-              <figcaption>Student Drop-Off</figcaption>
-            </figure>
-            <figure class="director-site-map-card stack">
-              <img
-                src="/director-meac-flow.jpg"
-                alt="Murray and Ashley campus interior flow map for warm-up, stage performance, sight-reading, and holding"
-                class="director-site-map-image"
-              />
-              <figcaption>MEAC Interior Flow</figcaption>
-            </figure>
-          </div>
-
-          <div class="director-site-directions stack" id="directorSiteDirections">
-            <h3>Driving Directions to Ashley High School</h3>
-
-            <section class="director-site-route stack">
-              <h4>From I-40 (Option 1 - Most Direct Route)</h4>
-              <ol>
-                <li>Start at the Eastern Terminus of I-40 (N College Rd, Wilmington, NC 28405).</li>
-                <li>Head south on NC-132 S / N College Rd for 9.4 miles.</li>
-                <li>Continue straight onto Carolina Beach Rd (US-421 S) for 2.6 miles.</li>
-                <li>Turn right onto Halyburton Memorial Parkway (Veterans Park entrance).</li>
-                <li>Turn right at the first fork (next to the soccer fields).</li>
-                <li>Follow this road to the back of the school.</li>
-                <li>Enter the loading dock area using the second entrance.</li>
-              </ol>
             </section>
 
-            <section class="director-site-route stack">
-              <h4>From I-40 (Option 2 - via Randall Pkwy &amp; Independence Blvd)</h4>
-              <p class="note">This route provides a smoother flow of traffic compared to staying on College Road the entire way.</p>
-              <ol>
-                <li>Start at the Eastern Terminus of I-40 (N College Rd, Wilmington, NC 28405).</li>
-                <li>Turn right onto Randall Parkway and continue for 1.7 miles.</li>
-                <li>Use the left 2 lanes to turn left onto Independence Blvd and continue for 4.1 miles.</li>
-                <li>Use the left 2 lanes to turn left onto US-421 S / Carolina Beach Rd.</li>
-                <li>Continue on Carolina Beach Rd for 3.0 miles.</li>
-                <li>At Monkey Junction, merge right to stay on Carolina Beach Rd (US-421 S).</li>
-                <li>Continue for 2.7 more miles.</li>
-                <li>Turn right onto Halyburton Memorial Parkway (Ashley High School entrance).</li>
-                <li>Turn right at the first fork (next to the soccer fields).</li>
-                <li>Follow this road to the back of the school.</li>
-                <li>Enter the loading dock area using the second entrance.</li>
-              </ol>
-            </section>
-
-            <section class="director-site-route stack">
-              <h4>From US-17/US-76/US-421 Cape Fear Memorial Bridge</h4>
-              <ol>
-                <li>Continue south over the Cape Fear Memorial Bridge on US-17/US-76/US-421.</li>
-                <li>Turn right onto US-421 S / S 3rd St (signs for Carolina Beach/Kure Beach).</li>
-                <li>Continue on US-421 S for 0.9 miles.</li>
-                <li>Use the left 2 lanes to turn left onto US-421 S / Carolina Beach Rd.</li>
-                <li>Pass by McDonald&apos;s (on the left in 1.5 miles).</li>
-                <li>Continue on Carolina Beach Rd for 5.7 miles.</li>
-                <li>At Monkey Junction, merge right to stay on Carolina Beach Rd (US-421 S).</li>
-                <li>Continue for 2.7 more miles.</li>
-                <li>Turn right onto Halyburton Memorial Parkway (Ashley High School entrance).</li>
-                <li>Turn right at the first fork (next to the soccer fields).</li>
-                <li>Follow this road to the back of the school.</li>
-                <li>Enter the loading dock area using the second entrance.</li>
-              </ol>
+            <section class="director-key-info-section stack">
+              <h4>Notes from Richard Holmes</h4>
+              <ul>
+                <li>No E-flat Contra Bass Clarinet part for NCBA Grade 2 and Grade 3. A Baritone Saxophone or Tuba part is included — directors may choose which one to use.</li>
+                <li>E-flat Contra Bass Clarinet part is included for NCBA Grade Levels 4, 5, and 6.</li>
+                <li>For 2026, there is a string bass part for each level.</li>
+              </ul>
             </section>
           </div>
-        </div>
+          </div>
       </section>
     </main>
 

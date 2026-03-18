@@ -77,7 +77,7 @@ export function createDirectorHandlerBinder({
       return true;
     };
     const navigateDirectorLanding = () => {
-      state.director.view = "landing";
+      state.director.view = "ensembles";
       state.director.activePath = null;
       updateDirectorAttachUI();
       if (window.location.hash !== "#director") {
@@ -112,13 +112,8 @@ export function createDirectorHandlerBinder({
       await renderDirectorRegistrationPanel();
     };
     const navigateDirectorEnsembles = () => {
-      if (!getDirectorSchoolId()) {
-        alertUser("Attach to your school first.");
-        return;
-      }
-      if (!ensureDirectorEventSelected()) return;
       state.director.view = "ensembles";
-      state.director.activePath = "ensembles";
+      state.director.activePath = null;
       updateDirectorAttachUI();
       ensureDirectorHash();
     };
@@ -131,6 +126,16 @@ export function createDirectorHandlerBinder({
       state.director.activePath = "info";
       updateDirectorAttachUI();
       window.location.hash = `#event/${state.director.selectedEventId}/director-schedule`;
+    };
+    const navigateDirectorSiteInfo = () => {
+      if (hasDirectorUnsavedChanges() && !confirmUser("You have unsaved changes. Leave anyway?")) {
+        return;
+      }
+      discardDirectorDraftChanges();
+      state.director.view = "siteInfo";
+      state.director.activePath = "siteInfo";
+      updateDirectorAttachUI();
+      ensureDirectorHash();
     };
     const navigateDirectorResults = async () => {
       if (!getDirectorSchoolId()) {
@@ -211,6 +216,9 @@ export function createDirectorHandlerBinder({
     if (els.directorWorkspaceInfoBtn) {
       els.directorWorkspaceInfoBtn.addEventListener("click", navigateDirectorInfo);
     }
+    if (els.directorWorkspaceSiteBtn) {
+      els.directorWorkspaceSiteBtn.addEventListener("click", navigateDirectorSiteInfo);
+    }
     if (els.directorWorkspaceResultsBtn) {
       els.directorWorkspaceResultsBtn.addEventListener("click", navigateDirectorResults);
     }
@@ -225,6 +233,9 @@ export function createDirectorHandlerBinder({
     }
     if (els.eventDetailDirectorInfoBtn) {
       els.eventDetailDirectorInfoBtn.addEventListener("click", navigateDirectorInfo);
+    }
+    if (els.eventDetailDirectorSiteBtn) {
+      els.eventDetailDirectorSiteBtn.addEventListener("click", navigateDirectorSiteInfo);
     }
     if (els.eventDetailDirectorResultsBtn) {
       els.eventDetailDirectorResultsBtn.addEventListener("click", navigateDirectorResults);
@@ -582,7 +593,7 @@ export function createDirectorHandlerBinder({
         const detailMode = String(els.eventDetailPage?.dataset?.viewMode || "").toLowerCase();
         const isDirectorSchedule = detailMode === "directorschedule";
         if (isDirectorSchedule || state.app.currentTab === "director") {
-          state.director.view = "landing";
+          state.director.view = "ensembles";
           state.director.activePath = null;
           updateDirectorAttachUI();
           window.location.hash = "#director";

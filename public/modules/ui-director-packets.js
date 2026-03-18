@@ -276,7 +276,7 @@ export function createDirectorPacketRenderers({
       els.directorResultsEventMeta.textContent = `Event: ${eventLabel}`;
     }
     if (els.directorResultsCountMeta) {
-      els.directorResultsCountMeta.textContent = `Released ensembles: ${releasedResultGroups.length}`;
+      els.directorResultsCountMeta.textContent = `Ensembles with results: ${releasedResultGroups.length}`;
     }
     if (els.directorEmpty) {
       els.directorEmpty.style.display = groups.length ? "none" : "block";
@@ -292,7 +292,7 @@ export function createDirectorPacketRenderers({
         header.className = "packet-header";
         const ensembleRow = document.createElement("div");
         const ensembleLabel = document.createElement("strong");
-        ensembleLabel.textContent = "Open Judge Sheet Set:";
+        ensembleLabel.textContent = "Judge Sheets:";
         ensembleRow.appendChild(ensembleLabel);
         ensembleRow.appendChild(
           document.createTextNode(` ${group.ensembleName || group.ensembleId || "Unknown ensemble"}`)
@@ -302,11 +302,11 @@ export function createDirectorPacketRenderers({
         const groupMode = String(group.mode || "practice").toLowerCase();
         const modeLabel =
           groupMode === "official"
-            ? "Official adjudication"
+            ? "Official"
             : groupMode === "mixed"
-              ? "Mixed adjudication modes (includes practice)"
-              : "Practice adjudication (non-official)";
-        modeRow.textContent = `Mode: ${modeLabel}`;
+              ? "Mixed (includes practice)"
+              : "Practice (non-official)";
+        modeRow.textContent = modeLabel;
         const schoolRow = document.createElement("div");
         schoolRow.className = "note";
         schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
@@ -360,15 +360,15 @@ export function createDirectorPacketRenderers({
         header.className = "packet-header";
         const ensembleRow = document.createElement("div");
         const ensembleLabel = document.createElement("strong");
-        ensembleLabel.textContent = "Open Judge Sheet";
+        ensembleLabel.textContent = "Judge Sheet";
         ensembleRow.appendChild(ensembleLabel);
         const modeRow = document.createElement("div");
         modeRow.className = "note";
         const mode = String(group.mode || "practice").toLowerCase();
         modeRow.textContent =
           mode === "official" ?
-            "Mode: Official adjudication" :
-            "Mode: Practice adjudication (non-official)";
+            "Official" :
+            "Practice (non-official)";
         const schoolRow = document.createElement("div");
         schoolRow.className = "note";
         schoolRow.textContent = `School: ${group.schoolName || group.schoolId || "Unknown"}`;
@@ -380,7 +380,7 @@ export function createDirectorPacketRenderers({
         ratingRow.textContent = `Judge Overall Rating: ${group.computedFinalRatingLabel || "N/A"}`;
         const slotRow = document.createElement("div");
         slotRow.className = "note";
-        slotRow.textContent = `Slot: ${
+        slotRow.textContent = `Judge: ${
           JUDGE_POSITION_LABELS[group.judgePosition] ||
           (group.judgePosition ? group.judgePosition : "Unassigned")
         }`;
@@ -404,15 +404,7 @@ export function createDirectorPacketRenderers({
         const scoringBadge = document.createElement("span");
         scoringBadge.className = "badge";
         scoringBadge.textContent = "Caption Summary";
-        const scoringStatus = document.createElement("span");
-        scoringStatus.className = "note";
-        scoringStatus.textContent = `Status: ${group.status || "released"}`;
-        const scoringLocked = document.createElement("span");
-        scoringLocked.className = "note";
-        scoringLocked.textContent = `Locked: ${group.locked ? "yes" : "no"}`;
         scoringHeader.appendChild(scoringBadge);
-        scoringHeader.appendChild(scoringStatus);
-        scoringHeader.appendChild(scoringLocked);
 
         const judgeInfo = document.createElement("div");
         judgeInfo.className = "note";
@@ -558,17 +550,16 @@ export function createDirectorPacketRenderers({
         eventRow.textContent = `Event: ${group.eventId || "Unassigned"}`;
         const modeRow = document.createElement("div");
         modeRow.className = "note";
-        modeRow.textContent = `Mode: ${
+        modeRow.textContent =
           String(group.mode || "official").toLowerCase() === "practice" ?
-            "Practice adjudication" :
-            "Official adjudication"
-        }`;
+            "Practice (non-official)" :
+            "Official";
         const scopeRow = document.createElement("div");
         scopeRow.className = "hint";
         scopeRow.textContent = "Audio-only results do not include full caption sheets or released judge form PDFs.";
         const slotRow = document.createElement("div");
         slotRow.className = "note";
-        slotRow.textContent = `Slot: ${
+        slotRow.textContent = `Judge: ${
           JUDGE_POSITION_LABELS[group.judgePosition] ||
           group.judgePosition ||
           "Unassigned"

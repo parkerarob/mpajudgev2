@@ -47,6 +47,226 @@
   align-items: start;
 }
 
+.public-program-card {
+  margin-bottom: 18px;
+  gap: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015)),
+    rgba(12, 18, 30, 0.84);
+}
+
+.public-program-body {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.public-program-day {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 20px 22px;
+  border: 1px solid rgba(187, 208, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.02);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.public-program-day h3 {
+  font-family: var(--font-display);
+  font-size: 28px;
+  text-align: center;
+  letter-spacing: 0.01em;
+}
+
+.public-program-entry {
+  display: grid;
+  grid-template-columns: 96px 94px minmax(0, 1fr);
+  column-gap: 18px;
+  row-gap: 4px;
+  max-width: 940px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 10px 0 14px;
+  border-bottom: 1px solid rgba(187, 208, 255, 0.08);
+}
+
+.public-program-entry:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.public-program-time,
+.public-program-grade {
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.public-program-ensemble {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.public-program-director,
+.public-program-line {
+  grid-column: 3;
+  font-size: 14px;
+  padding-left: 0;
+  line-height: 1.45;
+}
+
+.public-program-director {
+  color: var(--muted);
+}
+
+.public-program-line {
+  color: var(--text);
+}
+
+.public-program-muted {
+  color: var(--muted);
+}
+
+.admin-logistics-panel {
+  gap: 14px;
+}
+
+.admin-logistics-panel-title {
+  font-size: 18px;
+  letter-spacing: 0.01em;
+}
+
+.admin-logistics-section-title {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.admin-logistics-seating,
+.admin-logistics-percussion {
+  gap: 10px;
+}
+
+.admin-logistics-row {
+  display: grid;
+  grid-template-columns: 84px repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid rgba(187, 208, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-logistics-row-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.admin-logistics-metric {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(77, 131, 255, 0.08);
+}
+
+.admin-logistics-metric-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.admin-logistics-metric-value {
+  font-size: 24px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-logistics-row--diff .admin-logistics-metric {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.admin-logistics-row--totals {
+  margin-bottom: 4px;
+}
+
+.admin-logistics-delta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(221, 181, 107, 0.14);
+  color: var(--gold);
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-logistics-delta--large {
+  min-width: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.admin-logistics-metric-detail {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-logistics-notes,
+.admin-logistics-empty {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+@media (max-width: 720px) {
+  .public-program-day {
+    padding: 16px;
+  }
+
+  .public-program-day h3 {
+    font-size: 24px;
+  }
+
+  .public-program-entry {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 10px 0 14px;
+  }
+
+  .public-program-director,
+  .public-program-line {
+    grid-column: auto;
+    padding-left: 0;
+  }
+
+  .admin-logistics-row {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-logistics-metric {
+    justify-content: space-between;
+  }
+}
+
 #adminSubmissionDetail label {
   display: grid;
   gap: 6px;
@@ -1423,6 +1643,14 @@ body.auth-locked .tabs,
 body.auth-locked .card,
 body.auth-locked .notice {
   display: none;
+}
+
+body.auth-locked .public-program-card {
+  display: grid;
+}
+
+body:not(.auth-locked) .public-program-card {
+  display: none !important;
 }
 
 .tabs,
@@ -4929,4 +5157,136 @@ select:focus-visible {
   .judge-open-layout {
     overflow: visible;
   }
+}
+
+/* ── Check-In View ── */
+
+.checkin-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md, 1rem);
+  min-height: 60vh;
+}
+
+.checkin-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm, 0.5rem);
+  flex-wrap: wrap;
+}
+
+.checkin-queue-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.checkin-queue-filter {
+  max-width: 200px;
+}
+
+.checkin-queue-summary {
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+
+.checkin-queue-panel table tr.is-checked-in {
+  opacity: 0.55;
+}
+
+.checkin-status-done {
+  color: var(--color-success, #4caf50);
+  font-weight: 600;
+}
+
+.checkin-status-pending {
+  color: var(--color-warning, #ff9800);
+}
+
+.checkin-back-btn {
+  align-self: flex-start;
+  margin-bottom: var(--space-sm, 0.5rem);
+}
+
+.checkin-detail-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 0.25rem);
+}
+
+.checkin-detail-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 0.5rem);
+  flex-wrap: wrap;
+}
+
+.checkin-detail-title h3 {
+  margin: 0;
+}
+
+.checkin-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm, 0.5rem) var(--space-md, 1rem);
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.checkin-checklist-card {
+  padding: var(--space-md, 1rem);
+}
+
+.checkin-checklist-card h4 {
+  margin: 0 0 var(--space-sm, 0.5rem);
+}
+
+.checkin-checklist-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 0.25rem);
+}
+
+.checkin-form-section summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkin-rep-piece {
+  padding: var(--space-xs, 0.25rem) 0;
+}
+
+.checkin-instr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-xs, 0.25rem) var(--space-sm, 0.5rem);
+}
+
+.checkin-instr-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+  font-size: 0.85rem;
+}
+
+.checkin-perc-list {
+  margin: 0;
+  padding-left: 1.2em;
+  font-size: 0.85rem;
+}
+
+.checkin-form-actions {
+  margin-top: var(--space-xs, 0.25rem);
+}
+
+.checkin-edit-form {
+  margin-top: var(--space-sm, 0.5rem);
+  padding: var(--space-sm, 0.5rem);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.1));
+  border-radius: var(--radius, 6px);
+}
+
+.checkin-edit-piece {
+  padding-bottom: var(--space-xs, 0.25rem);
+  border-bottom: 1px solid var(--color-border, rgba(255,255,255,0.06));
 }

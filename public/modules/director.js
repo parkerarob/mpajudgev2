@@ -1382,7 +1382,23 @@ export async function saveDirectorProfile({ name, nafmeNumber, expValue, cellPho
   if (!state.auth.currentUser || !state.auth.userProfile || !isDirectorManager()) {
     return { ok: false, reason: "not-authorized" };
   }
-  const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
+  // When admin edits the director profile form on behalf of a school's director,
+  // write to the actual director's user document rather than the admin's own document.
+  let targetUid = state.auth.currentUser.uid;
+  if (state.auth.userProfile.role === "admin") {
+    const schoolId = getDirectorSchoolId();
+    if (schoolId) {
+      const dirSnap = await getDocs(query(
+        collection(db, COLLECTIONS.users),
+        where(FIELDS.users.schoolId, "==", schoolId),
+        where(FIELDS.users.role, "==", "director"),
+        limit(1)
+      )).catch(() => null);
+      const dirDoc = dirSnap?.docs?.[0];
+      if (dirDoc) targetUid = dirDoc.id;
+    }
+  }
+  const userRef = doc(db, COLLECTIONS.users, targetUid);
   const userSnap = await getDoc(userRef);
   const userData = userSnap.exists() ? (userSnap.data() || {}) : {};
   const rolesPayload = !userData?.roles
@@ -1390,7 +1406,7 @@ export async function saveDirectorProfile({ name, nafmeNumber, expValue, cellPho
         roles: {
           director: true,
           judge: false,
-          admin: state.auth.userProfile.role === "admin",
+          admin: false,
           teamLead: false,
         },
       }
@@ -1436,14 +1452,29 @@ export async function uploadDirectorProfileCard(file) {
     return { ok: false, reason: "not-authorized" };
   }
   if (!file) return { ok: false, reason: "missing-file" };
+  // Resolve the target UID (director's doc when admin is saving on behalf of a school)
+  let targetUid = state.auth.currentUser.uid;
+  if (state.auth.userProfile.role === "admin") {
+    const schoolId = getDirectorSchoolId();
+    if (schoolId) {
+      const dirSnap = await getDocs(query(
+        collection(db, COLLECTIONS.users),
+        where(FIELDS.users.schoolId, "==", schoolId),
+        where(FIELDS.users.role, "==", "director"),
+        limit(1)
+      )).catch(() => null);
+      const dirDoc = dirSnap?.docs?.[0];
+      if (dirDoc) targetUid = dirDoc.id;
+    }
+  }
   const extension = file.name.includes(".")
     ? file.name.split(".").pop()
     : "jpg";
-  const objectPath = `director_cards/${state.auth.currentUser.uid}/membership-card.${extension}`;
+  const objectPath = `director_cards/${targetUid}/membership-card.${extension}`;
   const storageRef = ref(storage, objectPath);
   await uploadBytes(storageRef, file, { contentType: file.type });
   const url = await getDownloadURL(storageRef);
-  const userRef = doc(db, COLLECTIONS.users, state.auth.currentUser.uid);
+  const userRef = doc(db, COLLECTIONS.users, targetUid);
   const userSnap = await getDoc(userRef);
   const userData = userSnap.exists() ? (userSnap.data() || {}) : {};
   const rolesPayload = !userData?.roles
@@ -1451,7 +1482,7 @@ export async function uploadDirectorProfileCard(file) {
         roles: {
           director: true,
           judge: false,
-          admin: state.auth.userProfile.role === "admin",
+          admin: false,
           teamLead: false,
         },
       }

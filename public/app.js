@@ -1,7 +1,7 @@
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { doc, getDoc } from "./modules/firestore.js";
 import { auth, db, firebaseConfig } from "./firebase.js";
-import { COLLECTIONS, state } from "./state.js";
+import { COLLECTIONS, els, state } from "./state.js";
 import { watchSchools } from "./modules/admin.js";
 import { startAutosaveLoop } from "./modules/autosave.js";
 import { resetJudgeOpenState, stopOpenRecording } from "./modules/judge-open.js";
@@ -45,6 +45,114 @@ let versionReloadTriggered = false;
 let versionReloadPending = false;
 let authInitTimeoutId = null;
 let schoolDropdownsUnsub = null;
+
+function escapeHtml(value = "") {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderPublicProgram(snapshot) {
+  const renderInto = ({
+    cardEl,
+    bodyEl,
+    statusEl,
+    titleEl,
+    metaEl,
+    updatedEl,
+    emptyTitle = "South Site Program",
+    hideWhenEmpty = true,
+  } = {}) => {
+    if (!bodyEl) return;
+    if (!snapshot?.published || !Array.isArray(snapshot.sections) || !snapshot.sections.length) {
+      if (cardEl && hideWhenEmpty) cardEl.hidden = true;
+      bodyEl.innerHTML = "";
+      if (titleEl) titleEl.textContent = emptyTitle;
+      if (metaEl) metaEl.textContent = "Published event program";
+      if (updatedEl) updatedEl.textContent = "";
+      if (statusEl) statusEl.textContent = "Program";
+      return;
+    }
+    if (cardEl) cardEl.hidden = false;
+    if (statusEl) {
+      statusEl.textContent = "Published Program";
+    }
+    if (titleEl) {
+      titleEl.textContent = String(snapshot.eventName || emptyTitle);
+    }
+    if (metaEl) {
+      const meta = [snapshot.dateLabel, snapshot.venueName, snapshot.venueCity].filter(Boolean).join(" - ");
+      metaEl.textContent = meta || "Published event program";
+    }
+    if (updatedEl) {
+      const updatedAt = snapshot.updatedAt?.toDate?.() || null;
+      updatedEl.textContent = updatedAt
+        ? `Updated ${updatedAt.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
+        : "";
+    }
+    bodyEl.innerHTML = sectionHtml;
+  };
+
+  const sectionHtml = snapshot.sections.map((section) => {
+    const entriesHtml = (Array.isArray(section.entries) ? section.entries : []).map((entry) => {
+      const ensembleLabel = [entry.schoolName, entry.ensembleName].filter(Boolean).join(" ").trim();
+      const programHtml = Array.isArray(entry.programLines) && entry.programLines.length
+        ? entry.programLines.map((line) => `<div class="public-program-line">${escapeHtml(line)}</div>`).join("")
+        : `<div class="public-program-line public-program-muted">Program not submitted</div>`;
+      return `
+        <article class="public-program-entry">
+          <div class="public-program-time">${escapeHtml(entry.timeLabel || "Time TBD")}</div>
+          <div class="public-program-grade">${entry.grade ? `Grade: ${escapeHtml(entry.grade)}` : ""}</div>
+          <div class="public-program-ensemble">${escapeHtml(ensembleLabel || "Ensemble")}</div>
+          <div class="public-program-director">${entry.directorName ? `Director(s): ${escapeHtml(entry.directorName)}` : "Director(s): Not listed"}</div>
+          ${programHtml}
+        </article>
+      `;
+    }).join("");
+    return `
+      <section class="public-program-day">
+        <h3>${escapeHtml(section.heading || "Schedule")}</h3>
+        ${entriesHtml}
+      </section>
+    `;
+  }).join("");
+  renderInto({
+    cardEl: els.publicProgramCard,
+    bodyEl: els.publicProgramBody,
+    statusEl: els.publicProgramStatus,
+    titleEl: els.publicProgramTitle,
+    metaEl: els.publicProgramMeta,
+    updatedEl: els.publicProgramUpdated,
+    emptyTitle: "South Site Program",
+    hideWhenEmpty: true,
+  });
+  renderInto({
+    cardEl: els.directorProgramSection,
+    bodyEl: els.directorProgramBody,
+    statusEl: els.directorProgramStatus,
+    titleEl: els.directorProgramTitle,
+    metaEl: els.directorProgramMeta,
+    updatedEl: els.directorProgramUpdated,
+    emptyTitle: "Event Program",
+    hideWhenEmpty: false,
+  });
+}
+
+async function loadPublicProgram() {
+  try {
+    const snap = await getDoc(doc(db, COLLECTIONS.publicPrograms, "homepage"));
+    if (!snap.exists()) {
+      renderPublicProgram(null);
+      return;
+    }
+    renderPublicProgram(snap.data());
+  } catch (error) {
+    console.warn("Public program load skipped", error);
+    renderPublicProgram(null);
+  }
+}
 
 function ensureSchoolDropdownsWatcher() {
   if (schoolDropdownsUnsub) return;
@@ -150,6 +258,11 @@ window.addEventListener("online", updateConnectivityUI);
 window.addEventListener("offline", updateConnectivityUI);
 updateConnectivityUI();
 startAutosaveLoop();
+loadPublicProgram();
+
+window.addEventListener("public-program-updated", (event) => {
+  renderPublicProgram(event?.detail || null);
+});
 
 window.addEventListener("hashchange", handleHashChange);
 window.addEventListener("beforeunload", (event) => {
@@ -265,6 +378,7 @@ onAuthStateChanged(auth, async (user) => {
         if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") return "teamLead";
         if (lower === "director") return "director";
         if (lower === "judge") return "judge";
+        if (lower === "checkin" || lower === "check-in" || lower === "check_in") return "checkin";
         return "";
       })();
       const role =
@@ -277,7 +391,9 @@ onAuthStateChanged(auth, async (user) => {
               ? "director"
               : roles.judge
                 ? "judge"
-                : null);
+                : roles.checkin
+                  ? "checkin"
+                  : null);
       const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
       const preferJudgeOpen = judgeEnabled && roles.judge === true && role !== "admin";
       const path = window.location.pathname || "";
@@ -318,6 +434,11 @@ onAuthStateChanged(auth, async (user) => {
         }
       } else if (role === "director") {
         setTab("director");
+      } else if (role === "checkin") {
+        setTab("checkin");
+        if (window.location.hash !== "#checkin") {
+          window.location.hash = "#checkin";
+        }
       }
       startWatchers();
       renderDirectorProfile();

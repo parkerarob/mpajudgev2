@@ -10,10 +10,12 @@ function getProfileRole(profile) {
   if (rawRole === "teamlead" || rawRole === "team_lead" || rawRole === "team lead") return "teamLead";
   if (rawRole === "judge") return "judge";
   if (rawRole === "director") return "director";
+  if (rawRole === "checkin") return "checkin";
   if (profile.roles?.admin) return "admin";
   if (profile.roles?.teamLead) return "teamLead";
   if (profile.roles?.judge) return "judge";
   if (profile.roles?.director) return "director";
+  if (profile.roles?.checkin) return "checkin";
   return null;
 }
 
@@ -27,6 +29,7 @@ export function getDefaultTabForRole(role) {
   if (role === "teamLead") return "admin";
   if (role === "judge") return judgeEnabled ? "judge-open" : "admin";
   if (role === "director") return "director";
+  if (role === "checkin") return "checkin";
   return null;
 }
 
@@ -35,6 +38,7 @@ export function isTabAllowed(tab, role) {
   const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
   if (role === "admin") return true;
   if (role === "teamLead") return tab === "admin";
+  if (role === "checkin") return tab === "checkin";
   if (role === "judge") {
     if (!judgeEnabled) return tab === "admin";
     return tab === "judge-open";
@@ -76,6 +80,7 @@ export function resolveHash(hash) {
     }
   }
   if (value === "#director") return { type: "tab", tab: "director" };
+  if (value === "#checkin" || value === "#check-in") return { type: "tab", tab: "checkin" };
   if (value === "#judge" || value === "#judge-open") {
     if (!judgeEnabled) return { type: "tab", tab: "admin", adminView: "dashboard" };
     return { type: "tab", tab: "judge-open" };

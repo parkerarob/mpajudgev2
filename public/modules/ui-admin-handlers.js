@@ -37,7 +37,9 @@ export function createAdminHandlerBinder({
   deleteSchool,
   deleteEnsemble,
   bulkImportSchools,
+  importConfirmedScheduleRows,
   provisionUser,
+  updateUserDisplayName,
   deleteUserAccount,
   renderAdminUsersDirectory,
   renderDirectorAssignmentsDirectory,
@@ -46,7 +48,22 @@ export function createAdminHandlerBinder({
   getSchoolNameById,
   unassignDirectorSchool,
   renderAdminSchoolEnsembleManage,
-} = {}) {
+  fetchRegisteredEnsembles,
+  fetchScheduleEntries,
+  parseConfirmedScheduleCsv,
+  buildConfirmedSchedulePreview,
+  summarizeConfirmedSchedulePreview,
+  buildProgramRows,
+  buildProgramCsv,
+  buildProgramHtml,
+  publishPublicProgram,
+  collection,
+  getDocs,
+  query,
+  db,
+  COLLECTIONS,
+  normalizeEnsembleDisplayName,
+  } = {}) {
   let adminHandlersBound = false;
   const extractDeleteUserErrorMessage = (error) => {
     const blockers = Array.isArray(error?.details?.blockers) ? error.details.blockers : [];
@@ -101,6 +118,241 @@ export function createAdminHandlerBinder({
     });
   };
   const isReadinessBusy = () => Boolean(state.admin.readinessInFlight);
+
+  const getActiveEvent = () => state.event.active || null;
+
+  const updateConfirmedScheduleControls = () => {
+    const summary = summarizeConfirmedSchedulePreview(state.admin.confirmedSchedulePreviewRows);
+    if (els.confirmedScheduleApplyBtn) {
+      els.confirmedScheduleApplyBtn.disabled = !summary.canApply;
+    }
+  };
+
+  const renderConfirmedSchedulePreview = () => {
+    if (!els.confirmedSchedulePreviewBody) return;
+    const rows = Array.isArray(state.admin.confirmedSchedulePreviewRows)
+      ? state.admin.confirmedSchedulePreviewRows
+      : [];
+    const summary = summarizeConfirmedSchedulePreview(rows);
+    if (els.confirmedScheduleStatus) {
+      if (!rows.length) {
+        els.confirmedScheduleStatus.textContent = "Choose a CSV file to preview matches.";
+      } else {
+        const parts = [
+          `${summary.selected}/${summary.total} matched`,
+          summary.needsReview ? `${summary.needsReview} need review` : null,
+          summary.unmatched ? `${summary.unmatched} unmatched` : null,
+          summary.duplicateCount ? `${summary.duplicateCount} duplicate target${summary.duplicateCount === 1 ? "" : "s"}` : null,
+        ].filter(Boolean);
+        els.confirmedScheduleStatus.textContent = parts.join(" - ");
+      }
+    }
+    updateConfirmedScheduleControls();
+    if (!rows.length) {
+      els.confirmedSchedulePreviewBody.innerHTML =
+        "<tr><td colspan='5' class='hint'>No schedule preview loaded.</td></tr>";
+      return;
+    }
+    els.confirmedSchedulePreviewBody.innerHTML = "";
+    const selectedIds = rows.map((row) => row.matchedEnsembleId).filter(Boolean);
+    const duplicateIds = new Set(
+      selectedIds.filter((ensembleId, index) => selectedIds.indexOf(ensembleId) !== index)
+    );
+    rows.forEach((row, index) => {
+      const tr = document.createElement("tr");
+      const indexCell = document.createElement("td");
+      indexCell.textContent = String(row.rowNumber || index + 1);
+      const nameCell = document.createElement("td");
+      nameCell.textContent = row.bandName || "";
+      const timeCell = document.createElement("td");
+      timeCell.textContent = row.performanceAt
+        ? row.performanceAt.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+        : row.performanceTime || "Time missing";
+      const matchCell = document.createElement("td");
+      const select = document.createElement("select");
+      select.setAttribute("data-schedule-preview-index", String(index));
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = row.candidates.length ? "Select ensemble" : "No match found";
+      select.appendChild(blank);
+      const optionMap = new Map();
+      row.candidates.forEach((candidate) => {
+        optionMap.set(candidate.ensembleId, candidate);
+      });
+      (row.allCandidates || []).forEach((candidate) => {
+        if (!optionMap.has(candidate.ensembleId)) {
+          optionMap.set(candidate.ensembleId, candidate);
+        }
+      });
+      Array.from(optionMap.values()).forEach((candidate) => {
+        const option = document.createElement("option");
+        option.value = candidate.ensembleId;
+        const suffix = candidate.score ? ` (${candidate.score})` : "";
+        option.textContent = `${candidate.fullLabel}${suffix}`;
+        if (candidate.ensembleId === row.matchedEnsembleId) option.selected = true;
+        select.appendChild(option);
+      });
+      matchCell.appendChild(select);
+
+      const matchedCandidate = row.candidates.find((candidate) => candidate.ensembleId === row.matchedEnsembleId);
+      const duplicate = row.matchedEnsembleId && duplicateIds.has(row.matchedEnsembleId);
+      const statusText = duplicate
+        ? "Duplicate target"
+        : row.matchedEnsembleId
+          ? "Ready"
+          : row.status === "unmatched"
+            ? "No candidate"
+            : "Needs review";
+      const statusCell = document.createElement("td");
+      statusCell.textContent = `${statusText}${matchedCandidate?.existingPerformanceAt ? ` - currently ${matchedCandidate.existingPerformanceAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`;
+      tr.appendChild(indexCell);
+      tr.appendChild(nameCell);
+      tr.appendChild(timeCell);
+      tr.appendChild(matchCell);
+      tr.appendChild(statusCell);
+      els.confirmedSchedulePreviewBody.appendChild(tr);
+    });
+  };
+
+  const loadConfirmedSchedulePreview = async (file) => {
+    const event = getActiveEvent();
+    if (!event?.id) {
+      alertUser("Set the active 2026 event first.");
+      return;
+    }
+    if (!file) {
+      alertUser("Choose a CSV file first.");
+      return;
+    }
+    const defaultYear = event.startAt?.toDate?.()?.getFullYear?.() || new Date().getFullYear();
+    const text = await file.text();
+    const parsedRows = parseConfirmedScheduleCsv(text, { defaultYear });
+    if (!parsedRows.length) {
+      state.admin.confirmedSchedulePreviewRows = [];
+      state.admin.confirmedScheduleFileName = file.name || "";
+      renderConfirmedSchedulePreview();
+      alertUser("No schedule rows were found in that CSV.");
+      return;
+    }
+    const [registeredEntries, scheduleEntries] = await Promise.all([
+      fetchRegisteredEnsembles(event.id),
+      fetchScheduleEntries(event.id),
+    ]);
+    state.admin.confirmedScheduleFileName = file.name || "";
+    state.admin.confirmedSchedulePreviewRows = buildConfirmedSchedulePreview({
+      csvRows: parsedRows,
+      registeredEntries,
+      scheduleEntries,
+      schoolsList: state.admin.schoolsList,
+      getSchoolNameById,
+      normalizeEnsembleDisplayName,
+    });
+    renderConfirmedSchedulePreview();
+  };
+
+  const applyConfirmedSchedulePreview = async () => {
+    const event = getActiveEvent();
+    if (!event?.id) {
+      alertUser("Set the active 2026 event first.");
+      return;
+    }
+    const previewRows = Array.isArray(state.admin.confirmedSchedulePreviewRows)
+      ? state.admin.confirmedSchedulePreviewRows
+      : [];
+    const summary = summarizeConfirmedSchedulePreview(previewRows);
+    if (!summary.canApply) {
+      alertUser("Resolve every unmatched or duplicate schedule row before applying.");
+      return;
+    }
+    const payload = previewRows.map((row) => {
+      const selected = [...(row.candidates || []), ...(row.allCandidates || [])]
+        .find((candidate) => candidate.ensembleId === row.matchedEnsembleId);
+      return {
+        entryId: selected?.existingScheduleEntryId || "",
+        schoolId: selected?.schoolId || "",
+        schoolName: selected?.schoolName || "",
+        ensembleId: selected?.ensembleId || "",
+        ensembleName: selected?.ensembleName || row.bandName || "",
+        performanceAtDate: row.performanceAt,
+        orderIndex: row.orderIndex,
+      };
+    });
+    const confirmed = confirmUser(
+      `Apply ${payload.length} confirmed schedule time${payload.length === 1 ? "" : "s"} to the active event? This updates schedule docs only.`
+    );
+    if (!confirmed) return;
+    await importConfirmedScheduleRows({
+      eventId: event.id,
+      rows: payload,
+    });
+    scheduleAdminPreflightRefresh?.({ immediate: true });
+    if (els.confirmedScheduleStatus) {
+      els.confirmedScheduleStatus.textContent =
+        `Applied ${payload.length} schedule row${payload.length === 1 ? "" : "s"} from ${state.admin.confirmedScheduleFileName || "CSV"}.`;
+    }
+  };
+
+  const loadProgramRows = async () => {
+    const event = getActiveEvent();
+    if (!event?.id) throw new Error("Set the active 2026 event first.");
+    const [scheduleEntries, registeredEntries, usersSnap] = await Promise.all([
+      fetchScheduleEntries(event.id),
+      fetchRegisteredEnsembles(event.id),
+      getDocs(query(collection(db, COLLECTIONS.users))),
+    ]);
+    const directorProfiles = usersSnap.docs.map((docSnap) => ({ uid: docSnap.id, ...docSnap.data() }));
+    return buildProgramRows({
+      scheduleEntries,
+      registeredEntries,
+      directorProfiles,
+      schoolsList: state.admin.schoolsList,
+      getSchoolNameById,
+      normalizeEnsembleDisplayName,
+    });
+  };
+
+  const buildPublicProgramSnapshot = ({ eventName, rows }) => {
+    const programRows = Array.isArray(rows) ? rows : [];
+    const dates = programRows
+      .map((row) => row.performanceAt)
+      .filter((value) => value instanceof Date && !Number.isNaN(value.getTime()))
+      .sort((a, b) => a.getTime() - b.getTime());
+    const firstDate = dates[0] || null;
+    const lastDate = dates[dates.length - 1] || null;
+    const sameDay = firstDate && lastDate &&
+      firstDate.getFullYear() === lastDate.getFullYear() &&
+      firstDate.getMonth() === lastDate.getMonth() &&
+      firstDate.getDate() === lastDate.getDate();
+    const dateLabel = firstDate
+      ? sameDay
+        ? firstDate.toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" })
+        : `${firstDate.toLocaleDateString([], { month: "long", day: "numeric" })} - ${lastDate.toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" })}`
+      : "Date TBD";
+    const sections = new Map();
+    programRows.forEach((row) => {
+      const heading = row.performanceAt
+        ? row.performanceAt.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" })
+        : "Schedule";
+      if (!sections.has(heading)) sections.set(heading, []);
+      sections.get(heading).push({
+        timeLabel: row.performanceAt
+          ? row.performanceAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+          : "Time TBD",
+        grade: row.grade || "",
+        schoolName: row.schoolName || "",
+        ensembleName: row.ensembleName || "",
+        directorName: row.directorName || "",
+        programLines: Array.isArray(row.programLines) ? row.programLines.filter(Boolean) : [],
+      });
+    });
+    return {
+      eventName: String(eventName || "South Site Program"),
+      dateLabel,
+      venueName: "Minnie Evans Arts Center at Ashley High School",
+      venueCity: "Wilmington, North Carolina",
+      sections: Array.from(sections.entries()).map(([heading, entries]) => ({ heading, entries })),
+    };
+  };
 
   const resetWalkthroughSteps = async ({ eventId, note }) => {
     const nowMs = Date.now();
@@ -500,6 +752,174 @@ export function createAdminHandlerBinder({
       });
     });
 
+    renderConfirmedSchedulePreview();
+
+    if (els.confirmedSchedulePreviewBody) {
+      els.confirmedSchedulePreviewBody.addEventListener("change", (event) => {
+        const select = event.target.closest("[data-schedule-preview-index]");
+        if (!select) return;
+        const index = Number(select.getAttribute("data-schedule-preview-index") || -1);
+        if (!Number.isInteger(index) || index < 0) return;
+        const previewRows = Array.isArray(state.admin.confirmedSchedulePreviewRows)
+          ? [...state.admin.confirmedSchedulePreviewRows]
+          : [];
+        const row = previewRows[index];
+        if (!row) return;
+        row.matchedEnsembleId = select.value || "";
+        row.status = row.matchedEnsembleId
+          ? "matched"
+          : row.candidates.length
+            ? "needs_review"
+            : "unmatched";
+        previewRows[index] = row;
+        state.admin.confirmedSchedulePreviewRows = previewRows;
+        renderConfirmedSchedulePreview();
+      });
+    }
+
+    if (els.confirmedScheduleAnalyzeBtn) {
+      els.confirmedScheduleAnalyzeBtn.addEventListener("click", async () => {
+        const file = els.confirmedScheduleFileInput?.files?.[0] || null;
+        els.confirmedScheduleAnalyzeBtn.dataset.loadingLabel = "Analyzing...";
+        await withLoading(els.confirmedScheduleAnalyzeBtn, async () => {
+          try {
+            await loadConfirmedSchedulePreview(file);
+          } catch (error) {
+            console.error("Confirmed schedule analyze failed", error);
+            const message = error?.message || "Unable to analyze confirmed schedule CSV.";
+            if (els.confirmedScheduleStatus) els.confirmedScheduleStatus.textContent = message;
+            alertUser(message);
+          }
+        });
+      });
+    }
+
+    if (els.confirmedScheduleApplyBtn) {
+      els.confirmedScheduleApplyBtn.addEventListener("click", async () => {
+        els.confirmedScheduleApplyBtn.dataset.loadingLabel = "Applying...";
+        await withLoading(els.confirmedScheduleApplyBtn, async () => {
+          try {
+            await applyConfirmedSchedulePreview();
+          } catch (error) {
+            console.error("Confirmed schedule apply failed", error);
+            const message = error?.message || "Unable to apply confirmed schedule.";
+            if (els.confirmedScheduleStatus) els.confirmedScheduleStatus.textContent = message;
+            alertUser(message);
+          }
+        });
+      });
+    }
+
+    if (els.programPreviewBtn) {
+      els.programPreviewBtn.addEventListener("click", async () => {
+        const previewWindow = windowObj.open("", "_blank");
+        if (previewWindow) {
+          previewWindow.document.open();
+          previewWindow.document.write("<!doctype html><title>Building program preview...</title><p>Building program preview...</p>");
+          previewWindow.document.close();
+        }
+        els.programPreviewBtn.dataset.loadingLabel = "Building...";
+        await withLoading(els.programPreviewBtn, async () => {
+          try {
+            const rows = await loadProgramRows();
+            if (!rows.length) {
+              throw new Error("No scheduled ensembles are available for program export.");
+            }
+            const eventName = getActiveEvent()?.name || "Active Event";
+            const html = buildProgramHtml({ eventName, rows });
+            if (previewWindow && !previewWindow.closed) {
+              previewWindow.document.open();
+              previewWindow.document.write(html);
+              previewWindow.document.close();
+            } else {
+              const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+              const url = windowObj.URL.createObjectURL(blob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = `${String(eventName || "Program").replace(/[^a-zA-Z0-9]+/g, "_")}_Program_Preview.html`;
+              document.body.appendChild(link);
+              link.click();
+              link.remove();
+              window.setTimeout(() => windowObj.URL.revokeObjectURL(url), 1000);
+            }
+            if (els.programExportStatus) {
+              els.programExportStatus.textContent = `Opened print preview for ${rows.length} scheduled ensemble${rows.length === 1 ? "" : "s"}.`;
+            }
+          } catch (error) {
+            console.error("Program preview failed", error);
+            if (previewWindow && !previewWindow.closed) {
+              previewWindow.close();
+            }
+            const message = error?.message || "Unable to build program preview.";
+            if (els.programExportStatus) els.programExportStatus.textContent = message;
+            alertUser(message);
+          }
+        });
+      });
+    }
+
+    if (els.programCsvBtn) {
+      els.programCsvBtn.addEventListener("click", async () => {
+        els.programCsvBtn.dataset.loadingLabel = "Exporting...";
+        await withLoading(els.programCsvBtn, async () => {
+          try {
+            const rows = await loadProgramRows();
+            if (!rows.length) {
+              throw new Error("No scheduled ensembles are available for program export.");
+            }
+            const csv = buildProgramCsv(rows);
+            const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+            const url = windowObj.URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            const eventName = String(getActiveEvent()?.name || "Program").replace(/[^a-zA-Z0-9]+/g, "_");
+            link.href = url;
+            link.download = `${eventName}_Program.csv`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.setTimeout(() => windowObj.URL.revokeObjectURL(url), 1000);
+            if (els.programExportStatus) {
+              els.programExportStatus.textContent = `Downloaded CSV for ${rows.length} scheduled ensemble${rows.length === 1 ? "" : "s"}.`;
+            }
+          } catch (error) {
+            console.error("Program CSV export failed", error);
+            const message = error?.message || "Unable to export program CSV.";
+            if (els.programExportStatus) els.programExportStatus.textContent = message;
+            alertUser(message);
+          }
+        });
+      });
+    }
+
+    if (els.programPublishBtn) {
+      els.programPublishBtn.addEventListener("click", async () => {
+        els.programPublishBtn.dataset.loadingLabel = "Publishing...";
+        await withLoading(els.programPublishBtn, async () => {
+          try {
+            const rows = await loadProgramRows();
+            if (!rows.length) {
+              throw new Error("No scheduled ensembles are available to publish.");
+            }
+            const eventName = getActiveEvent()?.name || "Active Event";
+            const snapshot = {
+              ...buildPublicProgramSnapshot({ eventName, rows }),
+              published: true,
+            };
+            await publishPublicProgram({ snapshot });
+            windowObj.dispatchEvent(new CustomEvent("public-program-updated", { detail: snapshot }));
+            if (els.programExportStatus) {
+              els.programExportStatus.textContent = `Published homepage program for ${rows.length} scheduled ensemble${rows.length === 1 ? "" : "s"}.`;
+            }
+          } catch (error) {
+            console.error("Program publish failed", error);
+            const message = error?.message || "Unable to publish homepage program.";
+            if (els.programExportStatus) els.programExportStatus.textContent = message;
+            alertUser(message);
+          }
+        });
+      });
+    }
+
     if (els.schoolForm) {
       els.schoolForm.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -698,6 +1118,45 @@ export function createAdminHandlerBinder({
 
     if (els.adminUsersList) {
       els.adminUsersList.addEventListener("click", async (event) => {
+        const editButton = event.target.closest("button[data-edit-user-uid]");
+        if (editButton) {
+          const targetUid = editButton.getAttribute("data-edit-user-uid") || "";
+          if (!targetUid) return;
+          const user = (state.admin.usersList || []).find((item) => item.uid === targetUid);
+          if (!user) return;
+          const currentName = String(user.displayName || "").trim();
+          const nextName = windowObj.prompt(
+            `Edit display name for ${user.email || user.uid}:`,
+            currentName
+          );
+          if (nextName == null) return;
+          const trimmed = nextName.trim();
+          if (!trimmed) {
+            alertUser("Name cannot be blank.");
+            return;
+          }
+          editButton.dataset.loadingLabel = "Saving...";
+          await withLoading(editButton, async () => {
+            try {
+              await updateUserDisplayName({ targetUid, displayName: trimmed });
+              const localUser = (state.admin.usersList || []).find((item) => item.uid === targetUid);
+              if (localUser) localUser.displayName = trimmed;
+              if (els.adminUsersResult) {
+                els.adminUsersResult.textContent = `Updated name for ${user.email || user.uid}.`;
+              }
+              renderAdminUsersDirectory?.();
+              renderDirectorAssignmentsDirectory?.();
+            } catch (error) {
+              console.error("updateUserDisplayName failed", error);
+              const message = error?.message || "Unable to update user name.";
+              if (els.adminUsersResult) {
+                els.adminUsersResult.textContent = message;
+              }
+              alertUser(message);
+            }
+          });
+          return;
+        }
         const button = event.target.closest("button[data-delete-user-uid]");
         if (!button) return;
         const targetUid = button.getAttribute("data-delete-user-uid") || "";

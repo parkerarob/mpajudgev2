@@ -62,6 +62,11 @@ service cloud.firestore {
         && (userRole() == "director" || hasUserRoleFlag("director"));
     }
 
+    function isCheckin() {
+      return isSignedIn()
+        && (userRole() == "checkin" || hasUserRoleFlag("checkin"));
+    }
+
     function isDirectorForSchool(schoolId) {
       return isDirector() && userSchoolId() == schoolId;
     }
@@ -90,6 +95,13 @@ service cloud.firestore {
         || request.auth.uid == userId
         || (isDirector()
           && resource.data.schoolId == userSchoolId()
+          && (
+            resource.data.role == "director"
+            || (resource.data.roles is map
+              && "director" in resource.data.roles
+              && resource.data.roles.director == true)
+          ))
+        || (isCheckin()
           && (
             resource.data.role == "director"
             || (resource.data.roles is map
@@ -149,6 +161,11 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /publicPrograms/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     match /schools/{schoolId} {
       allow read: if true;
       allow write: if isAdmin();
@@ -182,7 +199,7 @@ service cloud.firestore {
       allow write: if isAdmin();
 
       match /schedule/{entryId} {
-        allow read: if ((isOpsLead() || isJudge()) && isActiveEvent(eventId))
+        allow read: if ((isOpsLead() || isJudge() || isCheckin()) && isActiveEvent(eventId))
           || isDirectorForSchool(resource.data.schoolId);
         allow create, update: if isOpsLead()
           && request.resource.data.performanceAt is timestamp
@@ -198,9 +215,11 @@ service cloud.firestore {
 
       match /entries/{ensembleId} {
         allow read: if isOpsLead()
+          || isCheckin()
           || (isDirector() && (resource == null || resource.data.schoolId == userSchoolId()))
           || (isJudge() && isActiveEvent(eventId));
         allow create, update: if isOpsLead()
+          || isCheckin()
           || (isDirector()
             && request.resource.data.schoolId == userSchoolId()
             && request.resource.data.eventId == eventId

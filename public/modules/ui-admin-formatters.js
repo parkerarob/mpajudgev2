@@ -144,3 +144,14 @@ export function computeEnsembleCheckinStatus({ entry = {}, directorProfile = {} 
     checkedIn,
   };
 }
+
+export function computeEnsembleCheckinProgress(checkin = {}) {
+  const completed = [
+    Boolean(checkin.nafmeValid),
+    Boolean(checkin.scoresReceived),
+    Boolean(checkin.changesReviewed),
+    ...(checkin.lunchRequired ? [Boolean(checkin.lunchConfirmed)] : []),
+  ].filter(Boolean).length;
+  const total = checkin.lunchRequired ? 4 : 3;
+  return { completed, total };
+}

@@ -1652,6 +1652,9 @@ function normalizeRoleValue(value) {
   if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") {
     return "teamLead";
   }
+  if (lower === "checkin" || lower === "check-in" || lower === "check_in") {
+    return "checkin";
+  }
   return "";
 }
 
@@ -1678,6 +1681,7 @@ function getEffectiveRole(profile = {}) {
   if (profile.roles?.teamLead === true) return "teamLead";
   if (profile.roles?.director === true) return "director";
   if (profile.roles?.judge === true) return "judge";
+  if (profile.roles?.checkin === true) return "checkin";
   return null;
 }
 
@@ -5787,6 +5791,120 @@ exports.regenerateDirectorPacketExport = onCall(async (request) => {
   }
 });
 
+function sanitizeAssessmentCommentText(value) {
+  return String(value || "").trim();
+}
+
+function applyAdminCommentEditsToCaptions(existingCaptions = {}, nextComments = {}) {
+  const base = existingCaptions && typeof existingCaptions === "object" ? existingCaptions : {};
+  const updates = nextComments && typeof nextComments === "object" ? nextComments : {};
+  const result = {};
+  Object.entries(base).forEach(([key, value]) => {
+    const existingCaption = value && typeof value === "object" ? value : {};
+    result[key] = {
+      ...existingCaption,
+      comment: Object.prototype.hasOwnProperty.call(updates, key) ?
+        sanitizeAssessmentCommentText(updates[key]) :
+        sanitizeAssessmentCommentText(existingCaption.comment || ""),
+    };
+  });
+  return result;
+}
+
+exports.updateAssessmentComments = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const judgePosition = String(data.judgePosition || "").trim();
+  const nextTranscript = sanitizeAssessmentCommentText(data.transcript || "");
+  const nextCaptionComments =
+    data.captions && typeof data.captions === "object" ? data.captions : {};
+
+  if (!eventId || !ensembleId || !judgePosition) {
+    throw new HttpsError(
+        "invalid-argument",
+        "eventId, ensembleId, and judgePosition required.",
+    );
+  }
+
+  const submissionId = `${eventId}_${ensembleId}_${judgePosition}`;
+  const db = admin.firestore();
+  const submissionRef = db.collection(COLLECTIONS.submissions).doc(submissionId);
+  const officialRef = db.collection(COLLECTIONS.officialAssessments).doc(submissionId);
+
+  await db.runTransaction(async (tx) => {
+    const [submissionSnap, officialSnap] = await Promise.all([
+      tx.get(submissionRef),
+      tx.get(officialRef),
+    ]);
+    if (!submissionSnap.exists && !officialSnap.exists) {
+      throw new HttpsError("not-found", "Assessment not found.");
+    }
+
+    const canonical = officialSnap.exists ? (officialSnap.data() || {}) : (submissionSnap.data() || {});
+    const canonicalStatus = String(canonical.status || "").trim();
+    if (canonicalStatus === STATUSES.released) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Released results must be unreleased before comment edits.",
+      );
+    }
+    if (
+      canonicalStatus !== STATUSES.submitted &&
+      canonicalStatus !== STATUSES.officialized
+    ) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Only submitted or officialized assessments can be edited.",
+      );
+    }
+
+    const editStamp = {
+      adminCommentEditedAt: admin.firestore.FieldValue.serverTimestamp(),
+      adminCommentEditedBy: request.auth.uid,
+      adminCommentEditedByName: String(
+          request.auth.token?.name ||
+          request.auth.token?.email ||
+          "",
+      ).trim(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (submissionSnap.exists) {
+      const current = submissionSnap.data() || {};
+      tx.set(submissionRef, {
+        [FIELDS.submissions.transcript]: nextTranscript,
+        [FIELDS.submissions.captions]: applyAdminCommentEditsToCaptions(
+            current.captions || {},
+            nextCaptionComments,
+        ),
+        ...editStamp,
+      }, {merge: true});
+    }
+
+    if (officialSnap.exists) {
+      const current = officialSnap.data() || {};
+      tx.set(officialRef, {
+        [FIELDS.officialAssessments.transcript]: nextTranscript,
+        [FIELDS.officialAssessments.writtenComments]: nextTranscript,
+        [FIELDS.officialAssessments.captions]: applyAdminCommentEditsToCaptions(
+            current.captions || {},
+            nextCaptionComments,
+        ),
+        ...editStamp,
+      }, {merge: true});
+    }
+  });
+
+  return {
+    ok: true,
+    eventId,
+    ensembleId,
+    judgePosition,
+  };
+});
+
 exports.generateOpenPacketPrintAsset = onCall(async (request) => {
   await assertAdmin(request);
   const data = request.data || {};
@@ -6831,10 +6949,10 @@ exports.provisionUser = onCall(async (request) => {
   if (!email) {
     throw new HttpsError("invalid-argument", "Email is required.");
   }
-  if (!["admin", "teamLead", "judge", "director"].includes(role)) {
+  if (!["admin", "teamLead", "judge", "director", "checkin"].includes(role)) {
     throw new HttpsError(
         "invalid-argument",
-        "Role must be admin, teamLead, judge, or director.",
+        "Role must be admin, teamLead, judge, director, or checkin.",
     );
   }
 
@@ -6889,6 +7007,7 @@ exports.provisionUser = onCall(async (request) => {
           judge: role === "judge",
           admin: role === "admin",
           teamLead: role === "teamLead",
+          checkin: role === "checkin",
         },
         [FIELDS.users.schoolId]: role === "director" ? schoolId : null,
         [FIELDS.users.email]: email,

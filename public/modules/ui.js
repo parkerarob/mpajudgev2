@@ -22,6 +22,7 @@ import {
   generateOpenPacketPrintAsset,
   cleanupRehearsalArtifacts,
   deleteUserAccount,
+  updateUserDisplayName,
   deleteEvent,
   deleteEnsemble,
   deleteAllUnreleasedPackets,
@@ -42,6 +43,8 @@ import {
   getPacketData,
   getLunchTotalsBySchool,
   getLunchTotalsByDay,
+  importConfirmedScheduleRows,
+  publishPublicProgram,
   regenerateDirectorPacketExport,
   renameEvent,
   lockOpenPacket,
@@ -80,6 +83,7 @@ import {
   deleteRawAssessment,
   reassignRawAssessment,
   updateEntryCheckinFields,
+  updateAssessmentComments,
   updateEntryFields,
 } from "./admin.js";
 import { computeScheduleTimeline } from "./scheduleTimeline.js";
@@ -179,7 +183,7 @@ import {
   setTab as setTabState,
 } from "./navigation.js";
 import { DEV_FLAGS, db, storage } from "../firebase.js";
-import { collection, doc, getDoc, getDocs, orderBy, query, updateDoc, serverTimestamp, where, fetchEnsembleGrade, fetchEntryStatus } from "./firestore.js";
+import { collection, doc, getDoc, getDocs, getDocsFromServer, orderBy, query, updateDoc, serverTimestamp, where, fetchEnsembleGrade, fetchEntryStatus } from "./firestore.js";
 import {
   formatPerformanceAt,
   formatDateHeading,
@@ -217,6 +221,7 @@ import { getAdminHashForView, resolveAdminView } from "./admin-navigation.js";
 import { resolveAdminDirectorReturnView } from "./director-attach-policy.js";
 import { createAdminMockPacketPreviewRenderer } from "./ui-admin-mock-packet.js";
 import { createDirectorEntryFormRenderers } from "./ui-director-entry-form.js";
+import { createCheckinView } from "./ui-checkin.js";
 import {
   escapeHtml,
   normalizeEnsembleDisplayName,
@@ -228,7 +233,16 @@ import {
   deriveAutoScheduleDayBreaks,
   mergeScheduleDayBreaks,
   computeEnsembleCheckinStatus,
+  computeEnsembleCheckinProgress,
 } from "./ui-admin-formatters.js";
+import {
+  buildConfirmedSchedulePreview,
+  buildProgramCsv,
+  buildProgramHtml,
+  buildProgramRows,
+  parseConfirmedScheduleCsv,
+  summarizeConfirmedSchedulePreview,
+} from "./admin-event-tools.js";
 
 export function alertUser(message) {
   window.alert(message);
@@ -247,11 +261,13 @@ function getEffectiveRole(profile) {
     if (lower === "judge") return "judge";
     if (lower === "director") return "director";
     if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") return "teamLead";
+    if (lower === "checkin" || lower === "check-in" || lower === "check_in") return "checkin";
   }
   if (profile.roles?.admin) return "admin";
   if (profile.roles?.teamLead) return "teamLead";
   if (profile.roles?.judge) return "judge";
   if (profile.roles?.director) return "director";
+  if (profile.roles?.checkin) return "checkin";
   return null;
 }
 
@@ -1325,6 +1341,14 @@ export function renderAdminUsersDirectory() {
       <td></td>
     `;
     const actionCell = tr.querySelector("td:last-child");
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "ghost";
+    editButton.textContent = "Edit Name";
+    editButton.setAttribute("data-edit-user-uid", user.uid || "");
+    if (!user.uid) {
+      editButton.disabled = true;
+    }
     const button = document.createElement("button");
     button.type = "button";
     button.className = "ghost danger";
@@ -1334,6 +1358,7 @@ export function renderAdminUsersDirectory() {
       button.disabled = true;
       button.title = "You cannot delete your own account.";
     }
+    actionCell?.appendChild(editButton);
     actionCell?.appendChild(button);
     els.adminUsersList.appendChild(tr);
   });
@@ -1751,13 +1776,14 @@ export function updateDirectorAttachUI() {
   renderDirectorDashboardLayout();
   const isDirector = isDirectorManager();
   const hasSchool = Boolean(getDirectorSchoolId());
-  const view = state.director.view; // "ensembles" | "registration" | "registered" | "dayOfForms" | "results" | "siteInfo"
+  const view = state.director.view; // "ensembles" | "registration" | "registered" | "dayOfForms" | "results" | "siteInfo" | "program"
   const isHomeView = !view || view === "ensembles";
   const isChildView = isDirector && !isHomeView;
   const activePath = state.director.activePath || (
     view === "registration" || view === "registered" ? "register" :
     view === "ensembles" ? "ensembles" :
     view === "results" ? "results" :
+    view === "program" ? "program" :
     view === "siteInfo" ? "siteInfo" :
     view === "dayOfForms" ? "ensembles" :
     null
@@ -1772,6 +1798,7 @@ export function updateDirectorAttachUI() {
     {el: els.directorWorkspaceEnsemblesBtn, path: "ensembles"},
     {el: els.directorWorkspaceInfoBtn, path: "info"},
     {el: els.directorWorkspaceSiteBtn, path: "siteInfo"},
+    {el: els.directorWorkspaceProgramBtn, path: "program"},
     {el: els.directorWorkspaceResultsBtn, path: "results"},
   ];
 
@@ -1844,6 +1871,10 @@ export function updateDirectorAttachUI() {
     els.directorSiteInfoSection.style.display =
       isDirector && hasSchool && view === "siteInfo" ? "block" : "none";
   }
+  if (els.directorProgramSection) {
+    els.directorProgramSection.style.display =
+      isDirector && hasSchool && view === "program" ? "block" : "none";
+  }
   if (els.directorResultsSection) {
     els.directorResultsSection.style.display =
       isDirector && hasSchool && view === "results" ? "block" : "none";
@@ -1904,6 +1935,7 @@ let authHandlerBinder = null;
 let adminHandlerBinder = null;
 let adminMockPacketPreviewRenderer = null;
 let directorEntryFormRenderers = null;
+let checkinView = null;
 let directorDashboardRenderer = null;
 let directorContextPanelRenderer = null;
 let directorEditorShellRenderer = null;
@@ -2083,7 +2115,9 @@ function getAdminHandlerBinder() {
     deleteSchool,
     deleteEnsemble,
     bulkImportSchools,
+    importConfirmedScheduleRows,
     provisionUser,
+    updateUserDisplayName,
     deleteUserAccount,
     renderAdminUsersDirectory,
     renderDirectorAssignmentsDirectory,
@@ -2092,6 +2126,21 @@ function getAdminHandlerBinder() {
     getSchoolNameById,
     unassignDirectorSchool,
     renderAdminSchoolEnsembleManage,
+    fetchRegisteredEnsembles,
+    fetchScheduleEntries,
+    parseConfirmedScheduleCsv,
+    buildConfirmedSchedulePreview,
+    summarizeConfirmedSchedulePreview,
+    buildProgramRows,
+    buildProgramCsv,
+    buildProgramHtml,
+    publishPublicProgram,
+    collection,
+    getDocs,
+    query,
+    db,
+    COLLECTIONS,
+    normalizeEnsembleDisplayName,
     withLoading,
   });
   return adminHandlerBinder;
@@ -2203,6 +2252,7 @@ function getAdminLiveRenderers() {
     normalizeEnsembleDisplayName,
     toDateOrNull,
     computeEnsembleCheckinStatus,
+    computeEnsembleCheckinProgress,
     escapeHtml,
     formatStartTime,
     formatSchoolEnsembleLabel,
@@ -2213,6 +2263,42 @@ function getAdminLiveRenderers() {
     closeModal: closeManagedModal,
   });
   return adminLiveRenderers;
+}
+
+function getCheckinView() {
+  if (checkinView) return checkinView;
+  checkinView = createCheckinView({
+    els,
+    state,
+    db,
+    COLLECTIONS,
+    FIELDS,
+    STANDARD_INSTRUMENTS,
+    PERCUSSION_OPTIONS,
+    REPERTOIRE_FIELDS,
+    collection,
+    getDocs,
+    getDocsFromServer,
+    query,
+    where,
+    fetchScheduleEntries,
+    fetchRegisteredEnsembles,
+    getSchoolNameById,
+    normalizeEnsembleDisplayName,
+    toDateOrNull,
+    computeEnsembleCheckinStatus,
+    computeEnsembleCheckinProgress,
+    escapeHtml,
+    formatStartTime,
+    formatSchoolEnsembleLabel,
+    updateEntryCheckinFields,
+    updateEntryFields,
+  });
+  return checkinView;
+}
+
+function renderCheckinView() {
+  getCheckinView().render();
 }
 
 function getJudgeOpenRenderers() {
@@ -2592,6 +2678,9 @@ function updateTabUI(tabName, role) {
     if (els.directorCard) {
       els.directorCard.hidden = true;
     }
+    if (els.checkinCard) {
+      els.checkinCard.hidden = true;
+    }
     return;
   }
   els.tabButtons.forEach((button) => {
@@ -2608,12 +2697,15 @@ function updateTabUI(tabName, role) {
   const showAdmin = tabName === "admin";
   const showJudgeOpen = tabName === "judge-open";
   const showDirector = tabName === "director";
+  const showCheckin = tabName === "checkin";
   if (els.adminCard) els.adminCard.style.display = "";
   if (els.judgeOpenCard) els.judgeOpenCard.style.display = "";
   if (els.directorCard) els.directorCard.style.display = "";
+  if (els.checkinCard) els.checkinCard.style.display = "";
   document.body.classList.toggle("admin-active", showAdmin);
   document.body.classList.toggle("judge-open-active", showJudgeOpen);
   document.body.classList.toggle("director-active", showDirector);
+  document.body.classList.toggle("checkin-active", showCheckin);
   if (els.adminCard) {
     els.adminCard.hidden = !showAdmin;
   }
@@ -2625,6 +2717,12 @@ function updateTabUI(tabName, role) {
   }
   if (els.directorCard) {
     els.directorCard.hidden = !showDirector;
+  }
+  if (els.checkinCard) {
+    els.checkinCard.hidden = !showCheckin;
+  }
+  if (showCheckin && typeof renderCheckinView === "function") {
+    renderCheckinView();
   }
   if (showDirector) {
     refreshDirectorWatchers();
@@ -2787,7 +2885,7 @@ async function renderEventScheduleDirectorDetail(event, eventId, renderVersion) 
   }
   const getGrade = (row) => {
     const reg = regByEnsembleId.get(row.ensembleId || row.id) || {};
-    return reg.declaredGradeLevel || reg.performanceGrade || null;
+    return reg.performanceGrade || reg.declaredGradeLevel || null;
   };
   const timeline = computeScheduleTimeline(
     firstPerf,
@@ -3392,6 +3490,9 @@ export function startWatchers() {
     startActiveAssignmentsWatcher();
     if (liveEnabled && state.app.currentTab === "admin" && state.admin.currentView === "liveEvent" && isAdminHeavyViewLoaded("liveEvent")) {
       renderLiveEventCheckinQueue();
+    }
+    if (state.app.currentTab === "checkin") {
+      renderCheckinView();
     }
     if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent" && isAdminHeavyViewLoaded("preEvent")) {
       if (isAdminSchoolDetailOpen()) {
@@ -4149,6 +4250,7 @@ function updateRoleTabBar(role) {
     { value: "admin", label: "Admin" },
     { value: "judge-open", label: "Judge" },
     { value: "director", label: "Director" },
+    { value: "checkin", label: "Check-In" },
   ].filter((option) => isTabAllowed(option.value, role));
   const existingValues = Array.from(els.roleSwitcherSelect.options).map((option) => option.value);
   const nextValues = options.map((option) => option.value);
@@ -4686,41 +4788,10 @@ function setPreEventStatusHint(el, text) {
   el.textContent = text || "";
 }
 
-async function getCurrentSchoolEnsembleIndex(schoolIds = []) {
-  const ids = Array.from(new Set((schoolIds || []).map((id) => String(id || "").trim()).filter(Boolean)));
-  const index = new Map();
-  if (!ids.length) return index;
-  await Promise.all(
-    ids.map(async (schoolId) => {
-      try {
-        const snap = await getDocs(
-          collection(db, COLLECTIONS.schools, schoolId, COLLECTIONS.ensembles)
-        );
-        index.set(
-          schoolId,
-          new Set(snap.docs.map((docSnap) => String(docSnap.id || "").trim()).filter(Boolean))
-        );
-      } catch (error) {
-        console.warn("getCurrentSchoolEnsembleIndex failed", { schoolId, error });
-        index.set(schoolId, new Set());
-      }
-    })
-  );
-  return index;
-}
-
 async function resolveCurrentRegisteredEnsembles(eventId, registered = []) {
   if (!eventId || !Array.isArray(registered) || !registered.length) {
     return { active: [], stale: [] };
   }
-  const schoolIds = Array.from(
-    new Set(
-      registered
-        .map((entry) => String(entry.schoolId || "").trim())
-        .filter(Boolean)
-    )
-  );
-  const ensembleIndex = await getCurrentSchoolEnsembleIndex(schoolIds);
   const active = [];
   const stale = [];
   registered.forEach((entry) => {
@@ -4730,12 +4801,7 @@ async function resolveCurrentRegisteredEnsembles(eventId, registered = []) {
       stale.push(entry);
       return;
     }
-    const schoolSet = ensembleIndex.get(schoolId);
-    if (schoolSet && schoolSet.has(ensembleId)) {
-      active.push(entry);
-    } else {
-      stale.push(entry);
-    }
+    active.push(entry);
   });
   return { active, stale };
 }
@@ -4982,55 +5048,58 @@ function buildAdminLogisticsEntryPanel(entry, titleText) {
     : [];
 
   const wrapper = document.createElement("div");
-  wrapper.className = "panel stack";
+  wrapper.className = "panel stack admin-logistics-panel";
   const title = document.createElement("strong");
+  title.className = "admin-logistics-panel-title";
   title.textContent = titleText;
   wrapper.appendChild(title);
 
   const seatingHeading = document.createElement("div");
-  seatingHeading.className = "note";
+  seatingHeading.className = "note admin-logistics-section-title";
   seatingHeading.textContent = "Seating Chart";
   wrapper.appendChild(seatingHeading);
   const seatingBody = document.createElement("div");
-  seatingBody.className = "stack";
+  seatingBody.className = "stack admin-logistics-seating";
   if (!seatingRows.length) {
     const empty = document.createElement("div");
-    empty.className = "note";
+    empty.className = "note admin-logistics-empty";
     empty.textContent = "No seating rows entered.";
     seatingBody.appendChild(empty);
   } else {
     seatingRows.forEach((row, index) => {
       const line = document.createElement("div");
-      line.className = "note";
-      line.textContent = `Row ${index + 1}: Chairs ${Number(row?.chairs || 0)} - Stands ${Number(
-        row?.stands || 0
-      )}`;
+      line.className = "admin-logistics-row";
+      line.innerHTML = `
+        <span class="admin-logistics-row-label">Row ${index + 1}</span>
+        <span class="admin-logistics-metric"><span class="admin-logistics-metric-label">Chairs</span><strong class="admin-logistics-metric-value">${Number(row?.chairs || 0)}</strong></span>
+        <span class="admin-logistics-metric"><span class="admin-logistics-metric-label">Stands</span><strong class="admin-logistics-metric-value">${Number(row?.stands || 0)}</strong></span>
+      `;
       seatingBody.appendChild(line);
     });
   }
   if (seating.notes) {
     const notes = document.createElement("div");
-    notes.className = "note";
+    notes.className = "note admin-logistics-notes";
     notes.textContent = `Notes: ${seating.notes}`;
     seatingBody.appendChild(notes);
   }
   wrapper.appendChild(seatingBody);
 
   const percussionTitle = document.createElement("div");
-  percussionTitle.className = "note";
+  percussionTitle.className = "note admin-logistics-section-title";
   percussionTitle.textContent = "Percussion";
   wrapper.appendChild(percussionTitle);
   const percussionBody = document.createElement("div");
-  percussionBody.className = "stack";
+  percussionBody.className = "stack admin-logistics-percussion";
   const requested = document.createElement("div");
-  requested.className = "note";
+  requested.className = "note admin-logistics-notes";
   requested.textContent = selectedPercussion.length
-    ? `Requested: ${selectedPercussion.join(" - ")}`
+    ? `Requested: ${selectedPercussion.join(" • ")}`
     : "Requested: None selected";
   percussionBody.appendChild(requested);
   if (percussionNeeds.notes) {
     const notes = document.createElement("div");
-    notes.className = "note";
+    notes.className = "note admin-logistics-notes";
     notes.textContent = `Notes: ${percussionNeeds.notes}`;
     percussionBody.appendChild(notes);
   }
@@ -5047,18 +5116,25 @@ function formatSignedDiff(value) {
 
 function buildAdminLogisticsDiffPanel(currentEntry, nextEntry) {
   const panel = document.createElement("div");
-  panel.className = "panel stack";
+  panel.className = "panel stack admin-logistics-panel admin-logistics-diff-panel";
   const title = document.createElement("strong");
+  title.className = "admin-logistics-panel-title";
   title.textContent = "Changeover Diff (Next Band - Band On Stage)";
   panel.appendChild(title);
 
   const currentRows = Array.isArray(currentEntry?.seating?.rows) ? currentEntry.seating.rows : [];
   const nextRows = Array.isArray(nextEntry?.seating?.rows) ? nextEntry.seating.rows : [];
   const rowCount = Math.max(currentRows.length, nextRows.length, SEATING_ROWS);
+  let totalChairDelta = 0;
+  let totalStandDelta = 0;
   const seatingHeading = document.createElement("div");
-  seatingHeading.className = "note";
+  seatingHeading.className = "note admin-logistics-section-title";
   seatingHeading.textContent = "Seating";
   panel.appendChild(seatingHeading);
+  const totalsRow = document.createElement("div");
+  totalsRow.className = "admin-logistics-row admin-logistics-row--totals";
+  const seatingDiffList = document.createElement("div");
+  seatingDiffList.className = "stack admin-logistics-seating";
   for (let i = 0; i < rowCount; i += 1) {
     const currentRow = currentRows[i] || {};
     const nextRow = nextRows[i] || {};
@@ -5066,16 +5142,29 @@ function buildAdminLogisticsDiffPanel(currentEntry, nextEntry) {
     const nextChairs = Number(nextRow.chairs || 0);
     const currentStands = Number(currentRow.stands || 0);
     const nextStands = Number(nextRow.stands || 0);
+    const chairDelta = nextChairs - currentChairs;
+    const standDelta = nextStands - currentStands;
+    totalChairDelta += chairDelta;
+    totalStandDelta += standDelta;
     const line = document.createElement("div");
-    line.className = "note";
-    line.textContent =
-      `Row ${i + 1}: Chairs ${currentChairs} -> ${nextChairs} (${formatSignedDiff(nextChairs - currentChairs)}), ` +
-      `Stands ${currentStands} -> ${nextStands} (${formatSignedDiff(nextStands - currentStands)})`;
-    panel.appendChild(line);
+    line.className = "admin-logistics-row admin-logistics-row--diff";
+    line.innerHTML = `
+      <span class="admin-logistics-row-label">Row ${i + 1}</span>
+      <span class="admin-logistics-metric"><span class="admin-logistics-metric-label">Chairs</span><strong class="admin-logistics-delta admin-logistics-delta--large">${formatSignedDiff(chairDelta)}</strong><span class="admin-logistics-metric-detail">${currentChairs} → ${nextChairs}</span></span>
+      <span class="admin-logistics-metric"><span class="admin-logistics-metric-label">Stands</span><strong class="admin-logistics-delta admin-logistics-delta--large">${formatSignedDiff(standDelta)}</strong><span class="admin-logistics-metric-detail">${currentStands} → ${nextStands}</span></span>
+    `;
+    seatingDiffList.appendChild(line);
   }
+  totalsRow.innerHTML = `
+    <span class="admin-logistics-row-label">Totals</span>
+    <span class="admin-logistics-metric"><span class="admin-logistics-metric-label">Chairs</span><strong class="admin-logistics-delta admin-logistics-delta--large">${formatSignedDiff(totalChairDelta)}</strong><span class="admin-logistics-metric-detail">overall change</span></span>
+    <span class="admin-logistics-metric"><span class="admin-logistics-metric-label">Stands</span><strong class="admin-logistics-delta admin-logistics-delta--large">${formatSignedDiff(totalStandDelta)}</strong><span class="admin-logistics-metric-detail">overall change</span></span>
+  `;
+  panel.appendChild(totalsRow);
+  panel.appendChild(seatingDiffList);
 
   const percussionHeading = document.createElement("div");
-  percussionHeading.className = "note";
+  percussionHeading.className = "note admin-logistics-section-title";
   percussionHeading.textContent = "Percussion";
   panel.appendChild(percussionHeading);
   const currentPerc = new Set(
@@ -5090,14 +5179,22 @@ function buildAdminLogisticsDiffPanel(currentEntry, nextEntry) {
   );
   const added = Array.from(nextPerc).filter((item) => !currentPerc.has(item));
   const removed = Array.from(currentPerc).filter((item) => !nextPerc.has(item));
+  const kept = Array.from(nextPerc).filter((item) => currentPerc.has(item));
+  const percussionSummary = document.createElement("div");
+  percussionSummary.className = "stack admin-logistics-percussion";
   const addedRow = document.createElement("div");
-  addedRow.className = "note";
+  addedRow.className = "note admin-logistics-notes";
   addedRow.textContent = `Add: ${added.length ? added.join(" - ") : "None"}`;
-  panel.appendChild(addedRow);
+  percussionSummary.appendChild(addedRow);
   const removedRow = document.createElement("div");
-  removedRow.className = "note";
+  removedRow.className = "note admin-logistics-notes";
   removedRow.textContent = `Remove: ${removed.length ? removed.join(" - ") : "None"}`;
-  panel.appendChild(removedRow);
+  percussionSummary.appendChild(removedRow);
+  const keptRow = document.createElement("div");
+  keptRow.className = "note admin-logistics-notes";
+  keptRow.textContent = `Keep: ${kept.length ? kept.join(" - ") : "None"}`;
+  percussionSummary.appendChild(keptRow);
+  panel.appendChild(percussionSummary);
 
   return panel;
 }
@@ -5813,6 +5910,126 @@ export function renderAssessmentCard(submission, position, { showTranscript = tr
 
 export const renderSubmissionCard = renderAssessmentCard;
 
+function getCaptionTemplateKeysForFormType(formType = FORM_TYPES.stage) {
+  const template = CAPTION_TEMPLATES[formType] || CAPTION_TEMPLATES.stage || [];
+  const orderedKeys = template.map(({ key }) => key).filter(Boolean);
+  return orderedKeys;
+}
+
+function openAdminPreviewWindow() {
+  const previewWindow = window.open("", "_blank");
+  if (previewWindow && !previewWindow.closed) {
+    previewWindow.document.title = "Preparing Results Packet PDF";
+    previewWindow.document.body.innerHTML = `
+      <div style="font-family: system-ui, sans-serif; padding: 24px;">
+        Preparing results packet PDF...
+      </div>
+    `;
+  }
+  return previewWindow;
+}
+
+function renderAdminCommentEditor({
+  submission,
+  position,
+  eventId,
+  ensembleId,
+  released = false,
+  onSaved,
+} = {}) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "panel stack";
+
+  const title = document.createElement("strong");
+  title.textContent = `${JUDGE_POSITION_LABELS[position] || position} Comment Fixes`;
+  wrapper.appendChild(title);
+
+  const hint = document.createElement("div");
+  hint.className = "note";
+  hint.textContent = released
+    ? "Results are released. Unrelease the packet before editing judge comments."
+    : "Text-only fixes update transcript/reference notes and caption comments. Scores remain read-only.";
+  wrapper.appendChild(hint);
+
+  const transcriptLabel = document.createElement("label");
+  transcriptLabel.textContent = "Transcript / Reference Notes";
+  const transcriptInput = document.createElement("textarea");
+  transcriptInput.rows = 5;
+  transcriptInput.value = String(
+    submission?.writtenComments || submission?.transcript || ""
+  );
+  transcriptInput.disabled = released;
+  transcriptLabel.appendChild(transcriptInput);
+  wrapper.appendChild(transcriptLabel);
+
+  const captions = submission?.captions && typeof submission.captions === "object"
+    ? submission.captions
+    : {};
+  const orderedKeys = getCaptionTemplateKeysForFormType(submission?.formType || FORM_TYPES.stage);
+  const extraKeys = Object.keys(captions).filter((key) => !orderedKeys.includes(key));
+  const captionKeys = [...orderedKeys.filter((key) => key in captions), ...extraKeys];
+  const captionInputs = new Map();
+  if (captionKeys.length) {
+    const captionSection = document.createElement("div");
+    captionSection.className = "stack";
+    const captionTitle = document.createElement("strong");
+    captionTitle.textContent = "Caption Comments";
+    captionSection.appendChild(captionTitle);
+    captionKeys.forEach((key) => {
+      const row = document.createElement("label");
+      row.textContent = formatCaptionKeyLabel(key);
+      const input = document.createElement("textarea");
+      input.rows = 3;
+      input.value = String(captions[key]?.comment || "");
+      input.disabled = released;
+      row.appendChild(input);
+      captionSection.appendChild(row);
+      captionInputs.set(key, input);
+    });
+    wrapper.appendChild(captionSection);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "row";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.textContent = "Save Comment Fixes";
+  saveBtn.disabled = released;
+  const status = document.createElement("div");
+  status.className = "note";
+  actions.appendChild(saveBtn);
+  actions.appendChild(status);
+  wrapper.appendChild(actions);
+
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.disabled = true;
+    status.textContent = "Saving...";
+    try {
+      const nextCaptions = {};
+      captionInputs.forEach((input, key) => {
+        nextCaptions[key] = String(input.value || "");
+      });
+      await updateAssessmentComments({
+        eventId,
+        ensembleId,
+        judgePosition: position,
+        transcript: String(transcriptInput.value || ""),
+        captions: nextCaptions,
+      });
+      status.textContent = "Saved.";
+      await onSaved?.();
+    } catch (error) {
+      console.error("updateAssessmentComments failed", error);
+      status.textContent = error?.message || "Unable to save comment fixes.";
+      saveBtn.disabled = released;
+      return;
+    }
+    saveBtn.disabled = released;
+  });
+
+  return wrapper;
+}
+
 function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) {
   const captionSummary = document.createElement("div");
   captionSummary.className = "caption-grid";
@@ -5861,8 +6078,13 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
   if (!packetPanel) return;
   packetPanel.innerHTML = "Loading packet...";
   const eventId = eventIdOverride || state.event.active?.id;
+  const ensembleId = String(entry?.ensembleId || "").trim();
   if (!eventId) {
     packetPanel.textContent = "No active event.";
+    return;
+  }
+  if (!ensembleId) {
+    packetPanel.textContent = "No ensemble selected.";
     return;
   }
   try {
@@ -5881,6 +6103,36 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
 
     const actionRow = document.createElement("div");
     actionRow.className = "actions";
+    const previewBtn = document.createElement("button");
+    previewBtn.type = "button";
+    previewBtn.className = "ghost";
+    previewBtn.textContent = "Preview Results Packet PDF";
+    previewBtn.addEventListener("click", async () => {
+      previewBtn.disabled = true;
+      const previewWindow = openAdminPreviewWindow();
+      try {
+        await regenerateDirectorPacketExport({ eventId, ensembleId });
+        const assets = await fetchDirectorPacketAssets({ eventId, ensembleId });
+        const previewUrl = String(assets?.combined?.url || "").trim();
+        if (!previewUrl) {
+          throw new Error("Combined results packet PDF is not available yet.");
+        }
+        if (previewWindow && !previewWindow.closed) {
+          previewWindow.location.replace(previewUrl);
+        } else {
+          window.open(previewUrl, "_blank", "noopener");
+        }
+      } catch (error) {
+        console.error("Admin packet PDF preview failed", error);
+        if (previewWindow && !previewWindow.closed) {
+          previewWindow.close();
+        }
+        alert(error?.message || "Unable to preview results packet PDF.");
+      } finally {
+        previewBtn.disabled = false;
+      }
+    });
+    actionRow.appendChild(previewBtn);
     const releaseBtn = document.createElement("button");
     const shouldRelease = !summary?.requiredReleased;
     releaseBtn.textContent = shouldRelease ? "Release Results Packet" : "Unrelease Results Packet";
@@ -5906,11 +6158,24 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
 
     const grid = document.createElement("div");
     grid.className = "packet-grid";
+    const packetReleased = Boolean(summary?.requiredReleased);
     Object.values(JUDGE_POSITIONS).forEach((position) => {
       const submission = submissions[position];
       const wrapper = document.createElement("div");
       wrapper.className = "packet-slot";
       wrapper.appendChild(renderAssessmentCard(submission, position));
+      if (submission) {
+        wrapper.appendChild(renderAdminCommentEditor({
+          submission,
+          position,
+          eventId,
+          ensembleId,
+          released: packetReleased,
+          onSaved: async () => {
+            await loadAdminPacketView(entry, packetPanel, eventId);
+          },
+        }));
+      }
       if (submission) {
         const lockRow = document.createElement("div");
         lockRow.className = "actions";

@@ -196,6 +196,35 @@ export async function deleteUserAccount({ targetUid }) {
   return response.data || {};
 }
 
+export async function updateUserDisplayName({ targetUid, displayName }) {
+  if (!targetUid) throw new Error("targetUid required");
+  const userRef = doc(db, COLLECTIONS.users, targetUid);
+  return setDoc(
+    userRef,
+    {
+      displayName: String(displayName || "").trim(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+export async function publishPublicProgram({ snapshot } = {}) {
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new Error("snapshot required");
+  }
+  const ref = doc(db, COLLECTIONS.publicPrograms, "homepage");
+  return setDoc(
+    ref,
+    {
+      ...snapshot,
+      published: true,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
 export async function assignDirectorSchool({ directorUid, schoolId }) {
   const fn = httpsCallable(functions, "assignDirectorSchool");
   const response = await fn({ directorUid, schoolId });
@@ -306,6 +335,24 @@ export async function regenerateDirectorPacketExport({ eventId, ensembleId }) {
 export async function generateOpenPacketPrintAsset({ packetId }) {
   const fn = httpsCallable(functions, "generateOpenPacketPrintAsset");
   const response = await fn({ packetId });
+  return response.data || {};
+}
+
+export async function updateAssessmentComments({
+  eventId,
+  ensembleId,
+  judgePosition,
+  transcript,
+  captions,
+}) {
+  const fn = httpsCallable(functions, "updateAssessmentComments");
+  const response = await fn({
+    eventId,
+    ensembleId,
+    judgePosition,
+    transcript,
+    captions,
+  });
   return response.data || {};
 }
 
@@ -458,7 +505,7 @@ function toScheduleSortMs(value) {
 }
 
 function sortScheduleEntries(entries = []) {
-  return [...entries].sort((a, b) => {
+  return [...entries].filter((entry) => entry?.hidden !== true).sort((a, b) => {
     const aMs = toScheduleSortMs(a?.performanceAt);
     const bMs = toScheduleSortMs(b?.performanceAt);
     if (aMs != null && bMs != null && aMs !== bMs) return aMs - bMs;
@@ -583,6 +630,54 @@ export async function deleteScheduleEntry({ eventId, entryId }) {
   return deleteDoc(doc(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule, entryId));
 }
 
+export async function importConfirmedScheduleRows({ eventId, rows = [] } = {}) {
+  if (!eventId) throw new Error("eventId required");
+  const items = Array.isArray(rows) ? rows : [];
+  if (!items.length) return { count: 0 };
+
+  const batch = writeBatch(db);
+  const existingSnap = await getDocs(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule));
+  existingSnap.docs.forEach((docSnap) => {
+    batch.set(docSnap.ref, { hidden: true, updatedAt: serverTimestamp() }, { merge: true });
+  });
+  let count = 0;
+  items.forEach((item, index) => {
+    const ensembleId = String(item.ensembleId || "").trim();
+    const schoolId = String(item.schoolId || "").trim();
+    const ensembleName = String(item.ensembleName || ensembleId).trim();
+    const schoolName = String(item.schoolName || "").trim();
+    const performanceAtDate = item.performanceAtDate instanceof Date
+      ? item.performanceAtDate
+      : toDateLike(item.performanceAtDate);
+    if (!ensembleId || !schoolId || !(performanceAtDate instanceof Date) || Number.isNaN(performanceAtDate.getTime())) {
+      return;
+    }
+    const scheduleRef = item.entryId
+      ? doc(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule, item.entryId)
+      : doc(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule));
+    const payload = {
+      eventId,
+      schoolId,
+      schoolName,
+      ensembleId,
+      ensembleName,
+      performanceAt: Timestamp.fromDate(performanceAtDate),
+      orderIndex: Number.isFinite(Number(item.orderIndex)) ? Number(item.orderIndex) : index + 1,
+      hidden: false,
+      updatedAt: serverTimestamp(),
+    };
+    batch.set(
+      scheduleRef,
+      item.entryId ? payload : { ...payload, createdAt: serverTimestamp() },
+      { merge: true }
+    );
+    count += 1;
+  });
+  if (!count) return { count: 0 };
+  await batch.commit();
+  return { count };
+}
+
 /**
  * Aggregate lunch totals by school for the event (from director entries).
  * @param {string} eventId
@@ -629,6 +724,7 @@ export async function getLunchTotalsByDay(eventId) {
   const scheduleByEnsemble = new Map();
   scheduleSnap.docs.forEach((snap) => {
     const data = snap.data() || {};
+    if (data.hidden === true) return;
     const ensembleId = String(data.ensembleId || data.id || "").trim();
     if (!ensembleId) return;
     const performanceAt = toDateLike(data.performanceAt);

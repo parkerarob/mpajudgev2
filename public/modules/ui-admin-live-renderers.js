@@ -13,6 +13,7 @@ export function createAdminLiveRenderers({
   normalizeEnsembleDisplayName,
   toDateOrNull,
   computeEnsembleCheckinStatus,
+  computeEnsembleCheckinProgress,
   escapeHtml,
   formatStartTime,
   formatSchoolEnsembleLabel,
@@ -22,6 +23,245 @@ export function createAdminLiveRenderers({
   openModal,
   closeModal,
 } = {}) {
+  function formatSignedDiff(value) {
+    const n = Number(value || 0);
+    if (n > 0) return `+${n}`;
+    if (n < 0) return `${n}`;
+    return "0";
+  }
+
+  function getStageDiffSummary(currentEntry, nextEntry) {
+    const currentRows = Array.isArray(currentEntry?.seating?.rows) ? currentEntry.seating.rows : [];
+    const nextRows = Array.isArray(nextEntry?.seating?.rows) ? nextEntry.seating.rows : [];
+    const rowCount = Math.max(currentRows.length, nextRows.length, 5);
+    let totalChairDelta = 0;
+    let totalStandDelta = 0;
+    const rows = [];
+    for (let i = 0; i < rowCount; i += 1) {
+      const currentRow = currentRows[i] || {};
+      const nextRow = nextRows[i] || {};
+      const currentChairs = Number(currentRow.chairs || 0);
+      const nextChairs = Number(nextRow.chairs || 0);
+      const currentStands = Number(currentRow.stands || 0);
+      const nextStands = Number(nextRow.stands || 0);
+      const chairDelta = nextChairs - currentChairs;
+      const standDelta = nextStands - currentStands;
+      totalChairDelta += chairDelta;
+      totalStandDelta += standDelta;
+      rows.push({
+        rowNumber: i + 1,
+        currentChairs,
+        nextChairs,
+        currentStands,
+        nextStands,
+        chairDelta,
+        standDelta,
+      });
+    }
+    return { totalChairDelta, totalStandDelta, rows };
+  }
+
+  function openStageDisplayWindow({ rows = [], currentIndex = 0, eventName }) {
+    const popup = window.open("", "_blank", "popup,width=1440,height=900");
+    if (!popup) return false;
+    const stageRows = rows.map((row) => ({
+      label: formatSchoolEnsembleLabel({
+        schoolName: row.schoolName,
+        ensembleName: row.ensembleName,
+        ensembleId: row.ensembleId,
+      }),
+      entry: row.entry || {},
+    }));
+    const payload = JSON.stringify({
+      eventName: eventName || "Stage Flow",
+      currentIndex,
+      rows: stageRows,
+    }).replace(/</g, "\\u003c");
+    popup.document.open();
+    popup.document.write(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Stage Flow Display</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #07111d;
+      color: #f5f7fb;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .screen {
+      width: min(95vw, 1720px);
+      height: min(95vh, calc(95vw * 9 / 16));
+      padding: 18px 24px;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01)), #0d1726;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 28px;
+      box-shadow: 0 32px 80px rgba(0,0,0,0.35);
+      overflow: hidden;
+    }
+    .header, .bands, .totals, .diff-row { display: grid; align-items: center; }
+    .header { text-align: center; gap: 4px; }
+    .eyebrow { font-size: clamp(14px, 1.3vw, 18px); letter-spacing: 0.08em; text-transform: uppercase; color: #aab6cf; }
+    .title { font-size: clamp(24px, 2.4vw, 38px); font-weight: 700; }
+    .actions { display: flex; justify-content: center; gap: 10px; }
+    .actions button { font: inherit; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); color: #f5f7fb; border-radius: 12px; padding: 8px 14px; cursor: pointer; }
+    .actions button:disabled { opacity: 0.4; cursor: default; }
+    .bands { grid-template-columns: 1fr auto 1fr; gap: 12px; text-align: center; }
+    .band-card, .totals, .diff-row {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 22px;
+    }
+    .band-card { padding: 10px 14px; }
+    .band-label { font-size: clamp(14px, 1.4vw, 20px); color: #aab6cf; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+    .band-name { font-size: clamp(18px, 1.8vw, 28px); font-weight: 700; line-height: 1.08; }
+    .arrow { font-size: clamp(28px, 2.5vw, 40px); color: #ddb56b; font-weight: 700; }
+    .content { display: grid; grid-template-rows: auto auto 1fr; gap: 10px; min-height: 0; }
+    .totals { grid-template-columns: 120px 1fr 1fr; gap: 10px; padding: 10px 14px; text-align: center; }
+    .totals-label { font-size: clamp(16px, 1.4vw, 22px); font-weight: 700; align-self: center; }
+    .percussion { display: grid; grid-template-columns: 120px 1fr 1fr 1fr; gap: 10px; padding: 8px 14px; text-align: center; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 22px; }
+    .percussion-label { font-size: clamp(16px, 1.4vw, 22px); font-weight: 700; align-self: center; }
+    .percussion-card { display: grid; gap: 4px; align-content: center; justify-items: center; padding: 4px 6px; }
+    .percussion-card-label { font-size: clamp(14px, 1.1vw, 16px); color: #aab6cf; text-transform: uppercase; letter-spacing: 0.05em; }
+    .percussion-card-value { font-size: clamp(11px, 0.8vw, 14px); color: #d6deee; line-height: 1.15; }
+    .metric-card { display: grid; gap: 1px; align-content: center; justify-items: center; padding: 4px 6px; }
+    .metric-label { font-size: clamp(14px, 1.25vw, 18px); color: #aab6cf; text-transform: uppercase; letter-spacing: 0.05em; }
+    .metric-delta { font-size: clamp(24px, 2.6vw, 40px); line-height: 0.92; font-weight: 800; color: #ddb56b; font-variant-numeric: tabular-nums; }
+    .metric-detail { font-size: clamp(11px, 0.9vw, 15px); color: #d6deee; font-variant-numeric: tabular-nums; }
+    .rows { display: grid; gap: 8px; min-height: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; }
+    .diff-row { grid-template-columns: 70px 1fr 1fr; gap: 6px; padding: 6px 10px; text-align: center; min-height: 0; }
+    .row-label { font-size: clamp(16px, 1.35vw, 22px); font-weight: 700; align-self: center; color: #aab6cf; }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="header">
+      <div class="eyebrow" id="eventName"></div>
+      <div class="title">Stage Changeover</div>
+    </div>
+    <div class="actions">
+      <button id="startBtn">Start at First Band</button>
+      <button id="prevBtn">Previous Band</button>
+      <button id="nextBtn">Advance to Next Band</button>
+    </div>
+    <div class="bands">
+      <div class="band-card">
+        <div class="band-label">On Stage</div>
+        <div class="band-name" id="currentName"></div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="band-card">
+        <div class="band-label">Next Band</div>
+        <div class="band-name" id="nextName"></div>
+      </div>
+    </div>
+    <div class="content">
+      <div class="totals" id="totals"></div>
+      <div class="percussion" id="percussion"></div>
+      <div class="rows" id="rows"></div>
+    </div>
+  </div>
+  <script>
+    const state = ${payload};
+    const byId = (id) => document.getElementById(id);
+    const formatSignedDiff = (value) => {
+      const n = Number(value || 0);
+      if (n > 0) return '+' + n;
+      if (n < 0) return String(n);
+      return '0';
+    };
+    const getStageDiffSummary = (currentEntry, nextEntry) => {
+      const currentRows = Array.isArray(currentEntry?.seating?.rows) ? currentEntry.seating.rows : [];
+      const nextRows = Array.isArray(nextEntry?.seating?.rows) ? nextEntry.seating.rows : [];
+      const rowCount = Math.max(currentRows.length, nextRows.length, 6);
+      let totalChairDelta = 0;
+      let totalStandDelta = 0;
+      const rows = [];
+      for (let i = 0; i < rowCount; i += 1) {
+        const currentRow = currentRows[i] || {};
+        const nextRow = nextRows[i] || {};
+        const currentChairs = Number(currentRow.chairs || 0);
+        const nextChairs = Number(nextRow.chairs || 0);
+        const currentStands = Number(currentRow.stands || 0);
+        const nextStands = Number(nextRow.stands || 0);
+        const chairDelta = nextChairs - currentChairs;
+        const standDelta = nextStands - currentStands;
+        totalChairDelta += chairDelta;
+        totalStandDelta += standDelta;
+        rows.push({ rowNumber: i + 1, currentChairs, nextChairs, currentStands, nextStands, chairDelta, standDelta });
+      }
+      const currentPerc = new Set(Array.isArray(currentEntry?.percussionNeeds?.selected) ? currentEntry.percussionNeeds.selected.filter(Boolean) : []);
+      const nextPerc = new Set(Array.isArray(nextEntry?.percussionNeeds?.selected) ? nextEntry.percussionNeeds.selected.filter(Boolean) : []);
+      return {
+        totalChairDelta,
+        totalStandDelta,
+        rows,
+        percussion: {
+          add: Array.from(nextPerc).filter((item) => !currentPerc.has(item)),
+          remove: Array.from(currentPerc).filter((item) => !nextPerc.has(item)),
+          keep: Array.from(nextPerc).filter((item) => currentPerc.has(item)),
+        },
+      };
+    };
+    const render = () => {
+      const current = state.rows[state.currentIndex] || null;
+      const next = state.rows[state.currentIndex + 1] || null;
+      byId('eventName').textContent = state.eventName || 'Stage Flow';
+      byId('currentName').textContent = current?.label || 'No band selected';
+      byId('nextName').textContent = next?.label || 'End of schedule';
+      const diff = getStageDiffSummary(current?.entry || {}, next?.entry || {});
+      byId('totals').innerHTML = \`
+        <div class="totals-label">Totals</div>
+        <div class="metric-card"><div class="metric-label">Chairs</div><div class="metric-delta">\${formatSignedDiff(diff.totalChairDelta)}</div><div class="metric-detail">overall change</div></div>
+        <div class="metric-card"><div class="metric-label">Stands</div><div class="metric-delta">\${formatSignedDiff(diff.totalStandDelta)}</div><div class="metric-detail">overall change</div></div>
+      \`;
+      byId('percussion').innerHTML = \`
+        <div class="percussion-label">Percussion</div>
+        <div class="percussion-card"><div class="percussion-card-label">Add</div><div class="percussion-card-value">\${diff.percussion.add.length ? diff.percussion.add.join(' • ') : 'None'}</div></div>
+        <div class="percussion-card"><div class="percussion-card-label">Remove</div><div class="percussion-card-value">\${diff.percussion.remove.length ? diff.percussion.remove.join(' • ') : 'None'}</div></div>
+        <div class="percussion-card"><div class="percussion-card-label">Keep</div><div class="percussion-card-value">\${diff.percussion.keep.length ? diff.percussion.keep.join(' • ') : 'None'}</div></div>
+      \`;
+      byId('rows').innerHTML = diff.rows.map((row) => \`
+        <div class="diff-row">
+          <div class="row-label">Row \${row.rowNumber}</div>
+          <div class="metric-card">
+            <div class="metric-label">Chairs</div>
+            <div class="metric-delta">\${formatSignedDiff(row.chairDelta)}</div>
+            <div class="metric-detail">\${row.currentChairs} → \${row.nextChairs}</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Stands</div>
+            <div class="metric-delta">\${formatSignedDiff(row.standDelta)}</div>
+            <div class="metric-detail">\${row.currentStands} → \${row.nextStands}</div>
+          </div>
+        </div>
+      \`).join('');
+      byId('startBtn').disabled = state.currentIndex <= 0;
+      byId('prevBtn').disabled = state.currentIndex <= 0;
+      byId('nextBtn').disabled = state.currentIndex >= state.rows.length - 1;
+    };
+    byId('startBtn').addEventListener('click', () => { state.currentIndex = 0; render(); });
+    byId('prevBtn').addEventListener('click', () => { state.currentIndex = Math.max(0, state.currentIndex - 1); render(); });
+    byId('nextBtn').addEventListener('click', () => { state.currentIndex = Math.min(state.rows.length - 1, state.currentIndex + 1); render(); });
+    render();
+  </script>
+  </body>
+</html>`);
+    popup.document.close();
+    return true;
+  }
+
   function setAdminStepChip(el, { label, done = false, active = false } = {}) {
     if (!el) return;
     el.textContent = label || "";
@@ -32,38 +272,28 @@ export function createAdminLiveRenderers({
   function renderAdminLiveWorkflowGuidance({
     hasActiveEvent = false,
     hasScheduled = false,
-    totalRows = 0,
-    checkedInCount = 0,
   } = {}) {
     if (!els.adminLiveWorkflowCard) return;
     let step = "Start";
     let nextTitle = "Set an active event to begin.";
-    let nextHint = "Then run check-in and stage flow for scheduled ensembles.";
+    let nextHint = "Then review the running order and stage flow for scheduled ensembles.";
     let nextActionLabel = "Open Settings";
     let nextAction = () => {
       window.location.hash = "#admin/settings";
     };
 
     if (hasActiveEvent && !hasScheduled) {
-      step = "Queue";
+      step = "Schedule";
       nextTitle = "Schedule ensembles to enable Schedule & Flow operations.";
-      nextHint = "Queue and stage flow are driven from scheduled performance entries.";
+      nextHint = "Stage flow is driven from scheduled performance entries.";
       nextActionLabel = "Open Registrations";
       nextAction = () => {
         window.location.hash = "#admin/registrations";
       };
-    } else if (hasActiveEvent && hasScheduled && checkedInCount < totalRows) {
-      step = "Check-in";
-      nextTitle = "Run check-in for upcoming ensembles.";
-      nextHint = `${checkedInCount}/${totalRows} ensemble(s) currently checked in.`;
-      nextActionLabel = "Open Check-In Queue";
-      nextAction = () => {
-        els.liveEventContent?.scrollIntoView({ behavior: "smooth", block: "start" });
-      };
-    } else if (hasActiveEvent && hasScheduled && totalRows > 0 && checkedInCount >= totalRows) {
+    } else if (hasActiveEvent && hasScheduled) {
       step = "Stage";
-      nextTitle = "All scheduled ensembles are checked in.";
-      nextHint = "Use Stage Flow View to manage transitions and changeover differences.";
+      nextTitle = "Manage stage flow for scheduled ensembles.";
+      nextHint = "Use the running order and stage flow tools below.";
       nextActionLabel = "Open Stage Flow";
       nextAction = () => {
         els.liveEventContent?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -87,26 +317,19 @@ export function createAdminLiveRenderers({
       active: !hasActiveEvent,
     });
     setAdminStepChip(els.adminLiveStepChipQueue, {
-      label: "Check-In Queue",
-      done: hasScheduled && checkedInCount >= totalRows && totalRows > 0,
-      active: hasActiveEvent && hasScheduled && checkedInCount < totalRows,
+      label: "Running Order",
+      done: hasScheduled,
+      active: hasActiveEvent && hasScheduled,
     });
     setAdminStepChip(els.adminLiveStepChipSetup, {
       label: "Stage Flow",
       done: hasScheduled,
-      active: hasActiveEvent && hasScheduled && checkedInCount >= totalRows && totalRows > 0,
+      active: hasActiveEvent && hasScheduled,
     });
   }
 
   function closeLiveEventCheckinModal() {
-    if (!els.liveEventCheckinModal) return;
-    if (typeof closeModal === "function") {
-      closeModal(els.liveEventCheckinModal, {restoreFocus: true});
-    } else {
-      els.liveEventCheckinModal.classList.remove("is-open");
-      els.liveEventCheckinModal.setAttribute("aria-hidden", "true");
-    }
-    if (els.liveEventCheckinBody) els.liveEventCheckinBody.innerHTML = "";
+    // Schedule & Flow no longer owns check-in interactions.
   }
 
   function formatDateShort(dateLike) {
@@ -130,18 +353,25 @@ export function createAdminLiveRenderers({
 
     const controls = document.createElement("div");
     controls.className = "row";
-    const currentLabel = document.createElement("label");
-    currentLabel.className = "grow";
-    currentLabel.textContent = "Band On Stage";
-    const currentSelect = document.createElement("select");
-    currentLabel.appendChild(currentSelect);
-    const nextLabel = document.createElement("label");
-    nextLabel.className = "grow";
-    nextLabel.textContent = "Next Band";
-    const nextSelect = document.createElement("select");
-    nextLabel.appendChild(nextSelect);
-    controls.appendChild(currentLabel);
-    controls.appendChild(nextLabel);
+    const startBtn = document.createElement("button");
+    startBtn.type = "button";
+    startBtn.className = "ghost";
+    startBtn.textContent = "Start at First Band";
+    const prevBtn = document.createElement("button");
+    prevBtn.type = "button";
+    prevBtn.className = "ghost";
+    prevBtn.textContent = "Previous Band";
+    const nextBtn = document.createElement("button");
+    nextBtn.type = "button";
+    nextBtn.textContent = "Advance to Next Band";
+    controls.appendChild(startBtn);
+    controls.appendChild(prevBtn);
+    controls.appendChild(nextBtn);
+    const popoutBtn = document.createElement("button");
+    popoutBtn.type = "button";
+    popoutBtn.className = "ghost";
+    popoutBtn.textContent = "Open Stage Display";
+    controls.appendChild(popoutBtn);
     panel.appendChild(controls);
 
     const status = document.createElement("div");
@@ -157,267 +387,121 @@ export function createAdminLiveRenderers({
       const bTime = b.performanceAt?.getTime?.() || 0;
       return aTime - bTime;
     });
-    const toLabel = (row) =>
-      `${formatStartTime(row.performanceAt)} - ${formatSchoolEnsembleLabel({
-        schoolName: row.schoolName,
-        ensembleName: row.ensembleName,
-        ensembleId: row.ensembleId,
-      })}`;
-
-    const fillSelect = (select, selectedId) => {
-      select.innerHTML = "";
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Select an ensemble";
-      select.appendChild(placeholder);
-      sortedRows.forEach((row) => {
-        const option = document.createElement("option");
-        option.value = row.ensembleId;
-        option.textContent = toLabel(row);
-        select.appendChild(option);
-      });
-      if (selectedId && sortedRows.some((row) => row.ensembleId === selectedId)) {
-        select.value = selectedId;
-      }
-    };
-
-    const defaultCurrent = sortedRows[0]?.ensembleId || "";
-    const defaultNext = sortedRows[1]?.ensembleId || defaultCurrent;
-    state.admin.liveEventStageCurrentEnsembleId =
-      state.admin.liveEventStageCurrentEnsembleId || defaultCurrent;
-    state.admin.liveEventStageNextEnsembleId =
-      state.admin.liveEventStageNextEnsembleId || defaultNext;
-
-    fillSelect(currentSelect, state.admin.liveEventStageCurrentEnsembleId);
-    fillSelect(nextSelect, state.admin.liveEventStageNextEnsembleId);
+    const announcerIndex = Number(state.admin.announcerCurrentIndex);
+    if (!Number.isInteger(state.admin.liveEventStageIndex) || state.admin.liveEventStageIndex < 0) {
+      state.admin.liveEventStageIndex =
+        Number.isInteger(announcerIndex) && announcerIndex >= 0 && announcerIndex < sortedRows.length
+          ? announcerIndex
+          : 0;
+    }
 
     const renderDetail = () => {
-      const currentId = currentSelect.value || "";
-      const nextId = nextSelect.value || "";
-      state.admin.liveEventStageCurrentEnsembleId = currentId;
-      state.admin.liveEventStageNextEnsembleId = nextId;
       content.innerHTML = "";
-
-      if (!currentId || !nextId) {
-        status.textContent = "Choose both ensembles to view stage flow.";
+      const currentIndex = Math.max(0, Math.min(Number(state.admin.liveEventStageIndex) || 0, sortedRows.length - 1));
+      const currentRow = sortedRows[currentIndex] || null;
+      const nextRow = sortedRows[currentIndex + 1] || null;
+      state.admin.liveEventStageIndex = currentIndex;
+      if (!currentRow) {
+        status.textContent = "No ensemble selected for stage flow.";
         return;
       }
-      const currentRow = sortedRows.find((row) => row.ensembleId === currentId);
-      const nextRow = sortedRows.find((row) => row.ensembleId === nextId);
-      if (!currentRow || !nextRow) {
-        status.textContent = "Unable to load one or both selected ensembles.";
-        return;
-      }
+      const currentLabel = formatSchoolEnsembleLabel({
+        schoolName: currentRow.schoolName,
+        ensembleName: currentRow.ensembleName,
+        ensembleId: currentRow.ensembleId,
+      });
+      const nextLabel = nextRow
+        ? formatSchoolEnsembleLabel({
+            schoolName: nextRow.schoolName,
+            ensembleName: nextRow.ensembleName,
+            ensembleId: nextRow.ensembleId,
+          })
+        : "No next band scheduled";
 
-      status.textContent = "Showing at-a-glance setup and changeover diff.";
+      status.textContent = nextRow
+        ? `On stage: ${currentLabel} · On deck: ${nextLabel}`
+        : `On stage: ${currentLabel} · End of schedule`;
       content.appendChild(buildAdminLogisticsEntryPanel(currentRow.entry || {}, "Band On Stage"));
-      content.appendChild(buildAdminLogisticsEntryPanel(nextRow.entry || {}, "Next Band"));
-      content.appendChild(buildAdminLogisticsDiffPanel(currentRow.entry || {}, nextRow.entry || {}));
+      if (nextRow) {
+        content.appendChild(buildAdminLogisticsEntryPanel(nextRow.entry || {}, "Next Band"));
+        content.appendChild(buildAdminLogisticsDiffPanel(currentRow.entry || {}, nextRow.entry || {}));
+      } else {
+        const done = document.createElement("div");
+        done.className = "panel stack";
+        done.innerHTML = "<strong>Next Band</strong><div class='note'>No next band is scheduled. You are at the end of the running order.</div>";
+        content.appendChild(done);
+      }
+      prevBtn.disabled = currentIndex <= 0;
+      nextBtn.disabled = currentIndex >= sortedRows.length - 1;
+      popoutBtn.disabled = !nextRow;
+      popoutBtn.onclick = () => {
+        if (!nextRow) return;
+        const opened = openStageDisplayWindow({
+          rows: sortedRows,
+          currentIndex,
+          eventName: state.event.active?.name || "Stage Flow",
+        });
+        if (!opened) {
+          status.textContent = "Popup blocked. Allow popups for this site, then try Open Stage Display again.";
+        }
+      };
     };
 
-    currentSelect.addEventListener("change", renderDetail);
-    nextSelect.addEventListener("change", renderDetail);
+    startBtn.addEventListener("click", () => {
+      state.admin.liveEventStageIndex = 0;
+      renderDetail();
+    });
+    prevBtn.addEventListener("click", () => {
+      state.admin.liveEventStageIndex = Math.max(0, (Number(state.admin.liveEventStageIndex) || 0) - 1);
+      renderDetail();
+    });
+    nextBtn.addEventListener("click", () => {
+      state.admin.liveEventStageIndex = Math.min(sortedRows.length - 1, (Number(state.admin.liveEventStageIndex) || 0) + 1);
+      renderDetail();
+    });
     renderDetail();
     parent.appendChild(panel);
   }
 
-  function renderLiveEventCheckinModalBody(row) {
-    if (!els.liveEventCheckinBody) return;
-    const checkin = computeEnsembleCheckinStatus({
-      entry: row.entry || {},
-      directorProfile: row.directorProfile || {},
-    });
-    const directorName =
-      row.directorProfile?.displayName ||
-      row.directorProfile?.email ||
-      "No director profile on file";
-    const nafmeNumber = row.directorProfile?.nafmeMembershipNumber || "—";
-    const nafmeExp = formatDateShort(row.directorProfile?.nafmeMembershipExp);
-    const cardUrl = row.directorProfile?.nafmeCardImageUrl || "";
+  function renderLiveEventCheckinModalBody() {}
 
-    els.liveEventCheckinBody.innerHTML = "";
-    const summary = document.createElement("div");
-    summary.className = "stack";
-    const nafmeStatusText = checkin.nafmeValidFromProfile
-      ? "Valid from profile ✓"
-      : checkin.nafmeManualVerified
-        ? "Manually verified at check-in ✓"
-        : "Missing/Expired";
-    summary.innerHTML = `
-      <div class="note"><strong>School:</strong> ${escapeHtml(row.schoolName)}</div>
-      <div class="note"><strong>Ensemble:</strong> ${escapeHtml(row.ensembleName)}</div>
-      <div class="note"><strong>Director:</strong> ${escapeHtml(directorName)}</div>
-      <div class="note"><strong>NAfME:</strong> ${escapeHtml(nafmeStatusText)}</div>
-      <div class="note"><strong>Membership #:</strong> ${escapeHtml(nafmeNumber)}</div>
-      <div class="note"><strong>Expiration:</strong> ${escapeHtml(nafmeExp)}</div>
-    `;
-    if (cardUrl) {
-      const openCardBtn = document.createElement("button");
-      openCardBtn.type = "button";
-      openCardBtn.className = "ghost";
-      openCardBtn.textContent = "View NAfME Card Image";
-      openCardBtn.addEventListener("click", () => {
-        window.open(cardUrl, "_blank", "noopener,noreferrer");
-      });
-      summary.appendChild(openCardBtn);
-    }
-    els.liveEventCheckinBody.appendChild(summary);
-
-    const checklist = document.createElement("div");
-    checklist.className = "stack";
-    const checks = [
-      {
-        key: "checkinNafmeManualVerified",
-        label: checkin.nafmeValidFromProfile
-          ? "NAfME membership verified (auto from profile)"
-          : "NAfME membership verified (manual override)",
-        checked: checkin.nafmeValid,
-        disabled: checkin.nafmeValidFromProfile,
-      },
-      {
-        key: "checkinScoresReceived",
-        label: "Judge scores received at registration",
-        checked: Boolean(row.entry?.checkinScoresReceived),
-      },
-      {
-        key: "checkinChangesReviewed",
-        label: "Director asked about ensemble changes",
-        checked: Boolean(row.entry?.checkinChangesReviewed),
-      },
-    ];
-    if (checkin.lunchRequired) {
-      checks.push({
-        key: "checkinLunchConfirmed",
-        label: "Pizza order confirmed with director",
-        checked: Boolean(row.entry?.checkinLunchConfirmed),
-      });
-    }
-
-    checks.forEach((item) => {
-      const label = document.createElement("label");
-      label.className = "admin-school-checkin-item";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = item.checked;
-      input.disabled = Boolean(item.disabled);
-      const span = document.createElement("span");
-      span.textContent = item.label;
-      input.addEventListener("change", async () => {
-        const nextVal = input.checked;
-        input.disabled = true;
-        try {
-          await updateEntryCheckinFields(state.event.active?.id, row.ensembleId, { [item.key]: nextVal });
-          row.entry = { ...(row.entry || {}), [item.key]: nextVal };
-          renderLiveEventCheckinModalBody(row);
-          renderLiveEventCheckinQueue();
-        } catch (error) {
-          console.error("Failed to save check-in field", error);
-          input.checked = !nextVal;
-        } finally {
-          input.disabled = false;
-        }
-      });
-      label.appendChild(input);
-      label.appendChild(span);
-      checklist.appendChild(label);
-    });
-    if (!checkin.lunchRequired) {
-      const lunchNote = document.createElement("div");
-      lunchNote.className = "hint";
-      lunchNote.textContent = "No pizza order requested for this ensemble.";
-      checklist.appendChild(lunchNote);
-    }
-
-    const result = document.createElement("div");
-    result.className = checkin.checkedIn ? "badge badge--success" : "badge";
-    result.textContent = checkin.checkedIn ? "Checked In ✓" : "Not Checked In";
-    checklist.appendChild(result);
-    els.liveEventCheckinBody.appendChild(checklist);
-  }
-
-  function openLiveEventCheckinModal(row) {
-    if (!els.liveEventCheckinModal) return;
-    if (els.liveEventCheckinTitle) {
-      els.liveEventCheckinTitle.textContent = `${row.schoolName} ${row.ensembleName}`;
-    }
-    renderLiveEventCheckinModalBody(row);
-    if (typeof openModal === "function") {
-      openModal(els.liveEventCheckinModal, {
-        dismissible: true,
-        initialFocus: els.liveEventCheckinClose || null,
-      });
-    } else {
-      els.liveEventCheckinModal.classList.add("is-open");
-      els.liveEventCheckinModal.setAttribute("aria-hidden", "false");
-    }
-  }
+  function openLiveEventCheckinModal() {}
 
   async function renderLiveEventCheckinQueue() {
     if (!els.liveEventContent) return;
     const eventId = state.event.active?.id || "";
     const eventName = state.event.active?.name || "Active Event";
     if (!eventId) {
-      els.liveEventContent.innerHTML = "<p class='hint'>Set an active event to view the check-in queue and stage flow.</p>";
+      els.liveEventContent.innerHTML = "<p class='hint'>Set an active event to view the running order and stage flow.</p>";
       renderAdminLiveWorkflowGuidance({
         hasActiveEvent: false,
       });
       return;
     }
-    els.liveEventContent.innerHTML = "<p class='hint'>Loading check-in queue and stage flow...</p>";
+    els.liveEventContent.innerHTML = "<p class='hint'>Loading running order and stage flow...</p>";
     renderAdminLiveWorkflowGuidance({
       hasActiveEvent: true,
       hasScheduled: false,
-      totalRows: 0,
-      checkedInCount: 0,
     });
     try {
       let warningText = "";
       const schedEntries = await fetchScheduleEntries(eventId).catch((error) => {
-        console.warn("Live Event check-in: schedule unavailable", error);
+        console.warn("Schedule & Flow: schedule unavailable", error);
         warningText = "Schedule data is temporarily unavailable.";
         return state.event.rosterEntries || [];
       });
       const regEntries = await fetchRegisteredEnsembles(eventId).catch((error) => {
-        console.warn("Live Event check-in: entry data unavailable", error);
+        console.warn("Schedule & Flow: entry data unavailable", error);
         warningText = warningText
           ? `${warningText} Director entry data is partially unavailable.`
           : "Director entry data is partially unavailable.";
         return [];
       });
-      const directorsSnap = await getDocs(
-        query(collection(db, COLLECTIONS.users))
-      ).catch((error) => {
-        console.warn("Live Event check-in: unable to read director profiles; continuing without NAfME detail", error);
-        warningText = warningText
-          ? `${warningText} NAfME details unavailable.`
-          : "NAfME details unavailable.";
-        return null;
-      });
       const entryMap = new Map((regEntries || []).map((entry) => [entry.ensembleId || entry.id, entry]));
-      const directorsBySchool = new Map();
-      directorsSnap?.forEach((snap) => {
-        const data = snap.data() || {};
-        const isDirectorCapable =
-          data.role === "director" ||
-          data.roles?.director === true;
-        if (!isDirectorCapable) return;
-        const schoolId = data.schoolId || "";
-        if (!schoolId || directorsBySchool.has(schoolId)) return;
-        directorsBySchool.set(schoolId, {
-          uid: snap.id,
-          displayName: data.displayName || "",
-          email: data.email || "",
-          nafmeMembershipNumber: data.nafmeMembershipNumber || "",
-          nafmeMembershipExp: data.nafmeMembershipExp || null,
-          nafmeCardImageUrl: data.nafmeCardImageUrl || "",
-          cellPhone: data.cellPhone || "",
-        });
-      });
       const rows = (schedEntries || []).map((sched) => {
         const ensembleId = sched.ensembleId || sched.id;
         const reg = entryMap.get(ensembleId) || {};
         const schoolId = sched.schoolId || reg.schoolId || "";
-        const directorProfile = directorsBySchool.get(schoolId) || {};
         const schoolName = sched.schoolName || reg.schoolName || getSchoolNameById(state.admin.schoolsList, reg.schoolId) || "—";
         const ensembleName = normalizeEnsembleDisplayName({
           schoolName,
@@ -426,7 +510,6 @@ export function createAdminLiveRenderers({
         }) || "—";
         const grade = reg.declaredGradeLevel || reg.performanceGrade || "—";
         const perfAt = toDateOrNull(sched.performanceAt);
-        const checkin = computeEnsembleCheckinStatus({ entry: reg, directorProfile });
         return {
           ensembleId,
           schoolId,
@@ -435,9 +518,6 @@ export function createAdminLiveRenderers({
           grade,
           performanceAt: perfAt,
           entry: reg,
-          directorProfile,
-          checkin,
-          checkedIn: checkin.checkedIn,
         };
       }).sort((a, b) => {
         const aTime = a.performanceAt?.getTime?.() || 0;
@@ -450,67 +530,25 @@ export function createAdminLiveRenderers({
         renderAdminLiveWorkflowGuidance({
           hasActiveEvent: true,
           hasScheduled: false,
-          totalRows: 0,
-          checkedInCount: 0,
         });
         return;
       }
-      const checkedInCount = rows.filter((row) => row.checkedIn).length;
       renderAdminLiveWorkflowGuidance({
         hasActiveEvent: true,
         hasScheduled: true,
-        totalRows: rows.length,
-        checkedInCount,
-      });
-
-      const allowedFilters = new Set(["all", "not-checked-in", "checked-in"]);
-      const currentFilter = allowedFilters.has(state.admin.liveEventCheckinFilter)
-        ? state.admin.liveEventCheckinFilter
-        : "all";
-      state.admin.liveEventCheckinFilter = currentFilter;
-      const filteredRows = rows.filter((row) => {
-        if (currentFilter === "not-checked-in") return !row.checkedIn;
-        if (currentFilter === "checked-in") return row.checkedIn;
-        return true;
       });
 
       const wrap = document.createElement("div");
       wrap.className = "stack";
-      const topRow = document.createElement("div");
-      topRow.className = "row row--between";
       const meta = document.createElement("div");
       meta.className = "note admin-live-queue-meta";
-      meta.textContent = `Check-in Queue · ${eventName}`;
-      topRow.appendChild(meta);
-      const filter = document.createElement("select");
-      filter.className = "admin-live-queue-filter";
-      filter.innerHTML = `
-        <option value="all">All</option>
-        <option value="not-checked-in">Not Checked In</option>
-        <option value="checked-in">Checked In</option>
-      `;
-      filter.value = currentFilter;
-      filter.addEventListener("change", () => {
-        state.admin.liveEventCheckinFilter = filter.value || "all";
-        renderLiveEventCheckinQueue();
-      });
-      topRow.appendChild(filter);
-      wrap.appendChild(topRow);
+      meta.textContent = `Running Order · ${eventName}`;
+      wrap.appendChild(meta);
       if (warningText) {
         const warn = document.createElement("div");
         warn.className = "hint";
         warn.textContent = warningText;
         wrap.appendChild(warn);
-      }
-      if (!filteredRows.length) {
-        const empty = document.createElement("p");
-        empty.className = "hint";
-        empty.textContent = "No ensembles match this filter.";
-        wrap.appendChild(empty);
-        renderLiveEventStageSetup(wrap, rows);
-        els.liveEventContent.innerHTML = "";
-        els.liveEventContent.appendChild(wrap);
-        return;
       }
       const tableWrap = document.createElement("div");
       tableWrap.className = "schedule-timeline-table-wrap admin-live-queue-table";
@@ -523,37 +561,18 @@ export function createAdminLiveRenderers({
             <th>School</th>
             <th>Ensemble</th>
             <th>Grade</th>
-            <th>Checked In</th>
-            <th></th>
           </tr>
         </thead>
       `;
       const tbody = document.createElement("tbody");
-      filteredRows.forEach((row) => {
+      rows.forEach((row) => {
         const tr = document.createElement("tr");
-        const statusLabel = row.checkedIn
-          ? "✓"
-          : `${[
-              row.checkin.nafmeValid,
-              row.checkin.scoresReceived,
-              row.checkin.changesReviewed,
-              row.checkin.lunchConfirmed,
-            ].filter(Boolean).length}/${row.checkin.lunchRequired ? 4 : 3}`;
         tr.innerHTML = `
           <td>${escapeHtml(formatStartTime(row.performanceAt))}</td>
           <td>${escapeHtml(row.schoolName)}</td>
           <td>${escapeHtml(row.ensembleName)}</td>
           <td>${escapeHtml(row.grade)}</td>
-          <td>${escapeHtml(statusLabel)}</td>
         `;
-        const actionsTd = document.createElement("td");
-        const manageBtn = document.createElement("button");
-        manageBtn.type = "button";
-        manageBtn.className = "btn--secondary live-checkin-manage-btn";
-        manageBtn.dataset.ensembleId = row.ensembleId;
-        manageBtn.textContent = "Open Check-in";
-        actionsTd.appendChild(manageBtn);
-        tr.appendChild(actionsTd);
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
@@ -562,17 +581,10 @@ export function createAdminLiveRenderers({
       renderLiveEventStageSetup(wrap, rows);
       els.liveEventContent.innerHTML = "";
       els.liveEventContent.appendChild(wrap);
-      const rowMap = new Map(filteredRows.map((row) => [row.ensembleId, row]));
-      els.liveEventContent.querySelectorAll(".live-checkin-manage-btn").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const row = rowMap.get(btn.dataset.ensembleId || "");
-          if (row) openLiveEventCheckinModal(row);
-        });
-      });
     } catch (error) {
-      console.error("renderLiveEventCheckinQueue failed", error);
+      console.error("renderScheduleAndFlow failed", error);
       const message = error?.message || error?.code || "unknown error";
-      els.liveEventContent.innerHTML = `<p class='hint'>Unable to load check-in queue right now. (${escapeHtml(String(message))})</p>`;
+      els.liveEventContent.innerHTML = `<p class='hint'>Unable to load schedule and flow right now. (${escapeHtml(String(message))})</p>`;
       renderAdminLiveWorkflowGuidance({
         hasActiveEvent: Boolean(eventId),
       });

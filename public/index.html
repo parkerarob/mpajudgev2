@@ -50,6 +50,19 @@
       <div class="notice offline-banner is-hidden" id="offlineBanner" role="status" aria-live="polite">
         Offline: assessment actions are disabled until you reconnect.
       </div>
+      <section class="card public-program-card" id="publicProgramCard" hidden>
+        <div class="tab-header">
+          <div>
+            <h2 id="publicProgramTitle">South Site Program</h2>
+            <div class="tab-subtitle" id="publicProgramMeta">Public event program</div>
+          </div>
+          <div class="tab-header-actions">
+            <span class="badge" id="publicProgramStatus">Program</span>
+          </div>
+        </div>
+        <div class="note" id="publicProgramUpdated"></div>
+        <div class="public-program-body" id="publicProgramBody"></div>
+      </section>
       <div class="notice notice--info" id="provisioningNotice" hidden role="status" aria-live="polite"></div>
       <div class="notice notice--info is-hidden" id="eventModeBanner" role="status" aria-live="polite">
         <strong id="eventModeBannerLabel">No Active Event</strong>
@@ -64,6 +77,9 @@
         </button>
         <button class="tab" type="button" id="directorTab" role="tab" aria-controls="directorCard" data-tab="director" aria-selected="false">
           Director
+        </button>
+        <button class="tab" type="button" id="checkinTab" role="tab" aria-controls="checkinCard" data-tab="checkin" aria-selected="false">
+          Check-In
         </button>
       </nav>
       <div class="hint" id="tabLockHint"></div>
@@ -270,20 +286,20 @@
           <div id="adminViewChair" class="admin-view stack is-hidden" data-admin-view="liveEvent">
           <div class="panel">
             <h3>Schedule &amp; Flow</h3>
-            <p class="hint">Manage check-in, stage transitions, and running-order flow for scheduled ensembles.</p>
+            <p class="hint">Review the running order, stage transitions, and setup flow for scheduled ensembles.</p>
             <div class="admin-workflow-card stack" id="adminLiveWorkflowCard">
               <div class="row row--between row--center">
                 <div class="admin-workflow-title">Next Step</div>
                 <span class="badge" id="adminLiveCurrentStepPill">Start</span>
               </div>
               <div class="admin-workflow-next" id="adminLiveNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminLiveNextStepHint">Then run check-in and manage stage flow for scheduled ensembles.</div>
+              <div class="hint" id="adminLiveNextStepHint">Then review the running order and manage stage flow for scheduled ensembles.</div>
               <div class="row">
                 <button type="button" class="ghost btn--sm" id="adminLiveWorkflowActionBtn">Open Next Step</button>
               </div>
               <div class="admin-step-chips">
                 <span class="admin-step-chip" id="adminLiveStepChipEvent">Event</span>
-                <span class="admin-step-chip" id="adminLiveStepChipQueue">Check-In Queue</span>
+                <span class="admin-step-chip" id="adminLiveStepChipQueue">Running Order</span>
                 <span class="admin-step-chip" id="adminLiveStepChipSetup">Stage Flow</span>
               </div>
             </div>
@@ -393,6 +409,45 @@
                 </form>
                 <div class="note" id="assignmentsError"></div>
               </div>
+              <div class="admin-settings-block">
+                <h4>Confirmed Schedule Import</h4>
+                <p class="hint">Upload the final locked CSV schedule for the active event. This updates schedule times only.</p>
+                <label>
+                  Schedule CSV
+                  <input type="file" id="confirmedScheduleFileInput" accept=".csv,text/csv" />
+                </label>
+                <div class="row">
+                  <button type="button" id="confirmedScheduleAnalyzeBtn">Analyze CSV</button>
+                  <button type="button" class="ghost" id="confirmedScheduleApplyBtn" disabled>Apply to Active Event</button>
+                </div>
+                <div class="note" id="confirmedScheduleStatus">Choose a CSV file to preview matches.</div>
+                <div class="schedule-timeline-table-wrap">
+                  <table class="schedule-timeline-table" id="confirmedSchedulePreviewTable">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Band Name</th>
+                        <th>Performance</th>
+                        <th>Match</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="confirmedSchedulePreviewBody">
+                      <tr><td colspan="5" class="hint">No schedule preview loaded.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="admin-settings-block">
+                <h4>Program Export</h4>
+                <p class="hint">Build a printable program or export a CSV from the saved active-event schedule and repertoire data.</p>
+                <div class="row">
+                  <button type="button" id="programPreviewBtn">Open Print Preview</button>
+                  <button type="button" class="ghost" id="programCsvBtn">Download CSV</button>
+                  <button type="button" class="ghost" id="programPublishBtn">Publish to Homepage</button>
+                </div>
+                <div class="note" id="programExportStatus">Program export uses the active event schedule currently saved in the system.</div>
+              </div>
             </div>
           </div>
           <div class="panel admin-settings-shell" id="adminSchoolsSection">
@@ -473,6 +528,7 @@
                       <option value="teamLead">teamLead</option>
                       <option value="judge">judge</option>
                       <option value="director">director</option>
+                      <option value="checkin">checkin</option>
                     </select>
                   </label>
                   <label>
@@ -795,6 +851,7 @@
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceEnsemblesBtn">My Ensembles</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceInfoBtn">Event Info</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceSiteBtn">Site Info</button>
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceProgramBtn">Program</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceResultsBtn">Results Packet</button>
         </nav>
         <div class="ios-screen" id="directorDashboardLayout">
@@ -1165,6 +1222,20 @@
                 </ol>
               </section>
             </div>
+          </div>
+
+          <div class="stack is-hidden" id="directorProgramSection">
+            <div class="tab-header">
+              <div>
+                <h2 id="directorProgramTitle">Event Program</h2>
+                <div class="tab-subtitle" id="directorProgramMeta">Published event program</div>
+              </div>
+              <div class="tab-header-actions">
+                <span class="badge" id="directorProgramStatus">Program</span>
+              </div>
+            </div>
+            <div class="note" id="directorProgramUpdated"></div>
+            <div class="public-program-body" id="directorProgramBody"></div>
           </div>
 
           <div class="stack is-hidden director-results-shell" id="directorResultsSection">
@@ -1609,6 +1680,26 @@
           </form>
         </div>
       </div>
+
+      <section class="card" id="checkinCard" role="tabpanel" aria-labelledby="checkinTab" hidden>
+        <div class="checkin-layout">
+          <div class="checkin-queue-panel" id="checkinQueuePanel">
+            <div class="checkin-queue-header">
+              <h2>Ensemble Check-In</h2>
+              <select class="checkin-queue-filter" id="checkinQueueFilter">
+                <option value="all">All</option>
+                <option value="not-checked-in">Not Checked In</option>
+                <option value="checked-in">Checked In</option>
+              </select>
+            </div>
+            <div id="checkinQueueBody" class="stack"></div>
+          </div>
+          <div class="checkin-detail-panel is-hidden" id="checkinDetailPanel">
+            <button type="button" class="ghost checkin-back-btn" id="checkinBackToQueueBtn">&larr; Back to Queue</button>
+            <div id="checkinDetailBody" class="stack"></div>
+          </div>
+        </div>
+      </section>
 
       <div class="modal" id="liveEventCheckinModal" aria-hidden="true">
         <div class="modal-backdrop" id="liveEventCheckinBackdrop"></div>

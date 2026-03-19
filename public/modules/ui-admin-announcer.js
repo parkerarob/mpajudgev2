@@ -39,19 +39,37 @@ export function createAdminAnnouncerController({
     });
   }
 
-  function getGreetingPeriod() {
-    const hour = new Date().getHours();
-    return hour < 12 ? "morning" : "afternoon";
+  function getGreetingPeriod(dateLike) {
+    const date = toDateOrNull(dateLike) || new Date();
+    return date.getHours() < 12 ? "morning" : "afternoon";
   }
 
-  function formatPiece(piece = {}, { showGrade = false } = {}) {
+  function romanToArabicGrade(value = "") {
+    const text = String(value || "").trim().toUpperCase();
+    const map = {
+      I: "1",
+      II: "2",
+      III: "3",
+      IV: "4",
+      V: "5",
+      VI: "6",
+    };
+    if (!text) return "";
+    if (text.includes("/")) {
+      return text
+        .split("/")
+        .map((part) => map[part.trim()] || part.trim())
+        .join("/");
+    }
+    return map[text] || text;
+  }
+
+  function formatPiece(piece = {}) {
     const title = String(piece?.title || "").trim();
     const composer = String(piece?.composer || "").trim();
-    const grade = String(piece?.grade || "").trim();
     if (!title) return "";
     let line = title;
     if (composer) line += ` by ${composer}`;
-    if (showGrade && grade) line += ` (Grade ${grade})`;
     return line;
   }
 
@@ -59,17 +77,17 @@ export function createAdminAnnouncerController({
     const repertoire = entry?.repertoire || {};
     const lines = [];
     const march = formatPiece(repertoire.march);
-    const selection1 = formatPiece(repertoire.selection1, { showGrade: true });
-    const selection2 = formatPiece(repertoire.selection2, { showGrade: true });
+    const selection1 = formatPiece(repertoire.selection1);
+    const selection2 = formatPiece(repertoire.selection2);
     if (march) lines.push(march);
     if (selection1) lines.push(selection1);
     if (selection2) lines.push(selection2);
     return lines;
   }
 
-  function buildSegmentIntroScript(eventName) {
+  function buildSegmentIntroScript(eventName, currentPerformanceAt) {
     return [
-      `Good ${getGreetingPeriod()} and welcome to the North Carolina Bandmasters Association Music Performance Adjudication.`,
+      `Good ${getGreetingPeriod(currentPerformanceAt)} and welcome to the North Carolina Bandmasters Association Music Performance Adjudication.`,
       `We are honored to host ${eventName}, where student musicians from across the region showcase their dedication, artistry, and musicianship in a formal performance setting.`,
       "The Music Performance Adjudication, or MPA, provides ensembles with an opportunity to receive feedback from experienced adjudicators, helping to guide their continued musical growth.",
       "We thank all of the directors, students, families, supporters, and adjudicators who make this event possible.",
@@ -80,20 +98,23 @@ export function createAdminAnnouncerController({
 
   function buildAnnouncementScript(row) {
     const lines = [];
-    const ensembleRef = row.ensembleName || row.schoolName || "this ensemble";
+    const ensembleRef = [row.schoolName, row.ensembleName].filter(Boolean).join(" ").trim() || "this ensemble";
     const directorPart = row.directorName ? `, under the direction of ${row.directorName}` : "";
+    const announcedProgramLines = (row.programLines || []).map((line, index, arr) =>
+      arr.length > 1 && index === arr.length - 1 ? `and ${line}` : line
+    );
     lines.push(`Up next, we have the ${ensembleRef}${directorPart}.`);
     if (row.gradeLabel) {
-      lines.push(`Their Grade ${row.gradeLabel} performance includes:`);
-    } else if (row.programLines.length) {
+      lines.push(`Their Grade ${romanToArabicGrade(row.gradeLabel)} performance includes:`);
+    } else if (announcedProgramLines.length) {
       lines.push("Their performance includes:");
     }
-    row.programLines.forEach((line) => {
+    announcedProgramLines.forEach((line) => {
       lines.push(line);
     });
     lines.push("");
     lines.push(
-      `The North Carolina Bandmasters Association proudly presents ${ensembleRef} for their MPA performance.`
+      `The North Carolina Bandmasters Association proudly presents the ${ensembleRef} for their MPA performance.`
     );
     return lines.join("\n");
   }
@@ -158,7 +179,7 @@ export function createAdminAnnouncerController({
 
     const featuredScript = buildAnnouncementScript(featuredRow);
     const nextScript = nextRow ? buildAnnouncementScript(nextRow) : "No next script available.";
-    const introScript = buildSegmentIntroScript(eventName);
+    const introScript = buildSegmentIntroScript(eventName, featuredRow?.performanceAt);
 
     const groupHtml = Array.from(grouped.entries())
       .map(([heading, items]) => {

@@ -137,6 +137,21 @@ export function createDirectorHandlerBinder({
       updateDirectorAttachUI();
       ensureDirectorHash();
     };
+    const navigateDirectorProgram = () => {
+      if (!getDirectorSchoolId()) {
+        alertUser("Attach to your school first.");
+        return;
+      }
+      if (!ensureDirectorEventSelected()) return;
+      if (hasDirectorUnsavedChanges() && !confirmUser("You have unsaved changes. Leave anyway?")) {
+        return;
+      }
+      discardDirectorDraftChanges();
+      state.director.view = "program";
+      state.director.activePath = "program";
+      updateDirectorAttachUI();
+      ensureDirectorHash();
+    };
     const navigateDirectorResults = async () => {
       if (!getDirectorSchoolId()) {
         alertUser("Attach to your school first.");
@@ -218,6 +233,9 @@ export function createDirectorHandlerBinder({
     }
     if (els.directorWorkspaceSiteBtn) {
       els.directorWorkspaceSiteBtn.addEventListener("click", navigateDirectorSiteInfo);
+    }
+    if (els.directorWorkspaceProgramBtn) {
+      els.directorWorkspaceProgramBtn.addEventListener("click", navigateDirectorProgram);
     }
     if (els.directorWorkspaceResultsBtn) {
       els.directorWorkspaceResultsBtn.addEventListener("click", navigateDirectorResults);

@@ -84,6 +84,7 @@ export function createJudgeOpenDirectorReference({
     const nonStandardRows = Array.isArray(instrumentation.nonStandard)
       ? instrumentation.nonStandard.filter((r) => r?.instrumentName)
       : [];
+    const instrumentationNotes = String(instrumentation.otherInstrumentationNotes || "").trim();
 
     // Grade
     const gradeEl = document.createElement("div");
@@ -128,6 +129,14 @@ export function createJudgeOpenDirectorReference({
     }
 
     summary.appendChild(instrGrid);
+
+    if (instrumentationNotes) {
+      addSectionLabel("Instrumentation Notes");
+      const notesEl = document.createElement("div");
+      notesEl.className = "note";
+      notesEl.textContent = instrumentationNotes;
+      summary.appendChild(notesEl);
+    }
 
     els.judgeOpenDirectorRefContent.appendChild(summary);
   }

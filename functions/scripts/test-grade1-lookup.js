@@ -10,8 +10,8 @@ const {GRADE_ONE_MAP, computeGradeOneKey} = require("../shared/grade1-lookup");
 const expected = {
   I: ["111", "112", "113", "114", "115"],
   II: ["122", "123", "222", "223", "224", "225"],
-  III: ["133", "234", "332", "333", "334", "335"],
-  IV: ["144", "345", "442", "443", "444", "445"],
+  III: ["133", "233", "234", "333", "334", "335"],
+  IV: ["144", "244", "344", "345", "444", "445"],
   V: ["155", "255", "355", "455", "555"],
 };
 
@@ -35,6 +35,9 @@ allExpected.forEach((key) => {
 
 const permutations = [
   {values: [3, 2, 1], expected: "II"},
+  {values: [3, 2, 3], expected: "III"},
+  {values: [4, 4, 2], expected: "IV"},
+  {values: [4, 4, 3], expected: "IV"},
   {values: [5, 4, 3], expected: "IV"},
   {values: [2, 2, 5], expected: "II"},
 ];

@@ -17,6 +17,18 @@ export function createJudgeOpenCore({
   startOpenLevelMeter,
   stopOpenLevelMeter,
 } = {}) {
+  function formatJudgeOpenStatusLabel(status = "") {
+    const normalized = String(status || "").trim().toLowerCase();
+    if (normalized === "locked" || normalized === "submitted") return "Submitted for Review";
+    if (normalized === "released") return "Released";
+    if (normalized === "reopened") return "Reopened";
+    return "Draft";
+  }
+
+  function formatJudgeOpenModeLabel(mode = "") {
+    return String(mode || "").trim().toLowerCase() === "official" ? "Event Day" : "Practice";
+  }
+
   const runWithLoading = withLoading || (async (_button, asyncFn) => asyncFn());
 
   function autoSizeCaptionTextarea(textareaEl) {
@@ -111,13 +123,13 @@ export function createJudgeOpenCore({
         }
         els.judgeOpenSubmitHint.textContent = `Blocked: ${parts.join(" and ")} missing.`;
       } else if (!readiness.editable) {
-        els.judgeOpenSubmitHint.textContent = "Blocked: assessment already submitted or released.";
+        els.judgeOpenSubmitHint.textContent = "Blocked: sheet is already submitted for review or released.";
       } else if (readiness.recordingActive) {
         els.judgeOpenSubmitHint.textContent = "Blocked: stop recording first.";
       } else if (readiness.pendingUploads) {
         els.judgeOpenSubmitHint.textContent = "Blocked: waiting for uploads.";
       } else {
-        els.judgeOpenSubmitHint.textContent = "Ready to submit.";
+        els.judgeOpenSubmitHint.textContent = "Ready to submit for review.";
       }
     }
     return readiness;
@@ -130,8 +142,7 @@ export function createJudgeOpenCore({
     const readiness = renderOpenReadiness();
     const school = selectedExisting.schoolName || packet.schoolName || "School";
     const ensemble = selectedExisting.ensembleName || packet.ensembleName || "Ensemble";
-    const statusRaw = String(packet.status || "draft");
-    const statusLabel = statusRaw ? statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1) : "Draft";
+    const statusLabel = formatJudgeOpenStatusLabel(packet.status || "draft");
     const title = `${school} - ${ensemble}`;
     els.judgeOpenHeaderTitle.textContent = title;
     els.judgeOpenHeaderSub.textContent = statusLabel;
@@ -146,8 +157,8 @@ export function createJudgeOpenCore({
         ? "Sight Reading"
         : "Stage";
       const segments = Number(packet.segmentCount || packet.audioSessionCount || 0);
-      const mode = packet.mode === "official" ? "Official" : "Practice";
-      els.judgeOpenSummaryMeta.textContent = `${mode} ${formLabel} assessment - ${segments} recording part${segments === 1 ? "" : "s"}`;
+      const mode = formatJudgeOpenModeLabel(packet.mode);
+      els.judgeOpenSummaryMeta.textContent = `${mode} ${formLabel} sheet - ${segments} recording part${segments === 1 ? "" : "s"}`;
     }
   }
 
@@ -471,6 +482,10 @@ export function createJudgeOpenCore({
     if (els.judgeOpenSubmitBtn) {
       const submitLoading = els.judgeOpenSubmitBtn.dataset.loading === "true";
       els.judgeOpenSubmitBtn.disabled = !canSubmit || submitLoading;
+      if (!submitLoading) {
+        els.judgeOpenSubmitBtn.textContent =
+          state.judgeOpen.mode === "official" ? "Submit for Review" : "Submit Practice Sheet";
+      }
     }
     if (els.judgeOpenTranscriptInput) {
       els.judgeOpenTranscriptInput.disabled = !editable;

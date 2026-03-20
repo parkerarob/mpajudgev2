@@ -99,7 +99,7 @@
           <button type="button" class="admin-subnav-btn" id="adminSubnavDashboardBtn" role="tab" data-admin-view="dashboard" aria-selected="true">Dashboard</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavEventChairBtn" role="tab" data-admin-view="preEvent" aria-selected="false">Registrations</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavChairBtn" role="tab" data-admin-view="liveEvent" aria-selected="false">Schedule &amp; Flow</button>
-          <button type="button" class="admin-subnav-btn" id="adminSubnavSubmissionsBtn" role="tab" data-admin-view="submissions" aria-selected="false">Live Submissions</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavSubmissionsBtn" role="tab" data-admin-view="submissions" aria-selected="false">Review Queue</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavPacketsBtn" role="tab" data-admin-view="packets" aria-selected="false">Packets &amp; Results</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavRatingsBtn" role="tab" data-admin-view="ratings" aria-selected="false">Ratings</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavAnnouncerBtn" role="tab" data-admin-view="announcer" aria-selected="false">Announcer</button>
@@ -138,10 +138,10 @@
                 <button type="button" class="ghost" data-admin-go-view="liveEvent">Open Schedule &amp; Flow</button>
               </div>
               <div class="admin-dashboard-card">
-                <div class="admin-dashboard-label">Live Submissions</div>
+                <div class="admin-dashboard-label">Review Queue</div>
                 <div class="admin-dashboard-value" id="adminDashboardSubmissionsValue">0</div>
                 <div class="hint" id="adminDashboardSubmissionsHint">No assessments in queue.</div>
-                <button type="button" class="ghost" data-admin-go-view="submissions">Open Live Submissions</button>
+                <button type="button" class="ghost" data-admin-go-view="submissions">Open Review Queue</button>
               </div>
               <div class="admin-dashboard-card">
                 <div class="admin-dashboard-label">Director Input Ready</div>
@@ -294,12 +294,12 @@
                   <thead>
                     <tr>
                       <th scope="col">School / Ensemble</th>
-                      <th scope="col">Grade</th>
+                      <th scope="col" class="admin-ratings-divider">Grade</th>
                       <th scope="col"><span>Stage 1</span><div class="admin-ratings-header-meta" id="adminRatingsStage1Judge"></div></th>
                       <th scope="col"><span>Stage 2</span><div class="admin-ratings-header-meta" id="adminRatingsStage2Judge"></div></th>
                       <th scope="col"><span>Stage 3</span><div class="admin-ratings-header-meta" id="adminRatingsStage3Judge"></div></th>
                       <th scope="col"><span>SR</span><div class="admin-ratings-header-meta" id="adminRatingsSightJudge"></div></th>
-                      <th scope="col">Overall Rating</th>
+                      <th scope="col" class="admin-ratings-divider-left">Overall Rating</th>
                     </tr>
                   </thead>
                   <tbody id="adminRatingsTableBody"></tbody>
@@ -334,15 +334,15 @@
 
           <div id="adminViewSubmissions" class="admin-view stack is-hidden" data-admin-view="submissions">
           <div class="panel">
-            <h3>Live Submissions</h3>
-            <p class="hint">Review saved judge assessments, fix association, and officialize approved records.</p>
+            <h3>Review Queue</h3>
+            <p class="hint">Review submitted event-day sheets, fix routing if needed, and approve them into packet slots.</p>
             <div class="admin-workflow-card stack" id="adminSubmissionsWorkflowCard">
               <div class="row row--between row--center">
                 <div class="admin-workflow-title">Next Step</div>
                 <span class="badge" id="adminSubmissionsCurrentStepPill">Start</span>
               </div>
               <div class="admin-workflow-next" id="adminSubmissionsNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminSubmissionsNextStepHint">Then review incoming assessments and officialize approved records.</div>
+              <div class="hint" id="adminSubmissionsNextStepHint">Then review incoming assessments and approve them into packet slots.</div>
               <div class="row">
                 <button type="button" class="ghost btn--sm" id="adminSubmissionsWorkflowActionBtn">Open Next Step</button>
               </div>
@@ -350,7 +350,7 @@
                 <span class="admin-step-chip" id="adminSubmissionsStepChipEvent">Event</span>
                 <span class="admin-step-chip" id="adminSubmissionsStepChipQueue">Queue</span>
                 <span class="admin-step-chip" id="adminSubmissionsStepChipReview">Review</span>
-                <span class="admin-step-chip" id="adminSubmissionsStepChipOfficialize">Officialize</span>
+                <span class="admin-step-chip" id="adminSubmissionsStepChipOfficialize">Approve</span>
               </div>
             </div>
             <div class="row row--between row--center">
@@ -362,7 +362,7 @@
                   <option value="all">All</option>
                   <option value="attached">Attached</option>
                   <option value="uncertain">Uncertain</option>
-                  <option value="officialized">Officialized</option>
+                  <option value="officialized">Approved</option>
                   <option value="excluded">Excluded</option>
                 </select>
               </label>
@@ -706,8 +706,8 @@
           <div class="panel stack" id="judgeOpenModeSelectView">
             <p class="hint">Practice mode does not affect official event results.</p>
             <div class="row">
-              <button type="button" class="btn--secondary" id="judgeOpenChoosePracticeBtn">Open Practice Workspace</button>
-              <button type="button" class="btn-primary" id="judgeOpenChooseOfficialBtn">Open Official Workspace</button>
+              <button type="button" class="btn--secondary" id="judgeOpenChoosePracticeBtn">Open Practice</button>
+              <button type="button" class="btn-primary" id="judgeOpenChooseOfficialBtn">Open Event Day</button>
             </div>
             <div class="note" id="judgeOpenModeHint"></div>
           </div>
@@ -861,7 +861,7 @@
           <span class="is-hidden" id="judgeOpenCaptionTotal">Incomplete</span>
           <div class="judge-open-submit-side">
             <div class="note" id="judgeOpenSubmitHint"></div>
-            <button type="button" id="judgeOpenSubmitBtn" class="btn--lg btn-primary">Submit Assessment</button>
+            <button type="button" id="judgeOpenSubmitBtn" class="btn--lg btn-primary">Submit for Review</button>
           </div>
           <div class="judge-open-final-rating">
             <div class="judge-open-rating-label">Final Rating</div>

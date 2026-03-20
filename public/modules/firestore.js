@@ -57,9 +57,9 @@ export async function fetchEnsembleGrade(eventId, ensembleId) {
     const entrySnap = await getDoc(entryRef);
     if (entrySnap.exists()) {
       const data = entrySnap.data();
-      const declared = normalizeGradeBand(data.declaredGradeLevel);
       const fromRepertoire = normalizeGradeBand(data.performanceGrade);
-      return declared || fromRepertoire;
+      const declared = normalizeGradeBand(data.declaredGradeLevel);
+      return fromRepertoire || declared;
     }
   }
   const ensembleRef = doc(db, COLLECTIONS.ensembles, ensembleId);

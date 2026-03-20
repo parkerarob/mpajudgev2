@@ -3258,6 +3258,14 @@ select:focus-visible {
   font-weight: 600;
 }
 
+.admin-ratings-divider {
+  border-right: 2px solid rgba(255, 255, 255, 0.18);
+}
+
+.admin-ratings-divider-left {
+  border-left: 2px solid rgba(255, 255, 255, 0.18);
+}
+
 .admin-ratings-slot-value {
   font-weight: 700;
   font-size: 15px;

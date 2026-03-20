@@ -18,6 +18,18 @@ export function createJudgeOpenRenderers({
   openJudgeOpenPacket,
   setOpenPacketHint,
 } = {}) {
+  function formatJudgeOpenStatusLabel(status = "") {
+    const normalized = String(status || "").trim().toLowerCase();
+    if (normalized === "locked" || normalized === "submitted") return "Submitted for Review";
+    if (normalized === "released") return "Released";
+    if (normalized === "reopened") return "Reopened";
+    return "Draft";
+  }
+
+  function formatJudgeOpenModeLabel(mode = "") {
+    return String(mode || "").trim().toLowerCase() === "official" ? "Event Day" : "Practice";
+  }
+
   function formatPacketUpdatedAt(packet) {
     const raw = packet.updatedAt?.toMillis ? packet.updatedAt.toMillis() : null;
     if (!raw) return "Updated recently";
@@ -35,7 +47,7 @@ export function createJudgeOpenRenderers({
 
   async function handleDeletePacket(packet, deleteBtn) {
     if (["submitted", "locked", "released"].includes(String(packet?.status || "").trim())) {
-      setOpenPacketHint("Submitted or released assessments must be managed from admin review.");
+      setOpenPacketHint("Submitted or released sheets must be managed from the admin review queue.");
       return;
     }
     if (state.judgeOpen.mediaRecorder?.state === "recording") {
@@ -113,9 +125,8 @@ export function createJudgeOpenRenderers({
       card.className = "packet-card";
       card.dataset.packetId = packet.id;
       const progress = computePacketProgress(packet);
-      const statusRaw = packet.status || "draft";
-      const status = statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1);
-      const mode = packet.mode === "official" ? "Official" : "Practice";
+      const status = formatJudgeOpenStatusLabel(packet.status || "draft");
+      const mode = formatJudgeOpenModeLabel(packet.mode);
       const creator =
         packet.createdByJudgeName ||
         packet.createdByJudgeEmail ||
@@ -126,7 +137,7 @@ export function createJudgeOpenRenderers({
           <div class="packet-card-title">${packet.schoolName || "Unknown school"} - ${packet.ensembleName || "Unknown ensemble"}</div>
           <span class="status-badge">${status}</span>
         </div>
-        <div class="packet-card-meta">${mode} assessment</div>
+        <div class="packet-card-meta">${mode} sheet</div>
         <div class="packet-card-meta">Judge: ${creator}</div>
         <div class="packet-card-meta">${formatPacketUpdatedAt(packet)}</div>
         <div class="progress-bar"><span style="width: ${progress}%"></span></div>
@@ -140,7 +151,7 @@ export function createJudgeOpenRenderers({
       const packetStatus = String(packet.status || "").trim();
       if (["submitted", "locked", "released"].includes(packetStatus)) {
         deleteBtn.disabled = true;
-        deleteBtn.title = "Submitted or released assessments must be managed from admin review.";
+        deleteBtn.title = "Submitted or released sheets must be managed from the admin review queue.";
       }
       deleteBtn.addEventListener("click", async (event) => {
         event.stopPropagation();

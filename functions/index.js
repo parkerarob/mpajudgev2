@@ -3065,10 +3065,7 @@ exports.createOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
     [FIELDS.packets.mode]: mode,
     [FIELDS.packets.officialEventId]: officialEventId,
     [FIELDS.packets.officialJudgePosition]: officialJudgePosition,
-    [FIELDS.packets.officialSubmissionId]:
-      mode === ADJUDICATION_MODES.official && officialEventId && ensembleId && officialJudgePosition ?
-        `${officialEventId}_${ensembleId}_${officialJudgePosition}` :
-        "",
+    [FIELDS.packets.officialSubmissionId]: "",
     [FIELDS.packets.transcript]: "",
     [FIELDS.packets.transcriptFull]: "",
     [FIELDS.packets.captions]: {},
@@ -3348,21 +3345,16 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
           String(data.officialJudgePosition || packet.officialJudgePosition || assignment?.judgePosition || packet.judgePosition || "") :
           "",
       [FIELDS.packets.officialSubmissionId]:
-        packetMode === ADJUDICATION_MODES.official ?
-          buildOfficialAssessmentId({
-            eventId: effectiveOfficialEventId,
-            ensembleId: nextEnsembleId,
-            judgePosition: effectiveOfficialJudgePosition,
-          }) :
-          "",
+        "",
       [FIELDS.packets.captureStatus]: STATUSES.submitted,
       [FIELDS.packets.associationState]:
         packetMode === ADJUDICATION_MODES.official &&
         effectiveOfficialEventId &&
         effectiveOfficialJudgePosition ?
           "attached" :
-          "uncertain",
-      [FIELDS.packets.reviewState]: "pending",
+          "",
+      [FIELDS.packets.reviewState]:
+        packetMode === ADJUDICATION_MODES.official ? "pending" : "",
       [FIELDS.packets.officialAssessmentId]: "",
       [FIELDS.packets.excludedReason]: "",
       [FIELDS.packets.transcript]: String(data.transcript || ""),
@@ -3390,47 +3382,47 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
     const rawAssessmentSnap = await tx.get(rawAssessmentRef);
     const currentTranscript = String(data.transcriptFull || data.transcript || "").trim();
     tx.set(packetRef, payload, {merge: true});
-    tx.set(rawAssessmentRef, {
-      [FIELDS.rawAssessments.status]: STATUSES.submitted,
-      [FIELDS.rawAssessments.associationState]:
-        packetMode === ADJUDICATION_MODES.official &&
-        effectiveOfficialEventId &&
-        effectiveOfficialJudgePosition ?
-          "attached" :
-          "uncertain",
-      [FIELDS.rawAssessments.reviewState]: "pending",
-      [FIELDS.rawAssessments.packetId]: packetId,
-      [FIELDS.rawAssessments.officialAssessmentId]: "",
-      [FIELDS.rawAssessments.judgeUid]: request.auth.uid,
-      [FIELDS.rawAssessments.judgeName]:
-        data.createdByJudgeName || packet.createdByJudgeName || "",
-      [FIELDS.rawAssessments.judgeEmail]:
-        data.createdByJudgeEmail || packet.createdByJudgeEmail || "",
-      [FIELDS.rawAssessments.schoolId]: nextSchoolId,
-      [FIELDS.rawAssessments.eventId]: effectiveOfficialEventId,
-      [FIELDS.rawAssessments.ensembleId]: nextEnsembleId,
-      [FIELDS.rawAssessments.judgePosition]: effectiveOfficialJudgePosition,
-      [FIELDS.rawAssessments.formType]: nextFormType,
-      [FIELDS.rawAssessments.audioUrl]: canonicalAudio?.url || latestAudioUrl,
-      [FIELDS.rawAssessments.audioPath]: canonicalAudio?.path || "",
-      [FIELDS.rawAssessments.audioSegments]: audioSegments,
-      [FIELDS.rawAssessments.audioDurationSec]: Number(
-          canonicalAudio?.durationSec || packet.tapeDurationSec || 0,
-      ),
-      [FIELDS.rawAssessments.transcript]: currentTranscript,
-      [FIELDS.rawAssessments.writtenComments]: currentTranscript,
-      [FIELDS.rawAssessments.captions]: captions,
-      [FIELDS.rawAssessments.captionScoreTotal]: captionScoreTotal,
-      [FIELDS.rawAssessments.computedFinalRatingJudge]: rating.value,
-      [FIELDS.rawAssessments.computedFinalRatingLabel]: rating.label,
-      [FIELDS.rawAssessments.transcriptStatus]:
-        String(packet.transcriptStatus || data.transcriptStatus || (currentTranscript ? "complete" : "idle")),
-      [FIELDS.rawAssessments.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
-      [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
-      [FIELDS.rawAssessments.createdAt]: rawAssessmentSnap.exists ?
-        (rawAssessmentSnap.data()?.createdAt || admin.firestore.FieldValue.serverTimestamp()) :
-        admin.firestore.FieldValue.serverTimestamp(),
-    }, {merge: true});
+    if (packetMode === ADJUDICATION_MODES.official) {
+      tx.set(rawAssessmentRef, {
+        [FIELDS.rawAssessments.status]: STATUSES.submitted,
+        [FIELDS.rawAssessments.associationState]:
+          effectiveOfficialEventId && effectiveOfficialJudgePosition ? "attached" : "",
+        [FIELDS.rawAssessments.reviewState]: "pending",
+        [FIELDS.rawAssessments.packetId]: packetId,
+        [FIELDS.rawAssessments.officialAssessmentId]: "",
+        [FIELDS.rawAssessments.judgeUid]: request.auth.uid,
+        [FIELDS.rawAssessments.judgeName]:
+          data.createdByJudgeName || packet.createdByJudgeName || "",
+        [FIELDS.rawAssessments.judgeEmail]:
+          data.createdByJudgeEmail || packet.createdByJudgeEmail || "",
+        [FIELDS.rawAssessments.schoolId]: nextSchoolId,
+        [FIELDS.rawAssessments.eventId]: effectiveOfficialEventId,
+        [FIELDS.rawAssessments.ensembleId]: nextEnsembleId,
+        [FIELDS.rawAssessments.judgePosition]: effectiveOfficialJudgePosition,
+        [FIELDS.rawAssessments.formType]: nextFormType,
+        [FIELDS.rawAssessments.audioUrl]: canonicalAudio?.url || latestAudioUrl,
+        [FIELDS.rawAssessments.audioPath]: canonicalAudio?.path || "",
+        [FIELDS.rawAssessments.audioSegments]: audioSegments,
+        [FIELDS.rawAssessments.audioDurationSec]: Number(
+            canonicalAudio?.durationSec || packet.tapeDurationSec || 0,
+        ),
+        [FIELDS.rawAssessments.transcript]: currentTranscript,
+        [FIELDS.rawAssessments.writtenComments]: currentTranscript,
+        [FIELDS.rawAssessments.captions]: captions,
+        [FIELDS.rawAssessments.captionScoreTotal]: captionScoreTotal,
+        [FIELDS.rawAssessments.computedFinalRatingJudge]: rating.value,
+        [FIELDS.rawAssessments.computedFinalRatingLabel]: rating.label,
+        [FIELDS.rawAssessments.transcriptStatus]:
+          String(packet.transcriptStatus || data.transcriptStatus || (currentTranscript ? "complete" : "idle")),
+        [FIELDS.rawAssessments.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.rawAssessments.createdAt]: rawAssessmentSnap.exists ?
+          (rawAssessmentSnap.data()?.createdAt || admin.firestore.FieldValue.serverTimestamp()) :
+          admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    } else if (rawAssessmentSnap.exists) {
+      tx.delete(rawAssessmentRef);
+    }
   });
   await writePacketAudit(packetRef, {
     action: "submit",
@@ -3471,6 +3463,7 @@ exports.reassignRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (reques
     [FIELDS.rawAssessments.formType]: formType,
     [FIELDS.rawAssessments.associationState]: "attached",
     [FIELDS.rawAssessments.reviewState]: normalizeReviewState(raw.reviewState),
+    [FIELDS.rawAssessments.officialAssessmentId]: "",
     [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
   }, {merge: true});
   const packetId = String(raw.packetId || "").trim();
@@ -3480,10 +3473,11 @@ exports.reassignRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (reques
       [FIELDS.packets.ensembleId]: ensembleId,
       [FIELDS.packets.schoolId]: schoolId,
       [FIELDS.packets.officialJudgePosition]: judgePosition,
-      [FIELDS.packets.officialSubmissionId]: buildOfficialAssessmentId({eventId, ensembleId, judgePosition}),
+      [FIELDS.packets.officialSubmissionId]: "",
       [FIELDS.packets.formType]: formType,
       [FIELDS.packets.associationState]: "attached",
       [FIELDS.packets.reviewState]: normalizeReviewState(raw.reviewState),
+      [FIELDS.packets.officialAssessmentId]: "",
       [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     }, {merge: true});
   }
@@ -3562,7 +3556,7 @@ exports.deleteRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request)
   if (rawStatus === STATUSES.officialized || officialSlotExists) {
     throw new HttpsError(
         "failed-precondition",
-        "Officialized assessments cannot be deleted from Live Submissions.",
+        "Approved queue items cannot be deleted from the review queue.",
     );
   }
 
@@ -3589,13 +3583,13 @@ exports.deleteRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request)
       if (linkedPacketOfficialId) {
         throw new HttpsError(
             "failed-precondition",
-            "This sheet is already attached to an officialized results slot.",
+            "This sheet is already attached to an approved packet slot.",
         );
       }
       if (isReleasedOpenPacketStatus(packet.status)) {
         throw new HttpsError(
             "failed-precondition",
-            "Released sheets cannot be deleted from Live Submissions.",
+            "Released sheets cannot be deleted from the review queue.",
         );
       }
       await deleteOpenPacketDocument({
@@ -3722,6 +3716,7 @@ exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
   if (packetId) {
     const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
     await packetRef.set({
+      [FIELDS.packets.officialSubmissionId]: officialAssessmentId,
       [FIELDS.packets.officialAssessmentId]: officialAssessmentId,
       [FIELDS.packets.reviewState]: "approved",
       [FIELDS.packets.associationState]: "attached",

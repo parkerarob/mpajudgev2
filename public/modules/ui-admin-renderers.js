@@ -102,6 +102,8 @@ export function createAdminRenderers({
 
   function formatRawAssessmentStatus(value) {
     const normalized = String(value || "").trim() || "draft";
+    if (normalized === "submitted" || normalized === "locked") return "pending review";
+    if (normalized === "officialized") return "approved to packet";
     return normalized.replace(/_/g, " ");
   }
 
@@ -352,8 +354,8 @@ export function createAdminRenderers({
     }
     if (els.adminSubmissionsHint) {
       els.adminSubmissionsHint.textContent = items.length
-        ? `${items.length} assessment${items.length === 1 ? "" : "s"} in queue.`
-        : "No assessments in this filter.";
+        ? `${items.length} submission${items.length === 1 ? "" : "s"} in queue.`
+        : "No submissions in this filter.";
     }
     els.adminSubmissionsList.innerHTML = "";
     items.forEach((item) => {
@@ -405,10 +407,10 @@ export function createAdminRenderers({
       const emptyNote = document.createElement("div");
       emptyNote.className = "note";
       emptyNote.textContent = items.length
-        ? "Select an assessment to review."
+        ? "Select a submission to review."
         : state.event.active?.id
-          ? "No assessments are waiting in this queue."
-          : "Set an active event to begin reviewing assessments.";
+          ? "No submissions are waiting in this queue."
+          : "Set an active event to begin reviewing submissions.";
       empty.appendChild(emptyNote);
       const actions = document.createElement("div");
       actions.className = "row";
@@ -603,7 +605,7 @@ export function createAdminRenderers({
     reassignBtn.textContent = "Reassign";
     const officializeBtn = document.createElement("button");
     officializeBtn.type = "button";
-    officializeBtn.textContent = "Officialize";
+    officializeBtn.textContent = "Approve to Packet";
     const excludeBtn = document.createElement("button");
     excludeBtn.type = "button";
     excludeBtn.className = "ghost";
@@ -636,9 +638,18 @@ export function createAdminRenderers({
     const isOfficialized = String(selected.status || "").trim() === "officialized";
     deleteBtn.disabled = isOfficialized;
     if (isOfficialized) {
-      deleteBtn.title = "Officialized assessments cannot be deleted from Live Submissions.";
+      deleteBtn.title = "Approved submissions cannot be deleted from the review queue.";
     } else {
       deleteBtn.title = "";
+    }
+    reassignBtn.disabled = isOfficialized;
+    officializeBtn.disabled = isOfficialized;
+    if (isOfficialized) {
+      reassignBtn.title = "Approved submissions must be managed from Packets & Results.";
+      officializeBtn.title = "This submission is already approved into a packet slot.";
+    } else {
+      reassignBtn.title = "";
+      officializeBtn.title = "";
     }
 
     reassignBtn.addEventListener("click", async () => {
@@ -657,15 +668,15 @@ export function createAdminRenderers({
 
     officializeBtn.addEventListener("click", async () => {
       const next = getSelection();
-      status.textContent = "Officializing...";
+      status.textContent = "Approving to packet...";
       try {
         await officializeRawAssessment({
           rawAssessmentId: selected.id,
           ...next,
         });
-        status.textContent = "Officialized.";
+        status.textContent = "Approved to packet.";
       } catch (error) {
-        status.textContent = error?.message || "Unable to officialize.";
+        status.textContent = error?.message || "Unable to approve to packet.";
       }
     });
 
@@ -703,6 +714,8 @@ export function createAdminRenderers({
 
   async function renderAdminRatingsView() {
     if (!els.adminRatingsTableBody || !els.adminRatingsHint) return;
+    const renderToken = (state.admin.ratingsRenderToken || 0) + 1;
+    state.admin.ratingsRenderToken = renderToken;
     const eventId = String(state.event.active?.id || "").trim();
     const ratingsHeaderEls = {
       stage1: els.adminRatingsStage1Judge,
@@ -758,18 +771,29 @@ export function createAdminRenderers({
             String(b.ensembleName || b.ensembleId || "")
           );
         });
+      const uniqueOrdered = [];
+      const seenEnsembles = new Set();
+      ordered.forEach((entry) => {
+        const schoolId = String(entry?.schoolId || "").trim();
+        const ensembleId = String(entry?.ensembleId || "").trim();
+        const key = `${schoolId}::${ensembleId}`;
+        if (!schoolId || !ensembleId || seenEnsembles.has(key)) return;
+        seenEnsembles.add(key);
+        uniqueOrdered.push(entry);
+      });
 
-      if (!ordered.length) {
+      if (!uniqueOrdered.length) {
         els.adminRatingsHint.textContent = "No scheduled ensembles found for the active event.";
         return;
       }
 
       const packetPayloads = await Promise.all(
-        ordered.map(async (entry) => ({
+        uniqueOrdered.map(async (entry) => ({
           entry,
           packetData: await getPacketData({ eventId, entry }).catch(() => null),
         }))
       );
+      if (state.admin.ratingsRenderToken !== renderToken) return;
 
       const positionOrder = ["stage1", "stage2", "stage3", "sight"];
       positionOrder.forEach((position) => {
@@ -790,7 +814,7 @@ export function createAdminRenderers({
         row.appendChild(labelCell);
 
         const gradeCell = document.createElement("td");
-        gradeCell.className = "admin-ratings-grade";
+        gradeCell.className = "admin-ratings-grade admin-ratings-divider";
         gradeCell.textContent = packetData?.grade || "—";
         row.appendChild(gradeCell);
 
@@ -806,7 +830,7 @@ export function createAdminRenderers({
         });
 
         const overallCell = document.createElement("td");
-        overallCell.className = "admin-ratings-overall";
+        overallCell.className = "admin-ratings-overall admin-ratings-divider-left";
         overallCell.textContent = packetData?.summary?.overall?.label || "—";
         row.appendChild(overallCell);
         els.adminRatingsTableBody.appendChild(row);
@@ -1179,7 +1203,7 @@ export function createAdminRenderers({
     if (!els.adminSubmissionsWorkflowCard) return;
     let step = "Start";
     let nextTitle = "Set an active event to begin.";
-    let nextHint = "Then review incoming assessments and officialize approved records.";
+    let nextHint = "Then review incoming assessments and approve them into packet slots.";
     let nextActionLabel = "Open Settings";
     let nextAction = () => {
       window.location.hash = "#admin/settings";
@@ -1203,23 +1227,23 @@ export function createAdminRenderers({
       };
     } else if (hasActiveEvent && pendingCount > 0 && hasSelection) {
       step = "Review";
-      nextTitle = "Review the selected assessment and fix association if needed.";
-      nextHint = "Confirm ensemble, judge position, caption scoring, and audio before officializing.";
+      nextTitle = "Review the selected assessment and fix routing if needed.";
+      nextHint = "Confirm ensemble, judge position, caption scoring, and audio before approving it into the packet.";
       nextActionLabel = "Open Assessment Detail";
       nextAction = () => {
         els.adminSubmissionDetail?.scrollIntoView({ behavior: "smooth", block: "start" });
       };
     } else if (hasActiveEvent && totalCount > 0 && officializedCount < totalCount) {
-      step = "Officialize";
-      nextTitle = "Officialize approved assessments from the review queue.";
-      nextHint = `${officializedCount}/${totalCount} assessments already officialized.`;
+      step = "Approve";
+      nextTitle = "Approve reviewed assessments into packet slots.";
+      nextHint = `${officializedCount}/${totalCount} assessments already approved into packets.`;
       nextActionLabel = "Open Review Queue";
       nextAction = () => {
         els.adminSubmissionsList?.scrollIntoView({ behavior: "smooth", block: "start" });
       };
     } else if (hasActiveEvent && totalCount > 0 && officializedCount >= totalCount) {
       step = "Done";
-      nextTitle = "All queued assessments are officialized.";
+      nextTitle = "All queued assessments are approved into packet slots.";
       nextHint = "Move to Packets & Results to manage release-ready results packets.";
       nextActionLabel = "Open Packets & Results";
       nextAction = () => {
@@ -1254,7 +1278,7 @@ export function createAdminRenderers({
       active: hasActiveEvent && pendingCount > 0 && hasSelection,
     });
     setAdminStepChip(els.adminSubmissionsStepChipOfficialize, {
-      label: "Officialize",
+      label: "Approve",
       done: hasActiveEvent && totalCount > 0 && officializedCount >= totalCount,
       active: hasActiveEvent && totalCount > 0 && pendingCount === 0 && officializedCount < totalCount,
     });
@@ -1288,8 +1312,8 @@ export function createAdminRenderers({
     } else if (hasActiveEvent && hasSchoolSelected && totalCount === 0) {
       step = "Review";
       nextTitle = "No official results packets found for this school.";
-      nextHint = "Confirm schedules and officialized assessments, then return to results release.";
-      nextActionLabel = "Open Live Submissions";
+      nextHint = "Confirm schedules and approved packet slots, then return to results release.";
+      nextActionLabel = "Open Review Queue";
       nextAction = () => {
         window.location.hash = "#admin/submissions";
       };
@@ -2530,7 +2554,7 @@ export function createAdminRenderers({
       const openHint = document.createElement("p");
       openHint.className = "hint";
       openHint.textContent =
-        "Individual Open Judge tapes for this school (active event + unscheduled open sheets).";
+        "Action-needed open sheets for this school. Canonical-linked source sheets are hidden below unless you reveal them for recovery.";
       openSection.appendChild(openHint);
 
       const buildExpectedOpenSubmissionId = (packet) => {
@@ -2561,267 +2585,344 @@ export function createAdminRenderers({
         openSection.appendChild(conflictPanel);
       }
 
-      if (!openPackets.length) {
+      const classifyOpenPacket = (packet) => {
+        const isOfficialPacket = String(packet.mode || "").trim().toLowerCase() === "official";
+        const expectedSubmissionId = buildExpectedOpenSubmissionId(packet);
+        const conflictingPackets = isOfficialPacket && expectedSubmissionId ?
+          (conflictsBySubmissionId.get(expectedSubmissionId) || []).filter((item) => item.id !== packet.id) :
+          [];
+        const linkedSubmissionId =
+          String(packet.officialSubmissionId || packet.officialAssessmentId || "").trim();
+        const isCanonicalLinked =
+          isOfficialPacket &&
+          expectedSubmissionId &&
+          !conflictingPackets.length &&
+          linkedSubmissionId === expectedSubmissionId;
+        return {
+          isOfficialPacket,
+          expectedSubmissionId,
+          conflictingPackets,
+          isCanonicalLinked,
+        };
+      };
+
+      const actionPackets = [];
+      const attachedSourcePackets = [];
+      openPackets.forEach((packet) => {
+        const classified = classifyOpenPacket(packet);
+        if (classified.isCanonicalLinked) {
+          attachedSourcePackets.push({ packet, ...classified });
+        } else {
+          actionPackets.push({ packet, ...classified });
+        }
+      });
+
+      const buildOpenPacketRow = ({
+        packet,
+        isOfficialPacket,
+        expectedSubmissionId,
+        conflictingPackets,
+        isCanonicalLinked = false,
+      }) => {
+        const row = document.createElement("div");
+        row.className = "panel";
+        const top = document.createElement("div");
+        top.className = "row row--between row--center";
+        const title = document.createElement("strong");
+        title.textContent = `${packet.schoolName || "School"} - ${packet.ensembleName || "Ensemble"}`;
+        top.appendChild(title);
+        const badges = document.createElement("div");
+        badges.className = "row";
+        const modeBadge = document.createElement("span");
+        modeBadge.className = "badge";
+        modeBadge.textContent = isOfficialPacket ? "OFFICIAL" : "PRACTICE";
+        badges.appendChild(modeBadge);
+        const statusBadge = document.createElement("span");
+        statusBadge.className = "badge";
+        statusBadge.textContent = `Open: ${packet.status || "draft"}`;
+        badges.appendChild(statusBadge);
+        const formBadge = document.createElement("span");
+        formBadge.className = "badge";
+        formBadge.textContent = (packet.formType || "stage").toUpperCase();
+        badges.appendChild(formBadge);
+        if (conflictingPackets.length) {
+          const conflictBadge = document.createElement("span");
+          conflictBadge.className = "badge status--warn";
+          conflictBadge.textContent = "CONFLICT";
+          badges.appendChild(conflictBadge);
+        }
+        top.appendChild(badges);
+        row.appendChild(top);
+
+        const meta = document.createElement("div");
+        meta.className = "note";
+        const judgeLabel =
+          packet.createdByJudgeName ||
+          packet.createdByJudgeEmail ||
+          packet.createdByJudgeUid ||
+          "Unknown judge";
+        const ratingLabel = packet.computedFinalRatingLabel || "N/A";
+        const updatedLabel = formatPacketTimestamp(packet.updatedAt) || "Recently updated";
+        meta.textContent = `Judge: ${judgeLabel} - Judge Overall Rating: ${ratingLabel} - Updated: ${updatedLabel}`;
+        row.appendChild(meta);
+        if (isOfficialPacket && expectedSubmissionId) {
+          const targetMeta = document.createElement("div");
+          targetMeta.className = "note";
+          targetMeta.textContent = `Target slot: ${expectedSubmissionId}`;
+          row.appendChild(targetMeta);
+        }
+        if (isCanonicalLinked) {
+          const attachedMeta = document.createElement("div");
+          attachedMeta.className = "note";
+          attachedMeta.textContent =
+            "Attached source sheet only. The canonical packet slot already exists and remains the source of truth.";
+          row.appendChild(attachedMeta);
+        }
+        if (conflictingPackets.length) {
+          const conflictMeta = document.createElement("div");
+          conflictMeta.className = "note";
+          conflictMeta.innerHTML = `<strong>Conflict:</strong> also targeted by ${conflictingPackets
+            .map((item) => item.id)
+            .join(", ")}`;
+          row.appendChild(conflictMeta);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "row";
+        if (isOfficialPacket && expectedSubmissionId) {
+          const resolveBtn = document.createElement("button");
+          resolveBtn.type = "button";
+          resolveBtn.textContent = "Use This Open Sheet";
+          resolveBtn.addEventListener("click", async () => {
+            const ok = confirmUser(
+              `Restore the canonical ${expectedSubmissionId || "submission"} from Open Sheet ${packet.id}?\n\n` +
+              `This uses this packet as the source of truth for the official slot and overwrites the current canonical record for that judge position.`
+            );
+            if (!ok) return;
+            resolveBtn.disabled = true;
+            try {
+              await restoreCanonicalFromOpenPacket({ packetId: packet.id, dryRun: false });
+              scheduleAdminPreflightRefresh?.({ immediate: true });
+              await renderAdminPacketsBySchedule();
+              alertUser(
+                `Canonical slot restored from Open Sheet ${packet.id}.\n` +
+                `Review and delete any duplicate conflicting sheets if they are no longer needed.`
+              );
+            } catch (error) {
+              console.error("Conflict resolution restore failed", error);
+              alertUser(error?.message || "Unable to restore canonical data from this open sheet.");
+            } finally {
+              resolveBtn.disabled = false;
+            }
+          });
+          actions.appendChild(resolveBtn);
+        }
+        const viewBtn = document.createElement("button");
+        viewBtn.type = "button";
+        viewBtn.className = "ghost";
+        viewBtn.textContent = "View Open Sheet";
+        const detail = document.createElement("div");
+        detail.className = "packet-panel is-hidden";
+        viewBtn.addEventListener("click", async () => {
+          const isHidden = detail.classList.contains("is-hidden");
+          detail.classList.toggle("is-hidden", !isHidden);
+          viewBtn.textContent = isHidden ? "Hide Open Sheet" : "View Open Sheet";
+          if (isHidden) {
+            detail.innerHTML = "";
+            const topMeta = document.createElement("div");
+            topMeta.className = "note";
+            topMeta.textContent = `Open Sheet ID: ${packet.id} - Updated: ${formatPacketTimestamp(packet.updatedAt) || "Recently updated"}`;
+            detail.appendChild(topMeta);
+            const summaryCard = renderAssessmentCard(
+              toOpenSubmission(packet),
+              packet.judgePosition || (packet.formType === "sight" ? "sight" : "stage1"),
+              { showTranscript: true }
+            );
+            detail.appendChild(summaryCard);
+
+            const controls = document.createElement("div");
+            controls.className = "actions";
+            const isLocked = Boolean(packet.locked);
+            const lockBtn = document.createElement("button");
+            lockBtn.type = "button";
+            lockBtn.className = "ghost";
+            lockBtn.textContent = isLocked ? "Unlock Open Sheet" : "Lock Open Sheet";
+            lockBtn.addEventListener("click", async () => {
+              lockBtn.disabled = true;
+              try {
+                if (isLocked) {
+                  await unlockOpenPacket({ packetId: packet.id });
+                } else {
+                  await lockOpenPacket({ packetId: packet.id });
+                }
+                scheduleAdminPreflightRefresh?.({ immediate: true });
+                await renderAdminPacketsBySchedule();
+              } catch (error) {
+                console.error("Open sheet lock/unlock failed", error);
+                alertUser(error?.message || "Unable to update open sheet lock state.");
+              } finally {
+                lockBtn.disabled = false;
+              }
+            });
+            controls.appendChild(lockBtn);
+
+            const status = normalizeOpenPacketStatus(packet.status);
+            const releaseBtn = document.createElement("button");
+            releaseBtn.type = "button";
+            const shouldUnrelease = status === "released";
+            releaseBtn.textContent = shouldUnrelease ? "Unrelease from Director" : "Release to Director";
+            if (isOfficialPacket && conflictingPackets.length) {
+              releaseBtn.disabled = true;
+              releaseBtn.title = "Resolve conflicting official open sheets for this slot before releasing.";
+            }
+            releaseBtn.addEventListener("click", async () => {
+              if (releaseBtn.disabled) return;
+              releaseBtn.disabled = true;
+              try {
+                if (shouldUnrelease) {
+                  await unreleaseOpenPacket({ packetId: packet.id });
+                } else {
+                  await releaseOpenPacket({ packetId: packet.id });
+                }
+                scheduleAdminPreflightRefresh?.({ immediate: true });
+                await renderAdminPacketsBySchedule();
+              } catch (error) {
+                console.error("Open sheet release/unrelease failed", error);
+                alertUser(formatBlockerError(error, "Unable to update open sheet release state."));
+              } finally {
+                releaseBtn.disabled = false;
+              }
+            });
+            controls.appendChild(releaseBtn);
+            detail.appendChild(controls);
+
+            const packetIdRow = document.createElement("div");
+            packetIdRow.className = "note";
+            packetIdRow.textContent = `Tape Duration: ${
+              Number.isFinite(Number(packet.tapeDurationSec)) ?
+                `${Math.round(Number(packet.tapeDurationSec))}s` :
+                "—"
+            }`;
+            detail.appendChild(packetIdRow);
+            renderAdminOpenPacketPrintSection(packet, detail);
+          }
+        });
+        actions.appendChild(viewBtn);
+
+        const attachOpenAudioBtn = document.createElement("button");
+        attachOpenAudioBtn.type = "button";
+        attachOpenAudioBtn.className = "ghost";
+        attachOpenAudioBtn.textContent = "Attach Audio";
+        attachOpenAudioBtn.addEventListener("click", async () => {
+          const openStatusKey = `open:${packet.id}`;
+          const file = await pickAudioFile();
+          if (!file) return;
+          setManualAudioStatus(openStatusKey, `Uploading ${file.name}...`);
+          await renderAdminPacketsBySchedule();
+          attachOpenAudioBtn.disabled = true;
+          try {
+            await attachManualAudioToOpenPacket({ packetId: packet.id, file });
+            setManualAudioStatus(openStatusKey, "Upload complete. Audio attached to open sheet.");
+            await renderAdminPacketsBySchedule();
+          } catch (error) {
+            console.error("Attach open sheet audio failed", error);
+            setManualAudioStatus(
+              openStatusKey,
+              `Upload failed: ${error?.message || "Unable to attach open sheet audio."}`,
+              "error"
+            );
+            await renderAdminPacketsBySchedule();
+          } finally {
+            attachOpenAudioBtn.disabled = false;
+          }
+        });
+        actions.appendChild(attachOpenAudioBtn);
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "ghost";
+        deleteBtn.textContent = "Delete Open Sheet";
+        const openStatus = normalizeOpenPacketStatus(packet.status);
+        if (openStatus === "released") {
+          deleteBtn.disabled = true;
+          deleteBtn.title = "Unrelease open sheet first.";
+        }
+        deleteBtn.addEventListener("click", async () => {
+          const label = `${packet.schoolName || "School"} - ${packet.ensembleName || "Ensemble"}`;
+          const deleteMessage = isCanonicalLinked ?
+            `Delete Open Judge sheet for ${label}?\n\nThis removes only the source open sheet and its source audio/session artifacts. The canonical packet slot remains intact.` :
+            `Delete Open Judge sheet for ${label}?\n\nThis removes the source open sheet, recorded audio, and sessions.`;
+          const ok = confirmUser(deleteMessage);
+          if (!ok) return;
+          deleteBtn.disabled = true;
+          try {
+            await deleteOpenPacket({ packetId: packet.id });
+            scheduleAdminPreflightRefresh?.({ immediate: true });
+            await renderAdminPacketsBySchedule();
+          } catch (error) {
+            console.error("Delete open sheet failed", error);
+            alertUser(error?.message || "Unable to delete open sheet.");
+          } finally {
+            deleteBtn.disabled = false;
+          }
+        });
+        actions.appendChild(deleteBtn);
+        row.appendChild(actions);
+        const openStatusText = readManualAudioStatus(`open:${packet.id}`);
+        if (openStatusText) {
+          const statusRow = document.createElement("div");
+          statusRow.className = "note";
+          statusRow.textContent = `Audio Upload Status: ${openStatusText}`;
+          row.appendChild(statusRow);
+        }
+        row.appendChild(detail);
+        return row;
+      };
+
+      if (!actionPackets.length) {
         const empty = document.createElement("div");
         empty.className = "note";
-        empty.textContent = "No Open Judge sheets found for this school.";
+        empty.textContent = attachedSourcePackets.length
+          ? "No action-needed open sheets. All remaining source sheets are attached below for recovery only."
+          : "No Open Judge sheets found for this school.";
         openSection.appendChild(empty);
       } else {
         const openList = document.createElement("div");
         openList.className = "stack";
-        openPackets.forEach((packet) => {
-          const isOfficialPacket = String(packet.mode || "").trim().toLowerCase() === "official";
-          const expectedSubmissionId = buildExpectedOpenSubmissionId(packet);
-          const conflictingPackets = isOfficialPacket && expectedSubmissionId ?
-            (conflictsBySubmissionId.get(expectedSubmissionId) || []).filter((item) => item.id !== packet.id) :
-            [];
-          const row = document.createElement("div");
-          row.className = "panel";
-          const top = document.createElement("div");
-          top.className = "row row--between row--center";
-          const title = document.createElement("strong");
-          title.textContent = `${packet.schoolName || "School"} - ${packet.ensembleName || "Ensemble"}`;
-          top.appendChild(title);
-          const badges = document.createElement("div");
-          badges.className = "row";
-          const modeBadge = document.createElement("span");
-          modeBadge.className = "badge";
-          modeBadge.textContent = isOfficialPacket ? "OFFICIAL" : "PRACTICE";
-          badges.appendChild(modeBadge);
-          const statusBadge = document.createElement("span");
-          statusBadge.className = "badge";
-          statusBadge.textContent = `Open: ${packet.status || "draft"}`;
-          badges.appendChild(statusBadge);
-          const formBadge = document.createElement("span");
-          formBadge.className = "badge";
-          formBadge.textContent = (packet.formType || "stage").toUpperCase();
-          badges.appendChild(formBadge);
-          if (conflictingPackets.length) {
-            const conflictBadge = document.createElement("span");
-            conflictBadge.className = "badge status--warn";
-            conflictBadge.textContent = "CONFLICT";
-            badges.appendChild(conflictBadge);
-          }
-          top.appendChild(badges);
-          row.appendChild(top);
-
-          const meta = document.createElement("div");
-          meta.className = "note";
-          const judgeLabel =
-            packet.createdByJudgeName ||
-            packet.createdByJudgeEmail ||
-            packet.createdByJudgeUid ||
-            "Unknown judge";
-          const ratingLabel = packet.computedFinalRatingLabel || "N/A";
-          const updatedLabel = formatPacketTimestamp(packet.updatedAt) || "Recently updated";
-          meta.textContent = `Judge: ${judgeLabel} - Judge Overall Rating: ${ratingLabel} - Updated: ${updatedLabel}`;
-          row.appendChild(meta);
-          if (isOfficialPacket && expectedSubmissionId) {
-            const targetMeta = document.createElement("div");
-            targetMeta.className = "note";
-            targetMeta.textContent = `Target slot: ${expectedSubmissionId}`;
-            row.appendChild(targetMeta);
-          }
-          if (conflictingPackets.length) {
-            const conflictMeta = document.createElement("div");
-            conflictMeta.className = "note";
-            conflictMeta.innerHTML = `<strong>Conflict:</strong> also targeted by ${conflictingPackets
-              .map((item) => item.id)
-              .join(", ")}`;
-            row.appendChild(conflictMeta);
-          }
-
-          const actions = document.createElement("div");
-          actions.className = "row";
-          if (isOfficialPacket && conflictingPackets.length) {
-            const resolveBtn = document.createElement("button");
-            resolveBtn.type = "button";
-            resolveBtn.textContent = "Use This Open Sheet";
-            resolveBtn.addEventListener("click", async () => {
-              const ok = confirmUser(
-                `Restore the canonical ${expectedSubmissionId || "submission"} from Open Sheet ${packet.id}?\n\n` +
-                `This uses this packet as the source of truth for the official slot.`
-              );
-              if (!ok) return;
-              resolveBtn.disabled = true;
-              try {
-                await restoreCanonicalFromOpenPacket({ packetId: packet.id, dryRun: false });
-                scheduleAdminPreflightRefresh?.({ immediate: true });
-                await renderAdminPacketsBySchedule();
-                alertUser(
-                  `Canonical slot restored from Open Sheet ${packet.id}.\n` +
-                  `Review and delete any duplicate conflicting sheets if they are no longer needed.`
-                );
-              } catch (error) {
-                console.error("Conflict resolution restore failed", error);
-                alertUser(error?.message || "Unable to restore canonical data from this open sheet.");
-              } finally {
-                resolveBtn.disabled = false;
-              }
-            });
-            actions.appendChild(resolveBtn);
-          }
-          const viewBtn = document.createElement("button");
-          viewBtn.type = "button";
-          viewBtn.className = "ghost";
-          viewBtn.textContent = "View Open Sheet";
-          const detail = document.createElement("div");
-          detail.className = "packet-panel is-hidden";
-          viewBtn.addEventListener("click", async () => {
-            const isHidden = detail.classList.contains("is-hidden");
-            detail.classList.toggle("is-hidden", !isHidden);
-            viewBtn.textContent = isHidden ? "Hide Open Sheet" : "View Open Sheet";
-            if (isHidden) {
-              detail.innerHTML = "";
-              const topMeta = document.createElement("div");
-              topMeta.className = "note";
-              topMeta.textContent = `Open Sheet ID: ${packet.id} - Updated: ${formatPacketTimestamp(packet.updatedAt) || "Recently updated"}`;
-              detail.appendChild(topMeta);
-              const summaryCard = renderAssessmentCard(
-                toOpenSubmission(packet),
-                packet.judgePosition || (packet.formType === "sight" ? "sight" : "stage1"),
-                { showTranscript: true }
-              );
-              detail.appendChild(summaryCard);
-
-              const controls = document.createElement("div");
-              controls.className = "actions";
-              const isLocked = Boolean(packet.locked);
-              const lockBtn = document.createElement("button");
-              lockBtn.type = "button";
-              lockBtn.className = "ghost";
-              lockBtn.textContent = isLocked ? "Unlock Open Sheet" : "Lock Open Sheet";
-              lockBtn.addEventListener("click", async () => {
-                lockBtn.disabled = true;
-                try {
-                  if (isLocked) {
-                    await unlockOpenPacket({ packetId: packet.id });
-                  } else {
-                    await lockOpenPacket({ packetId: packet.id });
-                  }
-                  scheduleAdminPreflightRefresh?.({ immediate: true });
-                  await renderAdminPacketsBySchedule();
-                } catch (error) {
-                  console.error("Open sheet lock/unlock failed", error);
-                  alertUser(error?.message || "Unable to update open sheet lock state.");
-                } finally {
-                  lockBtn.disabled = false;
-                }
-              });
-              controls.appendChild(lockBtn);
-
-              const status = normalizeOpenPacketStatus(packet.status);
-              const releaseBtn = document.createElement("button");
-              releaseBtn.type = "button";
-              const shouldUnrelease = status === "released";
-              releaseBtn.textContent = shouldUnrelease ? "Unrelease from Director" : "Release to Director";
-              if (isOfficialPacket && conflictingPackets.length) {
-                releaseBtn.disabled = true;
-                releaseBtn.title = "Resolve conflicting official open sheets for this slot before releasing.";
-              }
-              releaseBtn.addEventListener("click", async () => {
-                if (releaseBtn.disabled) return;
-                releaseBtn.disabled = true;
-                try {
-                  if (shouldUnrelease) {
-                    await unreleaseOpenPacket({ packetId: packet.id });
-                  } else {
-                    await releaseOpenPacket({ packetId: packet.id });
-                  }
-                  scheduleAdminPreflightRefresh?.({ immediate: true });
-                  await renderAdminPacketsBySchedule();
-                } catch (error) {
-                  console.error("Open sheet release/unrelease failed", error);
-                  alertUser(formatBlockerError(error, "Unable to update open sheet release state."));
-                } finally {
-                  releaseBtn.disabled = false;
-                }
-              });
-              controls.appendChild(releaseBtn);
-              detail.appendChild(controls);
-
-              const packetIdRow = document.createElement("div");
-              packetIdRow.className = "note";
-              packetIdRow.textContent = `Tape Duration: ${
-                Number.isFinite(Number(packet.tapeDurationSec)) ?
-                  `${Math.round(Number(packet.tapeDurationSec))}s` :
-                  "—"
-              }`;
-              detail.appendChild(packetIdRow);
-              renderAdminOpenPacketPrintSection(packet, detail);
-            }
-          });
-          actions.appendChild(viewBtn);
-
-          const attachOpenAudioBtn = document.createElement("button");
-          attachOpenAudioBtn.type = "button";
-          attachOpenAudioBtn.className = "ghost";
-          attachOpenAudioBtn.textContent = "Attach Audio";
-          attachOpenAudioBtn.addEventListener("click", async () => {
-            const openStatusKey = `open:${packet.id}`;
-            const file = await pickAudioFile();
-            if (!file) return;
-            setManualAudioStatus(openStatusKey, `Uploading ${file.name}...`);
-            await renderAdminPacketsBySchedule();
-            attachOpenAudioBtn.disabled = true;
-            try {
-              await attachManualAudioToOpenPacket({ packetId: packet.id, file });
-              setManualAudioStatus(openStatusKey, "Upload complete. Audio attached to open sheet.");
-              await renderAdminPacketsBySchedule();
-            } catch (error) {
-              console.error("Attach open sheet audio failed", error);
-              setManualAudioStatus(
-                openStatusKey,
-                `Upload failed: ${error?.message || "Unable to attach open sheet audio."}`,
-                "error"
-              );
-              await renderAdminPacketsBySchedule();
-            } finally {
-              attachOpenAudioBtn.disabled = false;
-            }
-          });
-          actions.appendChild(attachOpenAudioBtn);
-
-          const deleteBtn = document.createElement("button");
-          deleteBtn.type = "button";
-          deleteBtn.className = "ghost";
-          deleteBtn.textContent = "Delete Open Sheet";
-          const openStatus = normalizeOpenPacketStatus(packet.status);
-          if (openStatus === "released") {
-            deleteBtn.disabled = true;
-            deleteBtn.title = "Unrelease open sheet first.";
-          }
-          deleteBtn.addEventListener("click", async () => {
-            const label = `${packet.schoolName || "School"} - ${packet.ensembleName || "Ensemble"}`;
-            const ok = confirmUser(
-              `Delete Open Judge sheet for ${label}? This removes recorded audio and sessions.`
-            );
-            if (!ok) return;
-            deleteBtn.disabled = true;
-            try {
-              await deleteOpenPacket({ packetId: packet.id });
-              scheduleAdminPreflightRefresh?.({ immediate: true });
-              await renderAdminPacketsBySchedule();
-            } catch (error) {
-              console.error("Delete open sheet failed", error);
-              alertUser(error?.message || "Unable to delete open sheet.");
-            } finally {
-              deleteBtn.disabled = false;
-            }
-          });
-          actions.appendChild(deleteBtn);
-          row.appendChild(actions);
-          const openStatusText = readManualAudioStatus(`open:${packet.id}`);
-          if (openStatusText) {
-            const statusRow = document.createElement("div");
-            statusRow.className = "note";
-            statusRow.textContent = `Audio Upload Status: ${openStatusText}`;
-            row.appendChild(statusRow);
-          }
-          row.appendChild(detail);
-          openList.appendChild(row);
+        actionPackets.forEach((item) => {
+          openList.appendChild(buildOpenPacketRow(item));
         });
         openSection.appendChild(openList);
+      }
+
+      if (attachedSourcePackets.length) {
+        const attachedWrap = document.createElement("div");
+        attachedWrap.className = "stack";
+        const toggleBtn = document.createElement("button");
+        toggleBtn.type = "button";
+        toggleBtn.className = "ghost";
+        toggleBtn.textContent = `Show Attached Source Sheets (${attachedSourcePackets.length})`;
+        const attachedHint = document.createElement("div");
+        attachedHint.className = "note is-hidden";
+        attachedHint.textContent =
+          "These source open sheets are hidden from the main list because the canonical packet slot already exists. Reveal them only for recovery or audio troubleshooting.";
+        const attachedList = document.createElement("div");
+        attachedList.className = "stack is-hidden";
+        toggleBtn.addEventListener("click", () => {
+          const shouldShow = attachedList.classList.contains("is-hidden");
+          attachedList.classList.toggle("is-hidden", !shouldShow);
+          attachedHint.classList.toggle("is-hidden", !shouldShow);
+          toggleBtn.textContent = shouldShow ?
+            `Hide Attached Source Sheets (${attachedSourcePackets.length})` :
+            `Show Attached Source Sheets (${attachedSourcePackets.length})`;
+        });
+        attachedWrap.appendChild(toggleBtn);
+        attachedWrap.appendChild(attachedHint);
+        attachedSourcePackets.forEach((item) => {
+          attachedList.appendChild(buildOpenPacketRow(item));
+        });
+        attachedWrap.appendChild(attachedList);
+        openSection.appendChild(attachedWrap);
       }
       els.adminPacketsList.appendChild(openSection);
       els.adminPacketsHint.textContent = "";

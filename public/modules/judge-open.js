@@ -869,7 +869,7 @@ export async function startOpenRecording({
   continuation = false,
 } = {}) {
   if (!state.judgeOpen.mode) {
-    return { ok: false, message: "Choose Practice or Official before recording." };
+    return { ok: false, message: "Choose Practice or Event Day before recording." };
   }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     return { ok: false, message: "Recording is not supported in this browser." };
@@ -1361,10 +1361,6 @@ export async function submitOpenPacket() {
       mode,
       officialEventId,
       officialJudgePosition,
-      officialSubmissionId:
-        mode === "official" && officialEventId && ensembleId && officialJudgePosition
-          ? `${officialEventId}_${ensembleId}_${officialJudgePosition}`
-          : "",
       schoolName,
       ensembleName,
       schoolId,
@@ -1385,12 +1381,13 @@ export async function submitOpenPacket() {
     });
     const nextStatus = String(response.data?.status || "locked").trim() || "locked";
     if (state.judgeOpen.currentPacketId && state.judgeOpen.currentPacket) {
+      const nextReviewState = mode === "official" ? "pending" : "";
       state.judgeOpen.currentPacket = {
         ...state.judgeOpen.currentPacket,
         status: nextStatus,
         locked: true,
         captureStatus: "submitted",
-        reviewState: "pending",
+        reviewState: nextReviewState,
       };
       if (Array.isArray(state.judgeOpen.packets)) {
         state.judgeOpen.packets = state.judgeOpen.packets.map((item) =>
@@ -1400,7 +1397,7 @@ export async function submitOpenPacket() {
                 status: nextStatus,
                 locked: true,
                 captureStatus: "submitted",
-                reviewState: "pending",
+                reviewState: nextReviewState,
               }
             : item
         );

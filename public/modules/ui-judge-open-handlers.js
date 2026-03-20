@@ -223,19 +223,19 @@ export function createJudgeOpenHandlerBinder({
           await chooseJudgeOpenMode("practice");
           await refreshAndRenderOpenMicrophones();
           setOpenPacketHint(
-            "Practice workspace open. Resume a draft or choose New Assessment to create another one."
+            "Practice mode open. Resume a draft or choose New Assessment to create another one."
           );
         });
       });
     }
     if (els.judgeOpenChooseOfficialBtn) {
       els.judgeOpenChooseOfficialBtn.addEventListener("click", async () => {
-        els.judgeOpenChooseOfficialBtn.dataset.loadingLabel = "Opening Official...";
+        els.judgeOpenChooseOfficialBtn.dataset.loadingLabel = "Opening Event Day...";
         await withLoading(els.judgeOpenChooseOfficialBtn, async () => {
           await chooseJudgeOpenMode("official");
           await refreshAndRenderOpenMicrophones();
           setOpenPacketHint(
-            "Official workspace open. Resume a draft or choose New Assessment to create another one."
+            "Event Day mode open. Resume a draft or choose New Assessment to create another one."
           );
         });
       });
@@ -302,7 +302,7 @@ export function createJudgeOpenHandlerBinder({
     if (els.judgeOpenNewPacketBtn) {
       els.judgeOpenNewPacketBtn.addEventListener("click", async () => {
         if (!state.judgeOpen.mode) {
-          setOpenPacketHint("Choose Practice or Official before starting an assessment.");
+          setOpenPacketHint("Choose Practice or Event Day before starting an assessment.");
           return;
         }
         if (state.judgeOpen.packetMutationInFlight) {
@@ -759,7 +759,7 @@ export function createJudgeOpenHandlerBinder({
           return;
         }
         if (!state.judgeOpen.mode) {
-          setOpenPacketHint("Choose Practice or Official before submitting.");
+          setOpenPacketHint("Choose Practice or Event Day before submitting.");
           return;
         }
         if (!hasLinkedOpenEnsemble()) {
@@ -777,7 +777,7 @@ export function createJudgeOpenHandlerBinder({
           const ensemble =
             state.judgeOpen.selectedExisting?.ensembleName || packet.ensembleName || "Ensemble";
           const ok = window.confirm(
-            `Submit OFFICIAL assessment for ${school} - ${ensemble}${
+            `Submit this Event Day sheet for admin review: ${school} - ${ensemble}${
               eventId ? ` in ${eventId}` : ""
             }?`
           );
@@ -786,13 +786,13 @@ export function createJudgeOpenHandlerBinder({
         els.judgeOpenSubmitBtn.dataset.loadingLabel = "Submitting...";
         els.judgeOpenSubmitBtn.dataset.spinner = "true";
         await withLoading(els.judgeOpenSubmitBtn, async () => {
-          setOpenPacketHint("Submitting assessment...");
+          setOpenPacketHint("Submitting sheet for admin review...");
           const result = await submitOpenPacket();
           if (!result?.ok) {
             setOpenPacketHint(result?.message || "Unable to submit assessment.");
             return;
           }
-          setOpenPacketHint("Assessment saved for admin review.");
+          setOpenPacketHint("Sheet submitted for admin review.");
           renderOpenCaptionForm();
           updateOpenHeader();
           showOpenDetailView();

@@ -329,6 +329,19 @@ function syncOpenEventDefaultsUI() {
   els.judgeOpenEventDefaultsStatus.textContent = `${activeEventName} · ${label}`;
 }
 
+function formatJudgeOpenModeLabel(mode) {
+  return mode === "official" ? "Event Day" : "Practice";
+}
+
+function formatJudgeOpenStatusLabel(status, mode) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (!normalized) return formatJudgeOpenModeLabel(mode);
+  if (normalized === "locked" || normalized === "submitted") return "Submitted for Review";
+  if (normalized === "released") return "Released";
+  if (normalized === "reopened") return "Reopened";
+  return "Draft";
+}
+
 function updateJudgeOpenModeUI() {
   const mode = state.judgeOpen.mode;
   const showModeSelect = !mode;
@@ -343,7 +356,7 @@ function updateJudgeOpenModeUI() {
       els.judgeOpenWorkspaceModeLabel.textContent = "";
       els.judgeOpenWorkspaceModeLabel.dataset.mode = "";
     } else if (mode === "official") {
-      els.judgeOpenWorkspaceModeLabel.textContent = "Official";
+      els.judgeOpenWorkspaceModeLabel.textContent = "Event Day";
       els.judgeOpenWorkspaceModeLabel.dataset.mode = "official";
     } else {
       els.judgeOpenWorkspaceModeLabel.textContent = "Practice";
@@ -361,14 +374,14 @@ function updateJudgeOpenModeUI() {
         JUDGE_POSITION_LABELS[state.judgeOpen.activeEventAssignment.judgePosition] ||
         state.judgeOpen.activeEventAssignment.judgePosition;
       els.judgeOpenModeHint.textContent =
-        `Official adjudications will use ${label} in ${state.event.active.name || "the active event"}.`;
+        `Event Day submissions will route to the ${label} review queue in ${state.event.active.name || "the active event"}.`;
     }
   }
   if (els.judgeOpenStatusBadge) {
     if (!mode) {
       els.judgeOpenStatusBadge.textContent = "Choose Mode";
     } else if (mode === "official") {
-      els.judgeOpenStatusBadge.textContent = "Official";
+      els.judgeOpenStatusBadge.textContent = "Event Day";
     } else {
       els.judgeOpenStatusBadge.textContent = "Practice";
     }
@@ -426,7 +439,7 @@ async function backToJudgeOpenLanding() {
   updateOpenHeader();
   updateOpenEmptyState();
   updateOpenSubmitState();
-  setOpenPacketHint("Choose Practice or Official to begin.");
+  setOpenPacketHint("Choose Practice or Event Day to begin.");
 }
 
 function syncJudgeOpenStickyBarVisibility() {
@@ -2746,7 +2759,7 @@ function updateTabUI(tabName, role) {
     if (!els.judgeOpenCaptionForm?.children?.length) {
       renderOpenCaptionForm();
     }
-    setOpenPacketHint("Choose Practice or Official to begin.");
+    setOpenPacketHint("Choose Practice or Event Day to begin.");
   }
   if (els.eventDetailPage && !els.eventDetailPage.classList.contains("is-hidden")) {
     hideEventDetail();
@@ -4192,10 +4205,9 @@ export function updateOpenEmptyState() {
     } else {
       const packet = state.judgeOpen.currentPacket || {};
       if (packet.status) {
-        els.judgeOpenStatusBadge.textContent = packet.status;
+        els.judgeOpenStatusBadge.textContent = formatJudgeOpenStatusLabel(packet.status, state.judgeOpen.mode);
       } else {
-        els.judgeOpenStatusBadge.textContent =
-          state.judgeOpen.mode === "official" ? "Official" : "Practice";
+        els.judgeOpenStatusBadge.textContent = formatJudgeOpenModeLabel(state.judgeOpen.mode);
       }
     }
   }

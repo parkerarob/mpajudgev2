@@ -1818,7 +1818,49 @@ async function buildDirectorPacketGroups(merged) {
     });
     (Array.isArray(merged.submissions) ? merged.submissions : []).forEach((data) => {
       if (!data?.id) return;
-      byId.set(data.id, data);
+      const previous = byId.get(data.id) || null;
+      byId.set(data.id, {
+        ...(previous || {}),
+        ...data,
+        locked: true,
+        sourceType: "officialAssessment",
+        canonicalAudioUrl:
+          data.audioUrl ||
+          previous?.canonicalAudioUrl ||
+          previous?.audioUrl ||
+          "",
+        canonicalAudioPath:
+          data.audioPath ||
+          previous?.canonicalAudioPath ||
+          previous?.audioPath ||
+          "",
+        canonicalAudioDurationSec: Number(
+          data.audioDurationSec ||
+            previous?.canonicalAudioDurationSec ||
+            previous?.audioDurationSec ||
+            0
+        ),
+        audioSegments: Array.isArray(data.audioSegments) && data.audioSegments.length
+          ? data.audioSegments
+          : Array.isArray(previous?.audioSegments)
+            ? previous.audioSegments
+            : [],
+        supplementalAudioUrl: String(
+          data.supplementalAudioUrl ||
+            previous?.supplementalAudioUrl ||
+            ""
+        ),
+        supplementalAudioPath: String(
+          data.supplementalAudioPath ||
+            previous?.supplementalAudioPath ||
+            ""
+        ),
+        supplementalAudioDurationSec: Number(
+          data.supplementalAudioDurationSec ||
+            previous?.supplementalAudioDurationSec ||
+            0
+        ),
+      });
     });
     return Array.from(byId.values());
   })();

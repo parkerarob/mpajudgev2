@@ -3219,6 +3219,59 @@ select:focus-visible {
   margin-top: 2px;
 }
 
+#adminViewRatings .schedule-timeline-table th:not(:first-child),
+#adminViewRatings .schedule-timeline-table td:not(:first-child) {
+  text-align: center;
+  vertical-align: middle;
+}
+
+#adminViewRatings .schedule-timeline-table th,
+#adminViewRatings .schedule-timeline-table td {
+  padding: 10px 12px;
+}
+
+#adminViewRatings .schedule-timeline-table td:first-child {
+  min-width: 240px;
+}
+
+#adminViewRatings .schedule-timeline-table th:first-child,
+#adminViewRatings .schedule-timeline-table td:first-child {
+  text-align: left;
+}
+
+#adminViewRatings .schedule-timeline-table th:nth-child(2),
+#adminViewRatings .schedule-timeline-table td:nth-child(2) {
+  min-width: 72px;
+}
+
+#adminViewRatings .schedule-timeline-table th:nth-child(n+3),
+#adminViewRatings .schedule-timeline-table td:nth-child(n+3) {
+  min-width: 88px;
+}
+
+.admin-ratings-ensemble {
+  line-height: 1.35;
+}
+
+.admin-ratings-grade,
+.admin-ratings-overall {
+  font-weight: 600;
+}
+
+.admin-ratings-slot-value {
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.1;
+}
+
+.admin-ratings-header-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.62);
+}
+
 #adminCard #liveEventContent > .stack {
   gap: 10px;
 }

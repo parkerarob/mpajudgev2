@@ -48,23 +48,6 @@ export function createDirectorPacketRenderers({
       captionSummary.appendChild(row);
     });
 
-    Object.entries(captions).forEach(([key, value]) => {
-      if (seen.has(key)) return;
-      const row = document.createElement("div");
-      row.className = "caption-row";
-      const gradeDisplay = `${value?.gradeLetter || ""}${value?.gradeModifier || ""}`;
-      const title = document.createElement("strong");
-      title.textContent = key;
-      const grade = document.createElement("div");
-      grade.textContent = `Grade: ${gradeDisplay || "N/A"}`;
-      const comment = document.createElement("div");
-      comment.textContent = value?.comment || "";
-      row.appendChild(title);
-      row.appendChild(grade);
-      row.appendChild(comment);
-      captionSummary.appendChild(row);
-    });
-
     return captionSummary;
   }
 

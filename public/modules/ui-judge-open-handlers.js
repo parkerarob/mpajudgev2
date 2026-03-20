@@ -25,6 +25,7 @@ export function createJudgeOpenHandlerBinder({
   syncOpenFormTypeSegmented,
   draftCaptionsFromTranscript,
   applyOpenCaptionDraft,
+  normalizeCaptions,
   transcribeOpenTape,
   finalizeOpenTapeAutoTranscription,
   startOpenRecording,
@@ -427,6 +428,12 @@ export function createJudgeOpenHandlerBinder({
     if (els.judgeOpenFormTypeSelect) {
       els.judgeOpenFormTypeSelect.addEventListener("change", () => {
         state.judgeOpen.formType = els.judgeOpenFormTypeSelect.value || "stage";
+        if (typeof normalizeCaptions === "function") {
+          state.judgeOpen.captions = normalizeCaptions(
+            state.judgeOpen.formType,
+            state.judgeOpen.captions || {}
+          );
+        }
         saveOpenPrefs({ lastFormType: state.judgeOpen.formType });
         renderOpenCaptionForm();
         syncOpenFormTypeSegmented();

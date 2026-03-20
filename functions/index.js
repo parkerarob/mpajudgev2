@@ -508,18 +508,26 @@ function drawFieldCommentOverlay({
   });
 }
 
+const EVENT_TIMEZONE = "America/New_York";
+
 function formatDateLabel(value) {
   if (!value) return "";
   const date = value.toDate ? value.toDate() : new Date(value);
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString();
+  return date.toLocaleDateString("en-US", {
+    timeZone: EVENT_TIMEZONE,
+  });
 }
 
 function formatTimeLabel(value) {
   if (!value) return "";
   const date = value.toDate ? value.toDate() : new Date(value);
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+  return date.toLocaleTimeString("en-US", {
+    timeZone: EVENT_TIMEZONE,
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 async function loadStageSubmissionContext({
@@ -2144,6 +2152,14 @@ function buildOfficialAssessmentId({eventId, ensembleId, judgePosition} = {}) {
   return `${String(eventId || "").trim()}_${String(ensembleId || "").trim()}_${String(judgePosition || "").trim()}`;
 }
 
+function buildExpectedPacketOfficialSubmissionId(packet = {}) {
+  const eventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
+  const ensembleId = String(packet.ensembleId || "").trim();
+  const judgePosition = String(packet.officialJudgePosition || packet.judgePosition || "").trim();
+  if (!eventId || !ensembleId || !judgePosition) return "";
+  return buildOfficialAssessmentId({eventId, ensembleId, judgePosition});
+}
+
 async function writePacketAudit(packetRef, {action, fromStatus, toStatus, actor}) {
   const auditRef = packetRef.collection("audit").doc();
   await auditRef.set({
@@ -3333,11 +3349,11 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
           "",
       [FIELDS.packets.officialSubmissionId]:
         packetMode === ADJUDICATION_MODES.official ?
-          String(
-              data.officialSubmissionId ||
-              packet.officialSubmissionId ||
-              `${String(data.officialEventId || packet.officialEventId || assignment?.eventId || packet.assignmentEventId || "")}_${nextEnsembleId}_${String(data.officialJudgePosition || packet.officialJudgePosition || assignment?.judgePosition || packet.judgePosition || "")}`,
-          ) :
+          buildOfficialAssessmentId({
+            eventId: effectiveOfficialEventId,
+            ensembleId: nextEnsembleId,
+            judgePosition: effectiveOfficialJudgePosition,
+          }) :
           "",
       [FIELDS.packets.captureStatus]: STATUSES.submitted,
       [FIELDS.packets.associationState]:
@@ -3464,6 +3480,7 @@ exports.reassignRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (reques
       [FIELDS.packets.ensembleId]: ensembleId,
       [FIELDS.packets.schoolId]: schoolId,
       [FIELDS.packets.officialJudgePosition]: judgePosition,
+      [FIELDS.packets.officialSubmissionId]: buildOfficialAssessmentId({eventId, ensembleId, judgePosition}),
       [FIELDS.packets.formType]: formType,
       [FIELDS.packets.associationState]: "attached",
       [FIELDS.packets.reviewState]: normalizeReviewState(raw.reviewState),
@@ -6614,6 +6631,612 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
   }
 
   return summary;
+});
+
+exports.repairPacketSubmissionLinkage = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const dryRun = data.dryRun !== false;
+  const db = admin.firestore();
+  const summary = {
+    dryRun,
+    packetsScanned: 0,
+    packetsUpdated: 0,
+    rawAssessmentsUpdated: 0,
+    submissionsCloned: 0,
+    submissionsMaterialized: 0,
+    submissionsRepaired: 0,
+    officialAssessmentsCloned: 0,
+    officialAssessmentsMaterialized: 0,
+    officialAssessmentsRepaired: 0,
+    officialAssessmentPointersUpdated: 0,
+    skippedPractice: 0,
+    skippedIncomplete: 0,
+    skippedConflicts: 0,
+    skippedAlreadyCorrect: 0,
+    samples: [],
+  };
+
+  const packetsSnap = await db.collection(COLLECTIONS.packets).get();
+  const packetsByExpectedSubmissionId = new Map();
+  packetsSnap.docs.forEach((packetDoc) => {
+    const packet = packetDoc.data() || {};
+    if (String(packet.mode || "").trim().toLowerCase() !== ADJUDICATION_MODES.official) return;
+    const expectedSubmissionId = buildExpectedPacketOfficialSubmissionId(packet);
+    if (!expectedSubmissionId) return;
+    const existing = packetsByExpectedSubmissionId.get(expectedSubmissionId) || [];
+    existing.push({
+      id: packetDoc.id,
+      updatedAtMs: packet.updatedAt?.toMillis ? packet.updatedAt.toMillis() : 0,
+      judgeName: String(packet.createdByJudgeName || "").trim(),
+      status: String(packet.status || "").trim(),
+    });
+    packetsByExpectedSubmissionId.set(expectedSubmissionId, existing);
+  });
+  for (const packetDoc of packetsSnap.docs) {
+    summary.packetsScanned += 1;
+    const packet = packetDoc.data() || {};
+    if (String(packet.mode || "").trim().toLowerCase() !== ADJUDICATION_MODES.official) {
+      summary.skippedPractice += 1;
+      continue;
+    }
+
+    const expectedSubmissionId = buildExpectedPacketOfficialSubmissionId(packet);
+    if (!expectedSubmissionId) {
+      summary.skippedIncomplete += 1;
+      continue;
+    }
+    const conflictingPackets = (packetsByExpectedSubmissionId.get(expectedSubmissionId) || [])
+        .filter((item) => item.id !== packetDoc.id);
+    if (conflictingPackets.length) {
+      summary.skippedConflicts += 1;
+      summary.samples.push({
+        packetId: packetDoc.id,
+        toSubmissionId: expectedSubmissionId,
+        conflict: true,
+        conflictingPacketIds: conflictingPackets.map((item) => item.id),
+      });
+      continue;
+    }
+
+    const currentSubmissionId = String(packet.officialSubmissionId || "").trim();
+    const rawAssessmentId = buildRawAssessmentId({packetId: packetDoc.id});
+    const rawRef = db.collection(COLLECTIONS.rawAssessments).doc(rawAssessmentId);
+    const expectedSubmissionRef = db.collection(COLLECTIONS.submissions).doc(expectedSubmissionId);
+    const expectedOfficialRef = db.collection(COLLECTIONS.officialAssessments).doc(expectedSubmissionId);
+
+    const refs = [rawRef, expectedSubmissionRef, expectedOfficialRef];
+    if (currentSubmissionId && currentSubmissionId !== expectedSubmissionId) {
+      refs.push(db.collection(COLLECTIONS.submissions).doc(currentSubmissionId));
+      refs.push(db.collection(COLLECTIONS.officialAssessments).doc(currentSubmissionId));
+    }
+    const snaps = await db.getAll(...refs);
+    const rawSnap = snaps[0];
+    const expectedSubmissionSnap = snaps[1];
+    const expectedOfficialSnap = snaps[2];
+    const currentSubmissionSnap = snaps[3];
+    const currentOfficialSnap = snaps[4];
+
+    const raw = rawSnap?.exists ? (rawSnap.data() || {}) : null;
+    const expectedSubmission = expectedSubmissionSnap?.exists ? (expectedSubmissionSnap.data() || {}) : null;
+    const expectedOfficial = expectedOfficialSnap?.exists ? (expectedOfficialSnap.data() || {}) : null;
+    const currentSubmission =
+      currentSubmissionSnap?.exists && currentSubmissionId !== expectedSubmissionId ?
+        (currentSubmissionSnap.data() || {}) :
+        null;
+    const currentOfficial =
+      currentOfficialSnap?.exists && currentSubmissionId !== expectedSubmissionId ?
+        (currentOfficialSnap.data() || {}) :
+        null;
+
+    const packetTranscript = String(packet.transcriptFull || packet.transcript || raw?.transcript || "").trim();
+    const packetWrittenComments = String(
+        packet.transcriptFull || packet.transcript || raw?.writtenComments || raw?.transcript || "",
+    ).trim();
+    const packetCaptions =
+      packet.captions && typeof packet.captions === "object" ? packet.captions : {};
+    const packetAudioSegments = Array.isArray(packet.audioSegments) ? packet.audioSegments : [];
+    const packetAudioUrl = String(packet.canonicalAudioUrl || packet.latestAudioUrl || "").trim();
+    const packetAudioPath = String(packet.canonicalAudioPath || packet.latestAudioPath || "").trim();
+    const packetAudioDurationSec = Number(packet.canonicalAudioDurationSec || packet.tapeDurationSec || 0);
+    const packetJudgePosition = String(packet.officialJudgePosition || packet.judgePosition || "").trim();
+    const packetEventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
+    const packetEnsembleId = String(packet.ensembleId || "").trim();
+    const packetSchoolId = String(packet.schoolId || raw?.schoolId || "").trim();
+    const packetJudgeName = String(packet.createdByJudgeName || raw?.judgeName || "").trim();
+    const packetJudgeEmail = String(packet.createdByJudgeEmail || raw?.judgeEmail || "").trim();
+    const packetJudgeUid = String(packet.createdByJudgeUid || raw?.judgeUid || "").trim();
+    const packetFormType = String(packet.formType || FORM_TYPES.stage).trim();
+    const packetSubmissionStatus = String(packet.status || "").trim() === "released" ?
+      STATUSES.released :
+      STATUSES.submitted;
+    const packetOfficialStatus = String(packet.status || "").trim() === "released" ?
+      STATUSES.released :
+      STATUSES.officialized;
+    const captionsJson = JSON.stringify(packetCaptions);
+    const expectedSubmissionCaptionsJson = JSON.stringify(
+        expectedSubmission?.captions && typeof expectedSubmission.captions === "object" ?
+          expectedSubmission.captions :
+          {},
+    );
+    const expectedOfficialCaptionsJson = JSON.stringify(
+        expectedOfficial?.captions && typeof expectedOfficial.captions === "object" ?
+          expectedOfficial.captions :
+          {},
+    );
+
+    const shouldUpdatePacket =
+      currentSubmissionId !== expectedSubmissionId ||
+      String(packet.officialEventId || "").trim() !== String(packet.assignmentEventId || packet.officialEventId || "").trim() ||
+      String(packet.officialJudgePosition || "").trim() !== String(packet.judgePosition || packet.officialJudgePosition || "").trim();
+    const rawHasMismatch = Boolean(raw) && (
+      String(raw?.eventId || "").trim() !== String(packet.officialEventId || packet.assignmentEventId || "").trim() ||
+      String(raw?.ensembleId || "").trim() !== String(packet.ensembleId || "").trim() ||
+      String(raw?.judgePosition || "").trim() !== String(packet.officialJudgePosition || packet.judgePosition || "").trim() ||
+      String(raw?.schoolId || "").trim() !== String(packet.schoolId || raw?.schoolId || "").trim()
+    );
+    const shouldUpdateRaw = Boolean(rawHasMismatch);
+    const shouldCloneSubmission = Boolean(currentSubmission && !expectedSubmission);
+    const shouldMaterializeSubmission = Boolean(!expectedSubmission && !currentSubmission);
+    const shouldCloneOfficial = Boolean(currentOfficial && !expectedOfficial);
+    const shouldMaterializeOfficial = Boolean(!expectedOfficial && !currentOfficial);
+    const shouldRepairSubmission = Boolean(expectedSubmission) && (
+      String(expectedSubmission.eventId || "").trim() !== packetEventId ||
+      String(expectedSubmission.ensembleId || "").trim() !== packetEnsembleId ||
+      String(expectedSubmission.schoolId || "").trim() !== packetSchoolId ||
+      String(expectedSubmission.judgePosition || "").trim() !== packetJudgePosition ||
+      String(expectedSubmission.judgeName || "").trim() !== packetJudgeName ||
+      String(expectedSubmission.judgeEmail || "").trim() !== packetJudgeEmail ||
+      String(expectedSubmission.judgeUid || "").trim() !== packetJudgeUid ||
+      String(expectedSubmission.formType || "").trim() !== packetFormType ||
+      String(expectedSubmission.transcript || "").trim() !== packetTranscript ||
+      String(expectedSubmission.audioUrl || "").trim() !== packetAudioUrl ||
+      String(expectedSubmission.audioPath || "").trim() !== packetAudioPath ||
+      Number(expectedSubmission.audioDurationSec || 0) !== packetAudioDurationSec ||
+      JSON.stringify(Array.isArray(expectedSubmission.audioSegments) ? expectedSubmission.audioSegments : []) !==
+        JSON.stringify(packetAudioSegments) ||
+      expectedSubmissionCaptionsJson !== captionsJson ||
+      Number(expectedSubmission.captionScoreTotal || 0) !== Number(packet.captionScoreTotal || 0) ||
+      String(expectedSubmission.computedFinalRatingLabel || "").trim() !==
+        String(packet.computedFinalRatingLabel || "").trim() ||
+      Number(expectedSubmission.computedFinalRatingJudge || 0) !== Number(packet.computedFinalRatingJudge || 0)
+    );
+    const shouldRepairOfficial = Boolean(expectedOfficial) && (
+      String(expectedOfficial.eventId || "").trim() !== packetEventId ||
+      String(expectedOfficial.ensembleId || "").trim() !== packetEnsembleId ||
+      String(expectedOfficial.schoolId || "").trim() !== packetSchoolId ||
+      String(expectedOfficial.judgePosition || "").trim() !== packetJudgePosition ||
+      String(expectedOfficial.judgeName || "").trim() !== packetJudgeName ||
+      String(expectedOfficial.judgeEmail || "").trim() !== packetJudgeEmail ||
+      String(expectedOfficial.judgeUid || "").trim() !== packetJudgeUid ||
+      String(expectedOfficial.formType || "").trim() !== packetFormType ||
+      String(expectedOfficial.transcript || "").trim() !== packetTranscript ||
+      String(expectedOfficial.writtenComments || "").trim() !== packetWrittenComments ||
+      String(expectedOfficial.audioUrl || "").trim() !== packetAudioUrl ||
+      String(expectedOfficial.audioPath || "").trim() !== packetAudioPath ||
+      Number(expectedOfficial.audioDurationSec || 0) !== packetAudioDurationSec ||
+      JSON.stringify(Array.isArray(expectedOfficial.audioSegments) ? expectedOfficial.audioSegments : []) !==
+        JSON.stringify(packetAudioSegments) ||
+      expectedOfficialCaptionsJson !== captionsJson ||
+      Number(expectedOfficial.captionScoreTotal || 0) !== Number(packet.captionScoreTotal || 0) ||
+      String(expectedOfficial.computedFinalRatingLabel || "").trim() !==
+        String(packet.computedFinalRatingLabel || "").trim() ||
+      Number(expectedOfficial.computedFinalRatingJudge || 0) !== Number(packet.computedFinalRatingJudge || 0) ||
+      String(expectedOfficial.sourceRawAssessmentId || "").trim() !== rawAssessmentId
+    );
+    const shouldUpdateOfficialPointer = Boolean(raw) &&
+      Boolean(
+          currentOfficial ||
+          expectedOfficial ||
+          shouldCloneOfficial ||
+          shouldMaterializeOfficial ||
+          shouldRepairOfficial ||
+          String(raw?.status || "").trim() === STATUSES.officialized,
+      ) &&
+      String(raw?.officialAssessmentId || "").trim() !== expectedSubmissionId;
+
+    if (
+      !shouldUpdatePacket &&
+      !shouldUpdateRaw &&
+      !shouldCloneSubmission &&
+      !shouldMaterializeSubmission &&
+      !shouldRepairSubmission &&
+      !shouldCloneOfficial &&
+      !shouldMaterializeOfficial &&
+      !shouldRepairOfficial &&
+      !shouldUpdateOfficialPointer
+    ) {
+      summary.skippedAlreadyCorrect += 1;
+      continue;
+    }
+
+    summary.samples.push({
+      packetId: packetDoc.id,
+      fromSubmissionId: currentSubmissionId || "",
+      toSubmissionId: expectedSubmissionId,
+      clonedSubmission: shouldCloneSubmission,
+      materializedSubmission: shouldMaterializeSubmission,
+      repairedSubmission: shouldRepairSubmission,
+      clonedOfficialAssessment: shouldCloneOfficial,
+      materializedOfficialAssessment: shouldMaterializeOfficial,
+      repairedOfficialAssessment: shouldRepairOfficial,
+    });
+    summary.packetsUpdated += shouldUpdatePacket ? 1 : 0;
+    summary.rawAssessmentsUpdated += shouldUpdateRaw ? 1 : 0;
+    summary.submissionsCloned += shouldCloneSubmission ? 1 : 0;
+    summary.submissionsMaterialized += shouldMaterializeSubmission ? 1 : 0;
+    summary.submissionsRepaired += shouldRepairSubmission ? 1 : 0;
+    summary.officialAssessmentsCloned += shouldCloneOfficial ? 1 : 0;
+    summary.officialAssessmentsMaterialized += shouldMaterializeOfficial ? 1 : 0;
+    summary.officialAssessmentsRepaired += shouldRepairOfficial ? 1 : 0;
+    summary.officialAssessmentPointersUpdated += shouldUpdateOfficialPointer ? 1 : 0;
+
+    if (dryRun) continue;
+
+    const batch = db.batch();
+    if (shouldUpdatePacket) {
+      const officialEventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
+      const officialJudgePosition = String(packet.officialJudgePosition || packet.judgePosition || "").trim();
+      const packetPatch = {
+        [FIELDS.packets.officialEventId]: officialEventId,
+        [FIELDS.packets.officialJudgePosition]: officialJudgePosition,
+        [FIELDS.packets.officialSubmissionId]: expectedSubmissionId,
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (
+        !String(packet.officialAssessmentId || "").trim() ||
+        String(packet.officialAssessmentId || "").trim() === currentSubmissionId
+      ) {
+        packetPatch[FIELDS.packets.officialAssessmentId] = expectedSubmissionId;
+      }
+      batch.set(packetDoc.ref, packetPatch, {merge: true});
+    }
+    if (shouldUpdateRaw || shouldUpdateOfficialPointer) {
+      const rawPatch = {
+        [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (shouldUpdateRaw) {
+        rawPatch[FIELDS.rawAssessments.eventId] = String(packet.officialEventId || packet.assignmentEventId || "").trim();
+        rawPatch[FIELDS.rawAssessments.ensembleId] = String(packet.ensembleId || "").trim();
+        rawPatch[FIELDS.rawAssessments.schoolId] = String(packet.schoolId || raw?.schoolId || "").trim();
+        rawPatch[FIELDS.rawAssessments.judgePosition] = String(packet.officialJudgePosition || packet.judgePosition || "").trim();
+        rawPatch[FIELDS.rawAssessments.associationState] = "attached";
+      }
+      if (shouldUpdateOfficialPointer) {
+        rawPatch[FIELDS.rawAssessments.officialAssessmentId] = expectedSubmissionId;
+      }
+      batch.set(rawRef, rawPatch, {merge: true});
+    }
+    if (shouldCloneSubmission) {
+      batch.set(expectedSubmissionRef, {
+        ...currentSubmission,
+        [FIELDS.submissions.eventId]: String(packet.officialEventId || packet.assignmentEventId || "").trim(),
+        [FIELDS.submissions.ensembleId]: String(packet.ensembleId || "").trim(),
+        [FIELDS.submissions.schoolId]: String(packet.schoolId || currentSubmission.schoolId || "").trim(),
+        [FIELDS.submissions.judgePosition]: String(packet.officialJudgePosition || packet.judgePosition || "").trim(),
+        [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.submissions.createdAt]:
+          currentSubmission.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+    if (shouldMaterializeSubmission) {
+      batch.set(expectedSubmissionRef, {
+        [FIELDS.submissions.status]: packetSubmissionStatus,
+        [FIELDS.submissions.locked]: true,
+        [FIELDS.submissions.judgeUid]: packetJudgeUid,
+        [FIELDS.submissions.judgeName]: packetJudgeName,
+        [FIELDS.submissions.judgeEmail]: packetJudgeEmail,
+        [FIELDS.submissions.schoolId]: packetSchoolId,
+        [FIELDS.submissions.eventId]: packetEventId,
+        [FIELDS.submissions.ensembleId]: packetEnsembleId,
+        [FIELDS.submissions.judgePosition]: packetJudgePosition,
+        [FIELDS.submissions.formType]: packetFormType,
+        [FIELDS.submissions.audioUrl]: packetAudioUrl,
+        audioPath: packetAudioPath,
+        [FIELDS.submissions.audioSegments]: packetAudioSegments,
+        [FIELDS.submissions.audioDurationSec]: packetAudioDurationSec,
+        [FIELDS.submissions.transcript]: packetTranscript,
+        [FIELDS.submissions.captions]: packetCaptions,
+        [FIELDS.submissions.captionScoreTotal]:
+          Number.isFinite(Number(packet.captionScoreTotal)) ? Number(packet.captionScoreTotal) : null,
+        [FIELDS.submissions.computedFinalRatingJudge]:
+          Number.isFinite(Number(packet.computedFinalRatingJudge)) ?
+            Number(packet.computedFinalRatingJudge) :
+            null,
+        [FIELDS.submissions.computedFinalRatingLabel]:
+          String(packet.computedFinalRatingLabel || "N/A"),
+        [FIELDS.submissions.submittedAt]:
+          packet.submittedAt || raw?.submittedAt || admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt:
+          packet.createdAt || raw?.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+    if (shouldRepairSubmission) {
+      batch.set(expectedSubmissionRef, {
+        [FIELDS.submissions.status]: packetSubmissionStatus,
+        [FIELDS.submissions.locked]: true,
+        [FIELDS.submissions.judgeUid]: packetJudgeUid,
+        [FIELDS.submissions.judgeName]: packetJudgeName,
+        [FIELDS.submissions.judgeEmail]: packetJudgeEmail,
+        [FIELDS.submissions.schoolId]: packetSchoolId,
+        [FIELDS.submissions.eventId]: packetEventId,
+        [FIELDS.submissions.ensembleId]: packetEnsembleId,
+        [FIELDS.submissions.judgePosition]: packetJudgePosition,
+        [FIELDS.submissions.formType]: packetFormType,
+        [FIELDS.submissions.audioUrl]: packetAudioUrl,
+        audioPath: packetAudioPath,
+        [FIELDS.submissions.audioSegments]: packetAudioSegments,
+        [FIELDS.submissions.audioDurationSec]: packetAudioDurationSec,
+        [FIELDS.submissions.transcript]: packetTranscript,
+        [FIELDS.submissions.captions]: packetCaptions,
+        [FIELDS.submissions.captionScoreTotal]:
+          Number.isFinite(Number(packet.captionScoreTotal)) ? Number(packet.captionScoreTotal) : null,
+        [FIELDS.submissions.computedFinalRatingJudge]:
+          Number.isFinite(Number(packet.computedFinalRatingJudge)) ?
+            Number(packet.computedFinalRatingJudge) :
+            null,
+        [FIELDS.submissions.computedFinalRatingLabel]:
+          String(packet.computedFinalRatingLabel || "N/A"),
+        [FIELDS.submissions.submittedAt]:
+          packet.submittedAt || expectedSubmission.submittedAt || raw?.submittedAt || admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+    if (shouldCloneOfficial) {
+      batch.set(expectedOfficialRef, {
+        ...currentOfficial,
+        [FIELDS.officialAssessments.eventId]: String(packet.officialEventId || packet.assignmentEventId || "").trim(),
+        [FIELDS.officialAssessments.ensembleId]: String(packet.ensembleId || "").trim(),
+        [FIELDS.officialAssessments.schoolId]: String(packet.schoolId || currentOfficial.schoolId || "").trim(),
+        [FIELDS.officialAssessments.judgePosition]: String(packet.officialJudgePosition || packet.judgePosition || "").trim(),
+        [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.officialAssessments.createdAt]:
+          currentOfficial.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+    if (shouldMaterializeOfficial) {
+      batch.set(expectedOfficialRef, {
+        [FIELDS.officialAssessments.status]: packetOfficialStatus,
+        [FIELDS.officialAssessments.releaseEligible]: true,
+        [FIELDS.officialAssessments.sourceRawAssessmentId]: rawAssessmentId,
+        [FIELDS.officialAssessments.judgeUid]: packetJudgeUid,
+        [FIELDS.officialAssessments.judgeName]: packetJudgeName,
+        [FIELDS.officialAssessments.judgeEmail]: packetJudgeEmail,
+        [FIELDS.officialAssessments.schoolId]: packetSchoolId,
+        [FIELDS.officialAssessments.eventId]: packetEventId,
+        [FIELDS.officialAssessments.ensembleId]: packetEnsembleId,
+        [FIELDS.officialAssessments.judgePosition]: packetJudgePosition,
+        [FIELDS.officialAssessments.formType]: packetFormType,
+        [FIELDS.officialAssessments.audioUrl]: packetAudioUrl,
+        [FIELDS.officialAssessments.audioPath]: packetAudioPath,
+        [FIELDS.officialAssessments.audioSegments]: packetAudioSegments,
+        [FIELDS.officialAssessments.audioDurationSec]: packetAudioDurationSec,
+        [FIELDS.officialAssessments.transcript]: packetTranscript,
+        [FIELDS.officialAssessments.writtenComments]: packetWrittenComments,
+        [FIELDS.officialAssessments.captions]: packetCaptions,
+        [FIELDS.officialAssessments.captionScoreTotal]:
+          Number.isFinite(Number(packet.captionScoreTotal)) ? Number(packet.captionScoreTotal) : null,
+        [FIELDS.officialAssessments.computedFinalRatingJudge]:
+          Number.isFinite(Number(packet.computedFinalRatingJudge)) ?
+            Number(packet.computedFinalRatingJudge) :
+            null,
+        [FIELDS.officialAssessments.computedFinalRatingLabel]:
+          String(packet.computedFinalRatingLabel || "N/A"),
+        [FIELDS.officialAssessments.reviewedAt]:
+          raw?.reviewedAt || admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.officialAssessments.reviewedByUid]:
+          String(raw?.reviewedByUid || request.auth.uid || ""),
+        [FIELDS.officialAssessments.reviewedByName]:
+          String(raw?.reviewedByName || "Packet Linkage Repair"),
+        [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.officialAssessments.createdAt]:
+          packet.createdAt || raw?.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+    if (shouldRepairOfficial) {
+      batch.set(expectedOfficialRef, {
+        [FIELDS.officialAssessments.status]: packetOfficialStatus,
+        [FIELDS.officialAssessments.releaseEligible]: true,
+        [FIELDS.officialAssessments.sourceRawAssessmentId]: rawAssessmentId,
+        [FIELDS.officialAssessments.judgeUid]: packetJudgeUid,
+        [FIELDS.officialAssessments.judgeName]: packetJudgeName,
+        [FIELDS.officialAssessments.judgeEmail]: packetJudgeEmail,
+        [FIELDS.officialAssessments.schoolId]: packetSchoolId,
+        [FIELDS.officialAssessments.eventId]: packetEventId,
+        [FIELDS.officialAssessments.ensembleId]: packetEnsembleId,
+        [FIELDS.officialAssessments.judgePosition]: packetJudgePosition,
+        [FIELDS.officialAssessments.formType]: packetFormType,
+        [FIELDS.officialAssessments.audioUrl]: packetAudioUrl,
+        [FIELDS.officialAssessments.audioPath]: packetAudioPath,
+        [FIELDS.officialAssessments.audioSegments]: packetAudioSegments,
+        [FIELDS.officialAssessments.audioDurationSec]: packetAudioDurationSec,
+        [FIELDS.officialAssessments.transcript]: packetTranscript,
+        [FIELDS.officialAssessments.writtenComments]: packetWrittenComments,
+        [FIELDS.officialAssessments.captions]: packetCaptions,
+        [FIELDS.officialAssessments.captionScoreTotal]:
+          Number.isFinite(Number(packet.captionScoreTotal)) ? Number(packet.captionScoreTotal) : null,
+        [FIELDS.officialAssessments.computedFinalRatingJudge]:
+          Number.isFinite(Number(packet.computedFinalRatingJudge)) ?
+            Number(packet.computedFinalRatingJudge) :
+            null,
+        [FIELDS.officialAssessments.computedFinalRatingLabel]:
+          String(packet.computedFinalRatingLabel || "N/A"),
+        [FIELDS.officialAssessments.reviewedAt]:
+          raw?.reviewedAt || expectedOfficial.reviewedAt || admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.officialAssessments.reviewedByUid]:
+          String(raw?.reviewedByUid || expectedOfficial.reviewedByUid || request.auth.uid || ""),
+        [FIELDS.officialAssessments.reviewedByName]:
+          String(raw?.reviewedByName || expectedOfficial.reviewedByName || "Packet Linkage Repair"),
+        [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+    await batch.commit();
+  }
+
+  if (summary.samples.length > 50) {
+    summary.samples = summary.samples.slice(0, 50);
+  }
+  return summary;
+});
+
+exports.restoreCanonicalFromOpenPacket = onCall(async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const packetId = String(data.packetId || "").trim();
+  const dryRun = data.dryRun !== false;
+  if (!packetId) {
+    throw new HttpsError("invalid-argument", "packetId required.");
+  }
+
+  const db = admin.firestore();
+  const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+  const packetSnap = await packetRef.get();
+  if (!packetSnap.exists) {
+    throw new HttpsError("not-found", "Open packet not found.");
+  }
+  const packet = packetSnap.data() || {};
+  if (String(packet.mode || "").trim().toLowerCase() !== ADJUDICATION_MODES.official) {
+    throw new HttpsError("failed-precondition", "Only official open packets can restore canonical records.");
+  }
+
+  const submissionId = buildExpectedPacketOfficialSubmissionId(packet);
+  if (!submissionId) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Open packet is missing official event, ensemble, or judge position linkage.",
+    );
+  }
+
+  const rawAssessmentId = buildRawAssessmentId({packetId});
+  const rawRef = db.collection(COLLECTIONS.rawAssessments).doc(rawAssessmentId);
+  const submissionRef = db.collection(COLLECTIONS.submissions).doc(submissionId);
+  const officialRef = db.collection(COLLECTIONS.officialAssessments).doc(submissionId);
+  const [rawSnap, submissionSnap, officialSnap] = await db.getAll(rawRef, submissionRef, officialRef);
+  const raw = rawSnap.exists ? (rawSnap.data() || {}) : {};
+  const existingSubmission = submissionSnap.exists ? (submissionSnap.data() || {}) : {};
+  const existingOfficial = officialSnap.exists ? (officialSnap.data() || {}) : {};
+
+  const transcript = String(packet.transcriptFull || packet.transcript || raw.transcript || "").trim();
+  const writtenComments = String(
+      packet.transcriptFull || packet.transcript || raw.writtenComments || raw.transcript || "",
+  ).trim();
+  const captions = packet.captions && typeof packet.captions === "object" ? packet.captions : {};
+  const audioSegments = Array.isArray(packet.audioSegments) ? packet.audioSegments : [];
+  const audioUrl = String(packet.canonicalAudioUrl || packet.latestAudioUrl || "").trim();
+  const audioPath = String(packet.canonicalAudioPath || packet.latestAudioPath || "").trim();
+  const audioDurationSec = Number(packet.canonicalAudioDurationSec || packet.tapeDurationSec || 0);
+  const eventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
+  const ensembleId = String(packet.ensembleId || "").trim();
+  const schoolId = String(packet.schoolId || raw.schoolId || "").trim();
+  const judgePosition = String(packet.officialJudgePosition || packet.judgePosition || "").trim();
+  const judgeUid = String(packet.createdByJudgeUid || raw.judgeUid || "").trim();
+  const judgeName = String(packet.createdByJudgeName || raw.judgeName || "").trim();
+  const judgeEmail = String(packet.createdByJudgeEmail || raw.judgeEmail || "").trim();
+  const formType = String(packet.formType || FORM_TYPES.stage).trim();
+  const submissionStatus = String(packet.status || "").trim() === "released" ? STATUSES.released : STATUSES.submitted;
+  const officialStatus = String(packet.status || "").trim() === "released" ? STATUSES.released : STATUSES.officialized;
+
+  const result = {
+    dryRun,
+    packetId,
+    submissionId,
+    eventId,
+    ensembleId,
+    judgePosition,
+    schoolId,
+    packetJudgeName: judgeName,
+    priorSubmissionJudgeName: String(existingSubmission.judgeName || "").trim(),
+    priorOfficialJudgeName: String(existingOfficial.judgeName || "").trim(),
+    restored: true,
+  };
+
+  if (dryRun) {
+    return result;
+  }
+
+  const batch = db.batch();
+  batch.set(packetRef, {
+    [FIELDS.packets.officialEventId]: eventId,
+    [FIELDS.packets.officialJudgePosition]: judgePosition,
+    [FIELDS.packets.officialSubmissionId]: submissionId,
+    [FIELDS.packets.officialAssessmentId]: submissionId,
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  batch.set(rawRef, {
+    [FIELDS.rawAssessments.eventId]: eventId,
+    [FIELDS.rawAssessments.ensembleId]: ensembleId,
+    [FIELDS.rawAssessments.schoolId]: schoolId,
+    [FIELDS.rawAssessments.judgePosition]: judgePosition,
+    [FIELDS.rawAssessments.associationState]: "attached",
+    [FIELDS.rawAssessments.officialAssessmentId]: submissionId,
+    [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  batch.set(submissionRef, {
+    [FIELDS.submissions.status]: submissionStatus,
+    [FIELDS.submissions.locked]: true,
+    [FIELDS.submissions.judgeUid]: judgeUid,
+    [FIELDS.submissions.judgeName]: judgeName,
+    [FIELDS.submissions.judgeEmail]: judgeEmail,
+    [FIELDS.submissions.schoolId]: schoolId,
+    [FIELDS.submissions.eventId]: eventId,
+    [FIELDS.submissions.ensembleId]: ensembleId,
+    [FIELDS.submissions.judgePosition]: judgePosition,
+    [FIELDS.submissions.formType]: formType,
+    [FIELDS.submissions.audioUrl]: audioUrl,
+    audioPath,
+    [FIELDS.submissions.audioSegments]: audioSegments,
+    [FIELDS.submissions.audioDurationSec]: audioDurationSec,
+    [FIELDS.submissions.transcript]: transcript,
+    [FIELDS.submissions.captions]: captions,
+    [FIELDS.submissions.captionScoreTotal]:
+      Number.isFinite(Number(packet.captionScoreTotal)) ? Number(packet.captionScoreTotal) : null,
+    [FIELDS.submissions.computedFinalRatingJudge]:
+      Number.isFinite(Number(packet.computedFinalRatingJudge)) ? Number(packet.computedFinalRatingJudge) : null,
+    [FIELDS.submissions.computedFinalRatingLabel]: String(packet.computedFinalRatingLabel || "N/A"),
+    [FIELDS.submissions.submittedAt]:
+      packet.submittedAt || existingSubmission.submittedAt || raw.submittedAt || admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.submissions.createdAt]:
+      existingSubmission.createdAt || packet.createdAt || raw.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  batch.set(officialRef, {
+    [FIELDS.officialAssessments.status]: officialStatus,
+    [FIELDS.officialAssessments.releaseEligible]: true,
+    [FIELDS.officialAssessments.sourceRawAssessmentId]: rawAssessmentId,
+    [FIELDS.officialAssessments.judgeUid]: judgeUid,
+    [FIELDS.officialAssessments.judgeName]: judgeName,
+    [FIELDS.officialAssessments.judgeEmail]: judgeEmail,
+    [FIELDS.officialAssessments.schoolId]: schoolId,
+    [FIELDS.officialAssessments.eventId]: eventId,
+    [FIELDS.officialAssessments.ensembleId]: ensembleId,
+    [FIELDS.officialAssessments.judgePosition]: judgePosition,
+    [FIELDS.officialAssessments.formType]: formType,
+    [FIELDS.officialAssessments.audioUrl]: audioUrl,
+    [FIELDS.officialAssessments.audioPath]: audioPath,
+    [FIELDS.officialAssessments.audioSegments]: audioSegments,
+    [FIELDS.officialAssessments.audioDurationSec]: audioDurationSec,
+    [FIELDS.officialAssessments.transcript]: transcript,
+    [FIELDS.officialAssessments.writtenComments]: writtenComments,
+    [FIELDS.officialAssessments.captions]: captions,
+    [FIELDS.officialAssessments.captionScoreTotal]:
+      Number.isFinite(Number(packet.captionScoreTotal)) ? Number(packet.captionScoreTotal) : null,
+    [FIELDS.officialAssessments.computedFinalRatingJudge]:
+      Number.isFinite(Number(packet.computedFinalRatingJudge)) ? Number(packet.computedFinalRatingJudge) : null,
+    [FIELDS.officialAssessments.computedFinalRatingLabel]: String(packet.computedFinalRatingLabel || "N/A"),
+    [FIELDS.officialAssessments.reviewedAt]:
+      raw.reviewedAt || existingOfficial.reviewedAt || admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.officialAssessments.reviewedByUid]:
+      String(raw.reviewedByUid || existingOfficial.reviewedByUid || request.auth.uid || ""),
+    [FIELDS.officialAssessments.reviewedByName]:
+      String(raw.reviewedByName || existingOfficial.reviewedByName || "Open Sheet Restore"),
+    [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.officialAssessments.createdAt]:
+      existingOfficial.createdAt || packet.createdAt || raw.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  await batch.commit();
+
+  return result;
 });
 
 exports.releaseMockPacketForAshleyTesting = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {

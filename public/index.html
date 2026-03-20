@@ -101,6 +101,7 @@
           <button type="button" class="admin-subnav-btn" id="adminSubnavChairBtn" role="tab" data-admin-view="liveEvent" aria-selected="false">Schedule &amp; Flow</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavSubmissionsBtn" role="tab" data-admin-view="submissions" aria-selected="false">Live Submissions</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavPacketsBtn" role="tab" data-admin-view="packets" aria-selected="false">Packets &amp; Results</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavRatingsBtn" role="tab" data-admin-view="ratings" aria-selected="false">Ratings</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavAnnouncerBtn" role="tab" data-admin-view="announcer" aria-selected="false">Announcer</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavReadinessBtn" role="tab" data-admin-view="readiness" aria-selected="false">Readiness</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavSettingsBtn" role="tab" data-admin-view="settings" aria-selected="false">Settings</button>
@@ -281,6 +282,30 @@
             <div class="note" id="adminPacketsHint">Set an active event to begin.</div>
             <ul id="adminPacketsList" class="list"></ul>
           </div>
+          </div>
+
+          <div id="adminViewRatings" class="admin-view stack is-hidden" data-admin-view="ratings">
+            <div class="panel">
+              <h3>Ratings Summary</h3>
+              <p class="hint">Current event ratings grouped by school and ensemble.</p>
+              <div class="note" id="adminRatingsHint">Set an active event to load ratings.</div>
+              <div class="schedule-timeline-table-wrap">
+                <table class="schedule-timeline-table" role="grid">
+                  <thead>
+                    <tr>
+                      <th scope="col">School / Ensemble</th>
+                      <th scope="col">Grade</th>
+                      <th scope="col"><span>Stage 1</span><div class="admin-ratings-header-meta" id="adminRatingsStage1Judge"></div></th>
+                      <th scope="col"><span>Stage 2</span><div class="admin-ratings-header-meta" id="adminRatingsStage2Judge"></div></th>
+                      <th scope="col"><span>Stage 3</span><div class="admin-ratings-header-meta" id="adminRatingsStage3Judge"></div></th>
+                      <th scope="col"><span>SR</span><div class="admin-ratings-header-meta" id="adminRatingsSightJudge"></div></th>
+                      <th scope="col">Overall Rating</th>
+                    </tr>
+                  </thead>
+                  <tbody id="adminRatingsTableBody"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
 
           <div id="adminViewChair" class="admin-view stack is-hidden" data-admin-view="liveEvent">

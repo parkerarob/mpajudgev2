@@ -37,6 +37,8 @@ import {
   unreleaseAudioOnlyResult,
   repairManualAudioOverrides,
   repairOpenSubmissionAudioMetadata,
+  repairPacketSubmissionLinkage,
+  restoreCanonicalFromOpenPacket,
   deleteScheduleEntry,
   deleteSchool,
   assignDirectorSchool,
@@ -191,6 +193,7 @@ import {
   getEventLabel,
   getSchoolNameById,
   normalizeEnsembleNameForSchool,
+  normalizeCaptions,
   normalizeGrade,
   derivePerformanceGrade,
   levelToRoman,
@@ -2031,6 +2034,7 @@ function getAdminViewController() {
     renderAdminPizzaTotals,
     renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
+    renderAdminRatingsView,
     renderAdminAnnouncerView,
     renderAdminReadinessView,
     renderEventList,
@@ -2193,9 +2197,11 @@ function getAdminRenderers() {
     unreleaseAudioOnlyResult,
     repairManualAudioOverrides,
     repairOpenSubmissionAudioMetadata,
+    repairPacketSubmissionLinkage,
+    restoreCanonicalFromOpenPacket,
     deleteAllUnreleasedPackets,
     cleanupTestArtifacts,
-    renderSubmissionCard,
+    renderAssessmentCard,
     loadAdminPacketView,
     confirmUser,
     alertUser,
@@ -2355,6 +2361,7 @@ function getJudgeOpenHandlerBinder() {
     syncOpenFormTypeSegmented,
     draftCaptionsFromTranscript,
     applyOpenCaptionDraft,
+    normalizeCaptions,
     transcribeOpenTape,
     finalizeOpenTapeAutoTranscription,
     startOpenRecording,
@@ -2570,7 +2577,7 @@ function getDirectorPacketRenderers() {
     STATUSES,
     FORM_TYPES,
     CAPTION_TEMPLATES,
-    renderSubmissionCard,
+    renderAssessmentCard,
     fetchDirectorPacketAssets,
     fetchDirectorAudioResultAsset,
     withLoading,
@@ -5731,6 +5738,10 @@ async function renderAdminLiveSubmissions() {
   return getAdminRenderers().renderAdminLiveSubmissions();
 }
 
+async function renderAdminRatingsView() {
+  return getAdminRenderers().renderAdminRatingsView();
+}
+
 export async function renderRegisteredEnsemblesList() {
   return getAdminRenderers().renderRegisteredEnsemblesList();
 }
@@ -5916,6 +5927,14 @@ function getCaptionTemplateKeysForFormType(formType = FORM_TYPES.stage) {
   return orderedKeys;
 }
 
+function formatCaptionKeyLabel(value) {
+  return String(value || "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+    .trim() || "Caption";
+}
+
 function openAdminPreviewWindow() {
   const previewWindow = window.open("", "_blank");
   if (previewWindow && !previewWindow.closed) {
@@ -5939,6 +5958,7 @@ function renderAdminCommentEditor({
 } = {}) {
   const wrapper = document.createElement("div");
   wrapper.className = "panel stack";
+  wrapper.classList.add("is-hidden");
 
   const title = document.createElement("strong");
   title.textContent = `${JUDGE_POSITION_LABELS[position] || position} Comment Fixes`;
@@ -6030,6 +6050,28 @@ function renderAdminCommentEditor({
   return wrapper;
 }
 
+function renderAdminCommentEditorToggle(options = {}) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "stack";
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.className = "ghost";
+  toggleBtn.textContent = "Comment Fixes";
+  wrapper.appendChild(toggleBtn);
+
+  const editor = renderAdminCommentEditor(options);
+  wrapper.appendChild(editor);
+
+  toggleBtn.addEventListener("click", () => {
+    const isHidden = editor.classList.contains("is-hidden");
+    editor.classList.toggle("is-hidden", !isHidden);
+    toggleBtn.textContent = isHidden ? "Hide Comment Fixes" : "Comment Fixes";
+  });
+
+  return wrapper;
+}
+
 function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) {
   const captionSummary = document.createElement("div");
   captionSummary.className = "caption-grid";
@@ -6048,23 +6090,6 @@ function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) 
     grade.textContent = `Grade: ${gradeDisplay || "N/A"}`;
     const comment = document.createElement("div");
     comment.textContent = value.comment || "";
-    row.appendChild(title);
-    row.appendChild(grade);
-    row.appendChild(comment);
-    captionSummary.appendChild(row);
-  });
-
-  Object.entries(captions).forEach(([key, value]) => {
-    if (seen.has(key)) return;
-    const row = document.createElement("div");
-    row.className = "caption-row";
-    const gradeDisplay = `${value?.gradeLetter || ""}${value?.gradeModifier || ""}`;
-    const title = document.createElement("strong");
-    title.textContent = key;
-    const grade = document.createElement("div");
-    grade.textContent = `Grade: ${gradeDisplay || "N/A"}`;
-    const comment = document.createElement("div");
-    comment.textContent = value?.comment || "";
     row.appendChild(title);
     row.appendChild(grade);
     row.appendChild(comment);
@@ -6165,7 +6190,7 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
       wrapper.className = "packet-slot";
       wrapper.appendChild(renderAssessmentCard(submission, position));
       if (submission) {
-        wrapper.appendChild(renderAdminCommentEditor({
+        wrapper.appendChild(renderAdminCommentEditorToggle({
           submission,
           position,
           eventId,
@@ -6212,14 +6237,14 @@ export async function loadAdminPacketView(entry, packetPanel, eventIdOverride) {
         const deleteAssessmentBtn = document.createElement("button");
         deleteAssessmentBtn.type = "button";
         deleteAssessmentBtn.className = "ghost";
-        deleteAssessmentBtn.textContent = "Delete Assessment";
+        deleteAssessmentBtn.textContent = "Make Unofficial";
         if (summary?.requiredReleased) {
           deleteAssessmentBtn.disabled = true;
           deleteAssessmentBtn.title = "Unrelease results packet first.";
         }
         deleteAssessmentBtn.addEventListener("click", async () => {
           const ok = window.confirm(
-            `Delete the official assessment for ${JUDGE_POSITION_LABELS[position] || position}? This removes the official result for this judge position and returns the source assessment to admin review when available.`
+            `Make the ${JUDGE_POSITION_LABELS[position] || position} sheet unofficial? This removes it from the official packet and returns the source assessment to admin review when available.`
           );
           if (!ok) return;
           deleteAssessmentBtn.disabled = true;

@@ -17,6 +17,7 @@ export function createAdminViewController({
   renderAdminPizzaTotals,
   renderAdminLiveSubmissions,
   renderAdminPacketsBySchedule,
+  renderAdminRatingsView,
   renderAdminAnnouncerView,
   renderAdminReadinessView,
   renderEventList,
@@ -152,6 +153,7 @@ export function createAdminViewController({
     const showDashboard = resolvedView === "dashboard";
     const showPreEvent = resolvedView === "preEvent";
     const showPackets = resolvedView === "packets";
+    const showRatings = resolvedView === "ratings";
     const showSubmissions = resolvedView === "submissions";
     const showAnnouncer = resolvedView === "announcer";
     const showLiveEvent = resolvedView === "liveEvent" && isAdminLiveEventEnabled();
@@ -166,6 +168,7 @@ export function createAdminViewController({
     setSectionVisible(els.adminViewChair, showLiveEvent);
     setSectionVisible(els.adminViewSubmissions, showSubmissions);
     setSectionVisible(els.adminViewPackets, showPackets);
+    setSectionVisible(els.adminViewRatings, showRatings);
     setSectionVisible(els.adminViewAnnouncer, showAnnouncer);
     setSectionVisible(els.adminViewSettings, showSettings);
     setSectionVisible(els.adminViewReadiness, showReadiness);
@@ -184,6 +187,9 @@ export function createAdminViewController({
       renderAdminLiveSubmissions();
     }
     packetsController.render({ visible: showPackets });
+    if (showRatings) {
+      renderAdminRatingsView();
+    }
     if (showAnnouncer) {
       renderAdminAnnouncerView();
     }
@@ -201,6 +207,9 @@ export function createAdminViewController({
     }
     if (els.adminSubnavPacketsBtn) {
       els.adminSubnavPacketsBtn.setAttribute("aria-selected", showPackets ? "true" : "false");
+    }
+    if (els.adminSubnavRatingsBtn) {
+      els.adminSubnavRatingsBtn.setAttribute("aria-selected", showRatings ? "true" : "false");
     }
     if (els.adminSubnavSubmissionsBtn) {
       els.adminSubnavSubmissionsBtn.setAttribute("aria-selected", showSubmissions ? "true" : "false");

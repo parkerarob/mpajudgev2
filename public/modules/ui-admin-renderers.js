@@ -44,6 +44,8 @@ export function createAdminRenderers({
   unreleaseAudioOnlyResult,
   repairManualAudioOverrides,
   repairOpenSubmissionAudioMetadata,
+  repairPacketSubmissionLinkage,
+  restoreCanonicalFromOpenPacket,
   deleteAllUnreleasedPackets,
   cleanupTestArtifacts,
   renderAssessmentCard,
@@ -114,6 +116,80 @@ export function createAdminRenderers({
       .replace(/_/g, " ")
       .replace(/\b\w/g, (char) => char.toUpperCase())
       .trim() || "Caption";
+  }
+
+  function getAssessmentAudioSegments(item) {
+    if (!Array.isArray(item?.audioSegments)) return [];
+    return item.audioSegments
+      .map((segment) => {
+        const audioUrl = String(segment?.audioUrl || "").trim();
+        const audioPath = String(segment?.audioPath || "").trim();
+        if (!audioUrl && !audioPath) return null;
+        return {
+          audioUrl,
+          audioPath,
+          durationSec: Number(segment?.durationSec || 0),
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function appendAssessmentAudio(container, item) {
+    if (!container || !item) return;
+    const canonicalAudioUrl = String(
+      item.canonicalAudioUrl || item.stitchedAudioUrl || item.audioUrl || ""
+    ).trim();
+    const audioSegments = getAssessmentAudioSegments(item);
+    const supplementalAudioUrl = String(
+      item.supplementalAudioUrl || item.supplementalLatestAudioUrl || ""
+    ).trim();
+
+    if (canonicalAudioUrl) {
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.className = "audio";
+      audio.src = canonicalAudioUrl;
+      container.appendChild(audio);
+    } else if (audioSegments.length === 1 && audioSegments[0]?.audioUrl) {
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.className = "audio";
+      audio.src = audioSegments[0].audioUrl;
+      container.appendChild(audio);
+    } else if (audioSegments.length > 1) {
+      const partsLabel = document.createElement("div");
+      partsLabel.className = "note";
+      partsLabel.textContent = `Recorded Audio Segments: ${audioSegments.length}`;
+      container.appendChild(partsLabel);
+      audioSegments.forEach((segment, index) => {
+        if (!segment.audioUrl) return;
+        const label = document.createElement("div");
+        label.className = "note";
+        label.textContent = `Part ${index + 1}`;
+        const audio = document.createElement("audio");
+        audio.controls = true;
+        audio.preload = "metadata";
+        audio.className = "audio";
+        audio.src = segment.audioUrl;
+        container.appendChild(label);
+        container.appendChild(audio);
+      });
+    }
+
+    if (supplementalAudioUrl) {
+      const supplementalLabel = document.createElement("div");
+      supplementalLabel.className = "note";
+      supplementalLabel.textContent = "Supplemental Audio";
+      const supplementalAudio = document.createElement("audio");
+      supplementalAudio.controls = true;
+      supplementalAudio.preload = "metadata";
+      supplementalAudio.className = "audio";
+      supplementalAudio.src = supplementalAudioUrl;
+      container.appendChild(supplementalLabel);
+      container.appendChild(supplementalAudio);
+    }
   }
 
   function buildRawAssessmentQueue() {
@@ -397,14 +473,7 @@ export function createAdminRenderers({
     els.adminSubmissionDetail.appendChild(title);
     els.adminSubmissionDetail.appendChild(meta);
 
-    if (selected.audioUrl) {
-      const audio = document.createElement("audio");
-      audio.controls = true;
-      audio.preload = "metadata";
-      audio.className = "audio";
-      audio.src = selected.audioUrl;
-      els.adminSubmissionDetail.appendChild(audio);
-    }
+    appendAssessmentAudio(els.adminSubmissionDetail, selected);
 
     const commentsLabel = document.createElement("strong");
     commentsLabel.textContent = "Transcript / Reference Notes";
@@ -630,6 +699,125 @@ export function createAdminRenderers({
         status.textContent = error?.message || "Unable to delete.";
       }
     });
+  }
+
+  async function renderAdminRatingsView() {
+    if (!els.adminRatingsTableBody || !els.adminRatingsHint) return;
+    const eventId = String(state.event.active?.id || "").trim();
+    const ratingsHeaderEls = {
+      stage1: els.adminRatingsStage1Judge,
+      stage2: els.adminRatingsStage2Judge,
+      stage3: els.adminRatingsStage3Judge,
+      sight: els.adminRatingsSightJudge,
+    };
+    const resetRatingsHeaders = () => {
+      Object.values(ratingsHeaderEls).forEach((node) => {
+        if (node) node.textContent = "";
+      });
+    };
+    if (!eventId) {
+      els.adminRatingsHint.textContent = "Set an active event to load ratings.";
+      els.adminRatingsTableBody.innerHTML = "";
+      resetRatingsHeaders();
+      return;
+    }
+
+    els.adminRatingsHint.textContent = "Loading ratings summary...";
+    els.adminRatingsTableBody.innerHTML = "";
+    resetRatingsHeaders();
+
+    try {
+      const extractJudgeLastName = (value) => {
+        const parts = String(value || "")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        return parts.length ? parts[parts.length - 1] : "";
+      };
+      const buildSlotCell = (submission) => {
+        const cell = document.createElement("td");
+        cell.className = "admin-ratings-slot";
+        cell.textContent = submission?.computedFinalRatingLabel || "—";
+        return cell;
+      };
+      const scheduleEntries = await fetchScheduleEntries(eventId).catch(() => []);
+      const ordered = (Array.isArray(scheduleEntries) ? scheduleEntries : [])
+        .slice()
+        .sort((a, b) => {
+          const aTime = toDateOrNull(a.performanceAt)?.getTime() || 0;
+          const bTime = toDateOrNull(b.performanceAt)?.getTime() || 0;
+          if (aTime !== bTime) return aTime - bTime;
+          const orderA = Number(a.orderIndex);
+          const orderB = Number(b.orderIndex);
+          if (Number.isFinite(orderA) && Number.isFinite(orderB) && orderA !== orderB) return orderA - orderB;
+          const schoolCompare = String(a.schoolName || a.schoolId || "").localeCompare(
+            String(b.schoolName || b.schoolId || "")
+          );
+          if (schoolCompare) return schoolCompare;
+          return String(a.ensembleName || a.ensembleId || "").localeCompare(
+            String(b.ensembleName || b.ensembleId || "")
+          );
+        });
+
+      if (!ordered.length) {
+        els.adminRatingsHint.textContent = "No scheduled ensembles found for the active event.";
+        return;
+      }
+
+      const packetPayloads = await Promise.all(
+        ordered.map(async (entry) => ({
+          entry,
+          packetData: await getPacketData({ eventId, entry }).catch(() => null),
+        }))
+      );
+
+      const positionOrder = ["stage1", "stage2", "stage3", "sight"];
+      positionOrder.forEach((position) => {
+        const match = packetPayloads.find(({ packetData }) => packetData?.submissions?.[position]?.judgeName);
+        const judgeLastName = extractJudgeLastName(match?.packetData?.submissions?.[position]?.judgeName || "");
+        if (ratingsHeaderEls[position]) ratingsHeaderEls[position].textContent = judgeLastName;
+      });
+
+      packetPayloads.forEach(({ entry, packetData }) => {
+        const row = document.createElement("tr");
+        const labelCell = document.createElement("td");
+        labelCell.className = "admin-ratings-ensemble";
+        labelCell.innerHTML = `<strong>${entry.schoolName || getSchoolNameById(state.admin.schoolsList, entry.schoolId) || entry.schoolId || "School"}</strong><br>${normalizeEnsembleDisplayName({
+          schoolName: entry.schoolName || getSchoolNameById(state.admin.schoolsList, entry.schoolId) || "",
+          ensembleName: entry.ensembleName,
+          ensembleId: entry.ensembleId,
+        }) || entry.ensembleId || "Ensemble"}`;
+        row.appendChild(labelCell);
+
+        const gradeCell = document.createElement("td");
+        gradeCell.className = "admin-ratings-grade";
+        gradeCell.textContent = packetData?.grade || "—";
+        row.appendChild(gradeCell);
+
+        const submissions = packetData?.submissions || {};
+        [
+          "stage1",
+          "stage2",
+          "stage3",
+          "sight",
+        ].forEach((position) => {
+          const submission = submissions[position] || null;
+          row.appendChild(buildSlotCell(submission));
+        });
+
+        const overallCell = document.createElement("td");
+        overallCell.className = "admin-ratings-overall";
+        overallCell.textContent = packetData?.summary?.overall?.label || "—";
+        row.appendChild(overallCell);
+        els.adminRatingsTableBody.appendChild(row);
+      });
+
+      els.adminRatingsHint.textContent =
+        `${packetPayloads.length} ensemble${packetPayloads.length === 1 ? "" : "s"} loaded for the active event.`;
+    } catch (error) {
+      console.error("Failed to render admin ratings view", error);
+      els.adminRatingsHint.textContent = error?.message || "Unable to load ratings summary right now.";
+    }
   }
 
   function normalizeOpenPacketStatus(value) {
@@ -1849,6 +2037,67 @@ export function createAdminRenderers({
           }
         });
         cleanupRow.appendChild(repairOpenTapeBtn);
+        const repairLinkageBtn = document.createElement("button");
+        repairLinkageBtn.type = "button";
+        repairLinkageBtn.className = "ghost";
+        repairLinkageBtn.textContent = "Repair Packet Linkage";
+        repairLinkageBtn.addEventListener("click", async () => {
+          const runDry = window.confirm(
+            "Run a DRY RUN first?\nOK = Dry run only (safe preview)\nCancel = Apply fixes now"
+          );
+          repairLinkageBtn.disabled = true;
+          try {
+            const result = await repairPacketSubmissionLinkage({ dryRun: runDry });
+            await renderAdminPacketsBySchedule();
+            alertUser(
+              `${runDry ? "Dry run complete" : "Packet linkage repair complete"}.\n` +
+              `Packets updated: ${result.packetsUpdated || 0}\n` +
+              `Raw assessments updated: ${result.rawAssessmentsUpdated || 0}\n` +
+              `Submission docs cloned: ${result.submissionsCloned || 0}\n` +
+              `Official assessment docs cloned: ${result.officialAssessmentsCloned || 0}\n` +
+              `Raw official pointers updated: ${result.officialAssessmentPointersUpdated || 0}\n` +
+              `Skipped already correct: ${result.skippedAlreadyCorrect || 0}\n` +
+              `Skipped incomplete: ${result.skippedIncomplete || 0}`
+            );
+          } catch (error) {
+            console.error("repairPacketSubmissionLinkage failed", error);
+            alertUser(error?.message || "Unable to repair packet linkage.");
+          } finally {
+            repairLinkageBtn.disabled = false;
+          }
+        });
+        cleanupRow.appendChild(repairLinkageBtn);
+        const restorePacketBtn = document.createElement("button");
+        restorePacketBtn.type = "button";
+        restorePacketBtn.className = "ghost";
+        restorePacketBtn.textContent = "Restore Canonical From Open Sheet";
+        restorePacketBtn.addEventListener("click", async () => {
+          const packetId = String(
+            window.prompt("Enter the Open Sheet ID to restore from:", "") || ""
+          ).trim();
+          if (!packetId) return;
+          const runDry = window.confirm(
+            "Run a DRY RUN first?\nOK = Dry run only (safe preview)\nCancel = Apply restore now"
+          );
+          restorePacketBtn.disabled = true;
+          try {
+            const result = await restoreCanonicalFromOpenPacket({ packetId, dryRun: runDry });
+            await renderAdminPacketsBySchedule();
+            alertUser(
+              `${runDry ? "Dry run complete" : "Canonical restore complete"}.\n` +
+              `Open Sheet ID: ${result.packetId || packetId}\n` +
+              `Target submission: ${result.submissionId || "Unknown"}\n` +
+              `Judge slot: ${result.judgePosition || "Unknown"}\n` +
+              `Judge: ${result.packetJudgeName || "Unknown"}`
+            );
+          } catch (error) {
+            console.error("restoreCanonicalFromOpenPacket failed", error);
+            alertUser(error?.message || "Unable to restore canonical data from that open sheet.");
+          } finally {
+            restorePacketBtn.disabled = false;
+          }
+        });
+        cleanupRow.appendChild(restorePacketBtn);
         els.adminPacketsList.appendChild(cleanupRow);
       };
       appendBulkCleanupPanel();
@@ -2284,6 +2533,34 @@ export function createAdminRenderers({
         "Individual Open Judge tapes for this school (active event + unscheduled open sheets).";
       openSection.appendChild(openHint);
 
+      const buildExpectedOpenSubmissionId = (packet) => {
+        const officialEventId = String(packet?.officialEventId || packet?.assignmentEventId || "").trim();
+        const ensembleId = String(packet?.ensembleId || "").trim();
+        const judgePosition = String(packet?.officialJudgePosition || packet?.judgePosition || "").trim();
+        if (!officialEventId || !ensembleId || !judgePosition) return "";
+        return `${officialEventId}_${ensembleId}_${judgePosition}`;
+      };
+      const conflictsBySubmissionId = new Map();
+      openPackets.forEach((packet) => {
+        if (String(packet.mode || "").trim().toLowerCase() !== "official") return;
+        const submissionId = buildExpectedOpenSubmissionId(packet);
+        if (!submissionId) return;
+        const existing = conflictsBySubmissionId.get(submissionId) || [];
+        existing.push(packet);
+        conflictsBySubmissionId.set(submissionId, existing);
+      });
+      const conflictingGroups = Array.from(conflictsBySubmissionId.entries())
+        .filter(([, packets]) => packets.length > 1);
+
+      if (conflictingGroups.length) {
+        const conflictPanel = document.createElement("div");
+        conflictPanel.className = "note";
+        conflictPanel.innerHTML = `<strong>Conflicts detected:</strong> ${conflictingGroups.length} duplicate official slot${
+          conflictingGroups.length === 1 ? "" : "s"
+        } found. These open sheets target the same deterministic submission and need manual review before repair/release.`;
+        openSection.appendChild(conflictPanel);
+      }
+
       if (!openPackets.length) {
         const empty = document.createElement("div");
         empty.className = "note";
@@ -2293,6 +2570,11 @@ export function createAdminRenderers({
         const openList = document.createElement("div");
         openList.className = "stack";
         openPackets.forEach((packet) => {
+          const isOfficialPacket = String(packet.mode || "").trim().toLowerCase() === "official";
+          const expectedSubmissionId = buildExpectedOpenSubmissionId(packet);
+          const conflictingPackets = isOfficialPacket && expectedSubmissionId ?
+            (conflictsBySubmissionId.get(expectedSubmissionId) || []).filter((item) => item.id !== packet.id) :
+            [];
           const row = document.createElement("div");
           row.className = "panel";
           const top = document.createElement("div");
@@ -2304,10 +2586,7 @@ export function createAdminRenderers({
           badges.className = "row";
           const modeBadge = document.createElement("span");
           modeBadge.className = "badge";
-          modeBadge.textContent =
-            String(packet.mode || "practice").toLowerCase() === "official"
-              ? "OFFICIAL"
-              : "PRACTICE";
+          modeBadge.textContent = isOfficialPacket ? "OFFICIAL" : "PRACTICE";
           badges.appendChild(modeBadge);
           const statusBadge = document.createElement("span");
           statusBadge.className = "badge";
@@ -2317,6 +2596,12 @@ export function createAdminRenderers({
           formBadge.className = "badge";
           formBadge.textContent = (packet.formType || "stage").toUpperCase();
           badges.appendChild(formBadge);
+          if (conflictingPackets.length) {
+            const conflictBadge = document.createElement("span");
+            conflictBadge.className = "badge status--warn";
+            conflictBadge.textContent = "CONFLICT";
+            badges.appendChild(conflictBadge);
+          }
           top.appendChild(badges);
           row.appendChild(top);
 
@@ -2331,9 +2616,51 @@ export function createAdminRenderers({
           const updatedLabel = formatPacketTimestamp(packet.updatedAt) || "Recently updated";
           meta.textContent = `Judge: ${judgeLabel} - Judge Overall Rating: ${ratingLabel} - Updated: ${updatedLabel}`;
           row.appendChild(meta);
+          if (isOfficialPacket && expectedSubmissionId) {
+            const targetMeta = document.createElement("div");
+            targetMeta.className = "note";
+            targetMeta.textContent = `Target slot: ${expectedSubmissionId}`;
+            row.appendChild(targetMeta);
+          }
+          if (conflictingPackets.length) {
+            const conflictMeta = document.createElement("div");
+            conflictMeta.className = "note";
+            conflictMeta.innerHTML = `<strong>Conflict:</strong> also targeted by ${conflictingPackets
+              .map((item) => item.id)
+              .join(", ")}`;
+            row.appendChild(conflictMeta);
+          }
 
           const actions = document.createElement("div");
           actions.className = "row";
+          if (isOfficialPacket && conflictingPackets.length) {
+            const resolveBtn = document.createElement("button");
+            resolveBtn.type = "button";
+            resolveBtn.textContent = "Use This Open Sheet";
+            resolveBtn.addEventListener("click", async () => {
+              const ok = confirmUser(
+                `Restore the canonical ${expectedSubmissionId || "submission"} from Open Sheet ${packet.id}?\n\n` +
+                `This uses this packet as the source of truth for the official slot.`
+              );
+              if (!ok) return;
+              resolveBtn.disabled = true;
+              try {
+                await restoreCanonicalFromOpenPacket({ packetId: packet.id, dryRun: false });
+                scheduleAdminPreflightRefresh?.({ immediate: true });
+                await renderAdminPacketsBySchedule();
+                alertUser(
+                  `Canonical slot restored from Open Sheet ${packet.id}.\n` +
+                  `Review and delete any duplicate conflicting sheets if they are no longer needed.`
+                );
+              } catch (error) {
+                console.error("Conflict resolution restore failed", error);
+                alertUser(error?.message || "Unable to restore canonical data from this open sheet.");
+              } finally {
+                resolveBtn.disabled = false;
+              }
+            });
+            actions.appendChild(resolveBtn);
+          }
           const viewBtn = document.createElement("button");
           viewBtn.type = "button";
           viewBtn.className = "ghost";
@@ -2388,7 +2715,12 @@ export function createAdminRenderers({
               releaseBtn.type = "button";
               const shouldUnrelease = status === "released";
               releaseBtn.textContent = shouldUnrelease ? "Unrelease from Director" : "Release to Director";
+              if (isOfficialPacket && conflictingPackets.length) {
+                releaseBtn.disabled = true;
+                releaseBtn.title = "Resolve conflicting official open sheets for this slot before releasing.";
+              }
               releaseBtn.addEventListener("click", async () => {
+                if (releaseBtn.disabled) return;
                 releaseBtn.disabled = true;
                 try {
                   if (shouldUnrelease) {
@@ -2647,6 +2979,7 @@ export function createAdminRenderers({
   return {
     renderAdminSchoolDetail,
     renderAdminLiveSubmissions,
+    renderAdminRatingsView,
     renderAdminPacketsBySchedule,
     renderRegisteredEnsemblesList,
     renderAdminPizzaTotals,

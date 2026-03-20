@@ -972,6 +972,21 @@ export async function repairOpenSubmissionAudioMetadata({ dryRun = true } = {}) 
   return response?.data || {};
 }
 
+export async function repairPacketSubmissionLinkage({ dryRun = true } = {}) {
+  const fn = httpsCallable(functions, "repairPacketSubmissionLinkage");
+  const response = await fn({ dryRun: dryRun !== false });
+  return response?.data || {};
+}
+
+export async function restoreCanonicalFromOpenPacket({ packetId = "", dryRun = true } = {}) {
+  const fn = httpsCallable(functions, "restoreCanonicalFromOpenPacket");
+  const response = await fn({
+    packetId: String(packetId || "").trim(),
+    dryRun: dryRun !== false,
+  });
+  return response?.data || {};
+}
+
 export async function deleteSchool({ schoolId }) {
   const deleteFn = httpsCallable(functions, "deleteSchool");
   return deleteFn({ schoolId });

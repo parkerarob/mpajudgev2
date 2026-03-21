@@ -11,6 +11,18 @@ export function createDirectorPacketRenderers({
   fetchDirectorAudioResultAsset,
   withLoading,
 } = {}) {
+  function isCommentsOnlySubmission(submission) {
+    return Boolean(submission?.commentsOnly);
+  }
+
+  function getSubmissionRatingLabel(submission) {
+    return isCommentsOnlySubmission(submission) ? "CO" : String(submission?.computedFinalRatingLabel || "").trim() || "N/A";
+  }
+
+  function getSubmissionCaptionTotalLabel(submission) {
+    return isCommentsOnlySubmission(submission) ? "CO" : String(submission?.captionScoreTotal ?? 0);
+  }
+
   function formatDuration(totalSec) {
     const seconds = Number(totalSec || 0);
     if (!Number.isFinite(seconds) || seconds <= 0) return "";
@@ -24,7 +36,7 @@ export function createDirectorPacketRenderers({
     return `${mins}:${String(secs).padStart(2, "0")}`;
   }
 
-  function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) {
+  function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage, { hideGrades = false } = {}) {
     const captionSummary = document.createElement("div");
     captionSummary.className = "caption-grid";
     const template = CAPTION_TEMPLATES[formType] || CAPTION_TEMPLATES.stage || [];
@@ -39,7 +51,7 @@ export function createDirectorPacketRenderers({
       const title = document.createElement("strong");
       title.textContent = label || key;
       const grade = document.createElement("div");
-      grade.textContent = `Grade: ${gradeDisplay || "N/A"}`;
+      grade.textContent = hideGrades ? "Grade: CO" : `Grade: ${gradeDisplay || "N/A"}`;
       const comment = document.createElement("div");
       comment.textContent = value.comment || "";
       row.appendChild(title);
@@ -66,13 +78,13 @@ export function createDirectorPacketRenderers({
     title.textContent = "Official Results Packet Files";
     const hint = document.createElement("div");
     hint.className = "note";
-    hint.textContent = "Load released judge PDFs and audio files for this ensemble.";
+    hint.textContent = "Generate released score sheets and audio files for this ensemble.";
     const actions = document.createElement("div");
     actions.className = "row";
     const loadBtn = document.createElement("button");
     loadBtn.type = "button";
     loadBtn.className = "ghost";
-    loadBtn.textContent = "Load Files";
+    loadBtn.textContent = "Generate Score Sheets";
     actions.appendChild(loadBtn);
     section.appendChild(title);
     section.appendChild(hint);
@@ -222,29 +234,215 @@ export function createDirectorPacketRenderers({
       await withLoading(loadBtn, async () => {
         const result = await fetchDirectorPacketAssets({ eventId, ensembleId });
         if (!result?.ok) {
-          hint.textContent = result?.message || "Unable to load results packet files.";
+          hint.textContent = result?.message || "Unable to generate released score sheets right now.";
           return;
         }
         state.director.packetAssetsCache.set(key, result);
         renderAssets(result);
-        hint.textContent = "Released judge files loaded.";
-        loadBtn.textContent = "Refresh Files";
+        hint.textContent = "Released score sheets ready.";
+        loadBtn.textContent = "Regenerate Score Sheets";
       });
     });
 
     const cached = state.director.packetAssetsCache.get(key);
     if (cached) {
       renderAssets(cached);
-      loadBtn.textContent = "Refresh Files";
+      hint.textContent = "Released score sheets ready.";
+      loadBtn.textContent = "Regenerate Score Sheets";
     }
 
     wrapper.appendChild(section);
+  }
+
+  function sortDirectorScheduledGroups(groups = []) {
+    return (Array.isArray(groups) ? groups : [])
+      .filter((group) => String(group?.type || "") === "scheduled")
+      .slice()
+      .sort((a, b) => {
+        const schoolCompare = String(a?.schoolName || a?.schoolId || "").localeCompare(
+          String(b?.schoolName || b?.schoolId || "")
+        );
+        if (schoolCompare) return schoolCompare;
+        return String(a?.ensembleName || a?.ensembleId || "").localeCompare(
+          String(b?.ensembleName || b?.ensembleId || "")
+        );
+      });
+  }
+
+  function buildDirectorRatingsOverview(groups = []) {
+    const releasedGroups = sortDirectorScheduledGroups(groups);
+    if (!releasedGroups.length) return null;
+
+    const extractJudgeLastName = (value) => {
+      const parts = String(value || "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : "";
+    };
+
+    const section = document.createElement("div");
+    section.className = "panel stack";
+    const title = document.createElement("strong");
+    title.textContent = "Ratings Overview";
+    const hint = document.createElement("div");
+    hint.className = "note";
+    hint.textContent =
+      "Released Results Packet ratings for your ensembles. This overview appears only after packet results have been released to you.";
+    section.appendChild(title);
+    section.appendChild(hint);
+
+    const table = document.createElement("table");
+    table.className = "schedule-timeline-table";
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+
+    const ensembleHead = document.createElement("th");
+    ensembleHead.scope = "col";
+    ensembleHead.textContent = "Ensemble";
+    headRow.appendChild(ensembleHead);
+
+    const gradeHead = document.createElement("th");
+    gradeHead.scope = "col";
+    gradeHead.className = "admin-ratings-divider";
+    gradeHead.textContent = "Grade";
+    headRow.appendChild(gradeHead);
+
+    const buildPositionHead = (label, judgeName = "", className = "") => {
+      const th = document.createElement("th");
+      th.scope = "col";
+      if (className) th.className = className;
+      const span = document.createElement("span");
+      span.textContent = label;
+      th.appendChild(span);
+      const meta = document.createElement("div");
+      meta.className = "admin-ratings-header-meta";
+      meta.textContent = judgeName;
+      th.appendChild(meta);
+      return th;
+    };
+
+    const positions = ["stage1", "stage2", "stage3", "sight"];
+    positions.forEach((position, index) => {
+      const match = releasedGroups.find((group) => group?.submissions?.[position]?.judgeName);
+      const judgeLastName = extractJudgeLastName(match?.submissions?.[position]?.judgeName || "");
+      headRow.appendChild(
+        buildPositionHead(
+          position === "sight" ? "SR" : `Stage ${index + 1}`,
+          judgeLastName
+        )
+      );
+    });
+
+    const overallHead = document.createElement("th");
+    overallHead.scope = "col";
+    overallHead.className = "admin-ratings-divider-left";
+    overallHead.textContent = "Overall Rating";
+    headRow.appendChild(overallHead);
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    const buildSlotCell = (submission) => {
+      const cell = document.createElement("td");
+      cell.className = "admin-ratings-slot";
+      cell.textContent = submission ? getSubmissionRatingLabel(submission) : "—";
+      return cell;
+    };
+
+    releasedGroups.forEach((group) => {
+      const row = document.createElement("tr");
+      const labelCell = document.createElement("td");
+      labelCell.className = "admin-ratings-ensemble";
+      labelCell.innerHTML = `<strong>${group.schoolName || group.schoolId || "School"}</strong><br>${
+        group.ensembleName || group.ensembleId || "Ensemble"
+      }`;
+      row.appendChild(labelCell);
+
+      const gradeCell = document.createElement("td");
+      gradeCell.className = "admin-ratings-grade admin-ratings-divider";
+      gradeCell.textContent = group.grade || "—";
+      row.appendChild(gradeCell);
+
+      positions.forEach((position) => {
+        row.appendChild(buildSlotCell(group?.submissions?.[position] || null));
+      });
+
+      const overallCell = document.createElement("td");
+      overallCell.className = "admin-ratings-overall admin-ratings-divider-left";
+      overallCell.textContent = group?.overall?.label || "—";
+      row.appendChild(overallCell);
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    section.appendChild(table);
+    return section;
+  }
+
+  function renderDirectorSubmissionDisclosure(submission, position) {
+    const details = document.createElement("details");
+    details.className = "panel accordion-card director-result-sheet";
+
+    const summary = document.createElement("summary");
+    const summaryShell = document.createElement("div");
+    summaryShell.className = "director-result-sheet-summary";
+
+    const title = document.createElement("strong");
+    title.textContent = JUDGE_POSITION_LABELS[position] || position || "Sheet";
+    summaryShell.appendChild(title);
+
+    const meta = document.createElement("div");
+    meta.className = "note";
+    const judgeName = String(submission?.judgeName || "").trim() || "Unknown judge";
+    const rating = getSubmissionRatingLabel(submission);
+    meta.textContent = `${judgeName} - Rating: ${rating}`;
+    summaryShell.appendChild(meta);
+
+    summary.appendChild(summaryShell);
+    details.appendChild(summary);
+
+    const body = document.createElement("div");
+    body.className = "stack";
+    body.appendChild(renderAssessmentCard(submission, position, {
+      showTranscript: false,
+      canonicalAudioOnly: true,
+    }));
+
+    if (submission?.supplementalAudioUrl) {
+      const supplementalCard = document.createElement("div");
+      supplementalCard.className = "packet-card";
+      const supplementalBadge = document.createElement("div");
+      supplementalBadge.className = "badge";
+      supplementalBadge.textContent = `${JUDGE_POSITION_LABELS[position] || position} Supplemental Audio`;
+      const durationText = formatDuration(Number(submission.supplementalAudioDurationSec || 0));
+      const supplementalAudio = document.createElement("audio");
+      supplementalAudio.controls = true;
+      supplementalAudio.preload = "metadata";
+      supplementalAudio.src = submission.supplementalAudioUrl;
+      supplementalAudio.className = "audio";
+      supplementalCard.appendChild(supplementalBadge);
+      if (durationText) {
+        const supplementalMeta = document.createElement("div");
+        supplementalMeta.className = "note";
+        supplementalMeta.textContent = `Duration: ${durationText}`;
+        supplementalCard.appendChild(supplementalMeta);
+      }
+      supplementalCard.appendChild(supplementalAudio);
+      body.appendChild(supplementalCard);
+    }
+
+    details.appendChild(body);
+    return details;
   }
 
   function renderDirectorPackets(groups = []) {
     els.directorPackets.innerHTML = "";
     const releasedResultGroups = groups.filter(
       (group) => !["open-assembled", "open", "audio-only"].includes(String(group?.type || ""))
+    );
+    const scheduledGroups = sortDirectorScheduledGroups(releasedResultGroups);
+    const nonScheduledGroups = (Array.isArray(groups) ? groups : []).filter(
+      (group) => String(group?.type || "") !== "scheduled"
     );
     if (els.directorResultsContextMeta) {
       const schoolName = String(els.directorSummarySchool?.textContent || "").trim() || "No school selected";
@@ -266,7 +464,12 @@ export function createDirectorPacketRenderers({
     }
     if (!groups.length) return;
 
-    for (const group of groups) {
+    const overview = buildDirectorRatingsOverview(releasedResultGroups);
+    if (overview) {
+      els.directorPackets.appendChild(overview);
+    }
+
+    for (const group of [...nonScheduledGroups, ...scheduledGroups]) {
       const wrapper = document.createElement("div");
       wrapper.className = "packet";
 
@@ -360,7 +563,7 @@ export function createDirectorPacketRenderers({
         ensembleNameRow.textContent = `Ensemble: ${group.ensembleName || group.ensembleId || "Unknown"}`;
         const ratingRow = document.createElement("div");
         ratingRow.className = "note";
-        ratingRow.textContent = `Judge Overall Rating: ${group.computedFinalRatingLabel || "N/A"}`;
+        ratingRow.textContent = `Judge Overall Rating: ${getSubmissionRatingLabel(group)}`;
         const slotRow = document.createElement("div");
         slotRow.className = "note";
         slotRow.textContent = `Judge: ${
@@ -398,7 +601,8 @@ export function createDirectorPacketRenderers({
 
         const captionSummary = renderPacketCaptionSummary(
           group.captions || {},
-          group.formType || FORM_TYPES.stage
+          group.formType || FORM_TYPES.stage,
+          { hideGrades: isCommentsOnlySubmission(group) }
         );
         if (!Object.keys(group.captions || {}).length) {
           const empty = document.createElement("div");
@@ -410,7 +614,7 @@ export function createDirectorPacketRenderers({
         const scoringFooter = document.createElement("div");
         scoringFooter.className = "note";
         scoringFooter.textContent =
-          `Caption Total: ${group.captionScoreTotal || 0} - Judge Overall Rating: ${group.computedFinalRatingLabel || "N/A"}`;
+          `Caption Total: ${getSubmissionCaptionTotalLabel(group)} - Judge Overall Rating: ${getSubmissionRatingLabel(group)}`;
 
         scoringCard.appendChild(scoringHeader);
         scoringCard.appendChild(judgeInfo);
@@ -630,44 +834,9 @@ export function createDirectorPacketRenderers({
       Object.values(JUDGE_POSITIONS).forEach((position) => {
         const submission = group.submissions[position];
         if (submission && submission.status === STATUSES.released) {
-          const submissionCard = renderAssessmentCard(submission, position, { showTranscript: false });
-          grid.appendChild(submissionCard);
-          if (submission.supplementalAudioUrl) {
-            const supplementalCard = document.createElement("div");
-            supplementalCard.className = "packet-card";
-            const supplementalBadge = document.createElement("div");
-            supplementalBadge.className = "badge";
-            supplementalBadge.textContent = `${JUDGE_POSITION_LABELS[position] || position} Supplemental Audio`;
-            const durationText = formatDuration(Number(submission.supplementalAudioDurationSec || 0));
-            const supplementalAudio = document.createElement("audio");
-            supplementalAudio.controls = true;
-            supplementalAudio.preload = "metadata";
-            supplementalAudio.src = submission.supplementalAudioUrl;
-            supplementalAudio.className = "audio";
-            supplementalCard.appendChild(supplementalBadge);
-            if (durationText) {
-              const supplementalMeta = document.createElement("div");
-              supplementalMeta.className = "note";
-              supplementalMeta.textContent = `Duration: ${durationText}`;
-              supplementalCard.appendChild(supplementalMeta);
-            }
-            supplementalCard.appendChild(supplementalAudio);
-            grid.appendChild(supplementalCard);
-          }
+          grid.appendChild(renderDirectorSubmissionDisclosure(submission, position));
         }
       });
-
-      const siteRatingCard = document.createElement("div");
-      siteRatingCard.className = "packet-card";
-      const siteBadge = document.createElement("div");
-      siteBadge.className = "badge";
-      siteBadge.textContent = "Site Rating";
-      const siteNote = document.createElement("div");
-      siteNote.className = "note";
-      siteNote.textContent = "Site rating details coming soon.";
-      siteRatingCard.appendChild(siteBadge);
-      siteRatingCard.appendChild(siteNote);
-      grid.appendChild(siteRatingCard);
 
       wrapper.appendChild(header);
       wrapper.appendChild(grid);

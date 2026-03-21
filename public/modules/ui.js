@@ -38,6 +38,9 @@ import {
   repairManualAudioOverrides,
   repairOpenSubmissionAudioMetadata,
   repairPacketSubmissionLinkage,
+  repairPacketReleaseState,
+  setPacketCommentsOnly,
+  recreateOpenPacketFromCanonical,
   restoreCanonicalFromOpenPacket,
   deleteScheduleEntry,
   deleteSchool,
@@ -141,8 +144,11 @@ import {
   calculateCaptionTotal,
   computeFinalRating,
   formatAudioDuration,
+  getCommentsOnlyCaptionTotalLabel,
+  getCommentsOnlyJudgeRatingLabel,
   getAudioSegmentsDurationSec,
   getSubmissionAudioSegments,
+  isCommentsOnlySubmission,
 } from "./judge-shared.js";
 import {
   createOpenPacket,
@@ -763,6 +769,27 @@ export function setDirectorSaveStatus(message) {
 export function setDirectorHint(message) {
   if (!els.directorHint) return;
   els.directorHint.textContent = message || "";
+  renderDirectorDebugSummary({ hint: message || "" });
+}
+
+function renderDirectorDebugSummary({ hint = null, groups = null } = {}) {
+  if (!els.directorDebugSummary) return;
+  const resolvedHint = hint !== null ? hint : String(els.directorHint?.textContent || "").trim();
+  const packetGroups = Array.isArray(groups) ? groups : state.director.debugPacketGroups || [];
+  const releasedCount = packetGroups.filter(
+    (group) => !["open-assembled", "open", "audio-only"].includes(String(group?.type || ""))
+  ).length;
+  const debugParts = [
+    `Role Gate: ${isDirectorManager() ? "pass" : "blocked"}`,
+    `User: ${state.auth.userProfile?.email || state.auth.currentUser?.email || "Unknown"}`,
+    `School ID: ${getDirectorSchoolId() || "Missing"}`,
+    `Selected Event: ${state.director.selectedEventId || "Missing"}`,
+    `Ensemble Cache: ${(state.director.ensemblesCache || []).length}`,
+    `Packet Groups: ${packetGroups.length}`,
+    `Released Groups: ${releasedCount}`,
+    `Hint: ${resolvedHint || "None"}`,
+  ];
+  els.directorDebugSummary.textContent = debugParts.join(" | ");
 }
 
 export function setDirectorSchoolName(name) {
@@ -2211,6 +2238,9 @@ function getAdminRenderers() {
     repairManualAudioOverrides,
     repairOpenSubmissionAudioMetadata,
     repairPacketSubmissionLinkage,
+    repairPacketReleaseState,
+    setPacketCommentsOnly,
+    recreateOpenPacketFromCanonical,
     restoreCanonicalFromOpenPacket,
     deleteAllUnreleasedPackets,
     cleanupTestArtifacts,
@@ -3624,12 +3654,16 @@ export function startWatchers() {
 
 function refreshDirectorWatchers() {
   if (!isDirectorManager()) return;
+  renderDirectorDebugSummary();
   watchDirectorPackets(({ groups, hint } = {}) => {
+    state.director.debugPacketGroups = Array.isArray(groups) ? groups : [];
+    renderDirectorDebugSummary({ hint, groups: state.director.debugPacketGroups });
     renderDirectorPackets(groups || []);
     setDirectorHint(hint || "");
   });
   watchDirectorSchool((name) => {
     setDirectorSchoolName(name);
+    renderDirectorDebugSummary();
     refreshDirectorSchoolLunchTotal();
   });
   watchDirectorSchoolDirectors((directors) => {
@@ -3637,6 +3671,7 @@ function refreshDirectorWatchers() {
   });
   watchDirectorEnsembles((ensembles) => {
     renderDirectorEnsembles(ensembles || []);
+    renderDirectorDebugSummary();
     updateDirectorActiveEnsembleLabel();
     refreshDirectorSchoolLunchTotal();
     renderDirectorRegistrationPanel();
@@ -5762,7 +5797,47 @@ function renderMockAdminPacketPreview() {
   return getAdminMockPacketPreviewRenderer().renderMockAdminPacketPreview();
 }
 
-export function renderAssessmentCard(submission, position, { showTranscript = true } = {}) {
+function resolveSubmissionCanonicalAudio(submission, {canonicalAudioOnly = false} = {}) {
+  const explicitCanonicalUrl = String(
+    submission?.canonicalAudioUrl || submission?.stitchedAudioUrl || ""
+  ).trim();
+  const explicitCanonicalPath = String(submission?.canonicalAudioPath || "").trim();
+  const explicitCanonicalDurationSec = Number(
+    submission?.canonicalAudioDurationSec || submission?.stitchedAudioDurationSec || 0
+  );
+  const audioSegments = getSubmissionAudioSegments(submission);
+  const fallbackAudioUrl = String(submission?.audioUrl || "").trim();
+  const fallbackAudioPath = String(submission?.audioPath || "").trim();
+  const fallbackAudioDurationSec = Number(submission?.audioDurationSec || 0);
+  if (explicitCanonicalUrl || explicitCanonicalPath) {
+    return {
+      status: String(submission?.canonicalAudioStatus || "ready").trim() || "ready",
+      audioUrl: explicitCanonicalUrl,
+      audioPath: explicitCanonicalPath,
+      audioDurationSec: Number.isFinite(explicitCanonicalDurationSec) ? explicitCanonicalDurationSec : 0,
+      audioSegments,
+    };
+  }
+  const canUseFallback = !canonicalAudioOnly && (fallbackAudioUrl || fallbackAudioPath);
+  if (canUseFallback) {
+    return {
+      status: "ready",
+      audioUrl: fallbackAudioUrl,
+      audioPath: fallbackAudioPath,
+      audioDurationSec: Number.isFinite(fallbackAudioDurationSec) ? fallbackAudioDurationSec : 0,
+      audioSegments,
+    };
+  }
+  return {
+    status: String(submission?.canonicalAudioStatus || "missing").trim() || "missing",
+    audioUrl: "",
+    audioPath: "",
+    audioDurationSec: 0,
+    audioSegments,
+  };
+}
+
+export function renderAssessmentCard(submission, position, { showTranscript = true, canonicalAudioOnly = false } = {}) {
   const card = document.createElement("div");
   card.className = "packet-card";
   if (!submission) {
@@ -5803,13 +5878,10 @@ export function renderAssessmentCard(submission, position, { showTranscript = tr
     : judgeName || judgeEmail || "Unknown judge";
   judgeInfo.textContent = `${judgeLabel}${judgeTitle ? ` - ${judgeTitle}` : ""}${judgeAffiliation ? ` - ${judgeAffiliation}` : ""}`;
 
-  const canonicalAudioUrl = String(
-    submission.canonicalAudioUrl || submission.stitchedAudioUrl || submission.audioUrl || ""
-  ).trim();
-  const canonicalAudioDurationSec = Number(
-    submission.canonicalAudioDurationSec || submission.stitchedAudioDurationSec || submission.audioDurationSec || 0
-  );
-  const audioSegments = getSubmissionAudioSegments(submission);
+  const canonicalAudio = resolveSubmissionCanonicalAudio(submission, { canonicalAudioOnly });
+  const canonicalAudioUrl = canonicalAudio.audioUrl;
+  const canonicalAudioDurationSec = canonicalAudio.audioDurationSec;
+  const audioSegments = canonicalAudio.audioSegments;
   const supplementalAudioUrl = String(submission.supplementalAudioUrl || "").trim();
   const audioDurationText = formatAudioDuration(
     canonicalAudioUrl
@@ -5825,15 +5897,17 @@ export function renderAssessmentCard(submission, position, { showTranscript = tr
       0
     )
   );
+  const commentsOnly = isCommentsOnlySubmission(submission);
 
   const captionSummary = renderPacketCaptionSummary(
     submission.captions || {},
-    submission.formType || FORM_TYPES.stage
+    submission.formType || FORM_TYPES.stage,
+    { hideGrades: commentsOnly }
   );
 
   const footer = document.createElement("div");
   footer.className = "note";
-  footer.textContent = `Caption Total: ${submission.captionScoreTotal || 0} - Judge Overall Rating: ${submission.computedFinalRatingLabel || "N/A"}`;
+  footer.textContent = `Caption Total: ${getCommentsOnlyCaptionTotalLabel(submission)} - Judge Overall Rating: ${getCommentsOnlyJudgeRatingLabel(submission)}`;
 
   card.appendChild(header);
   card.appendChild(judgeInfo);
@@ -5841,7 +5915,7 @@ export function renderAssessmentCard(submission, position, { showTranscript = tr
     if (audioDurationText) {
       const audioMeta = document.createElement("div");
       audioMeta.className = "note";
-      audioMeta.textContent = `Recorded Audio: ${audioDurationText}`;
+      audioMeta.textContent = `Tape: ${audioDurationText}`;
       card.appendChild(audioMeta);
     }
     const audio = document.createElement("audio");
@@ -5856,8 +5930,8 @@ export function renderAssessmentCard(submission, position, { showTranscript = tr
       audioMeta.className = "note";
       audioMeta.textContent =
         audioSegments.length > 1
-          ? `Recorded Audio: ${audioDurationText} total`
-          : `Recorded Audio: ${audioDurationText}`;
+          ? `Tape: ${audioDurationText} total`
+          : `Tape: ${audioDurationText}`;
       card.appendChild(audioMeta);
     }
     if (audioSegments.length === 1) {
@@ -5872,7 +5946,7 @@ export function renderAssessmentCard(submission, position, { showTranscript = tr
       audioStack.className = "stack";
       const audioLabel = document.createElement("div");
       audioLabel.className = "note";
-      audioLabel.textContent = `Recorded Audio (${audioSegments.length} parts)`;
+      audioLabel.textContent = `Tape (${audioSegments.length} parts)`;
       audioStack.appendChild(audioLabel);
       audioSegments.forEach((segment) => {
         const partWrap = document.createElement("div");
@@ -5897,7 +5971,9 @@ export function renderAssessmentCard(submission, position, { showTranscript = tr
   } else {
     const audioMissing = document.createElement("div");
     audioMissing.className = "note";
-    audioMissing.textContent = "Audio unavailable.";
+    audioMissing.textContent = canonicalAudioOnly ?
+      `Tape not ready${canonicalAudio.status === "failed" ? " (generation failed)" : ""}.` :
+      "Audio unavailable.";
     card.appendChild(audioMissing);
   }
   if (supplementalAudioUrl) {
@@ -6084,7 +6160,7 @@ function renderAdminCommentEditorToggle(options = {}) {
   return wrapper;
 }
 
-function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) {
+function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage, { hideGrades = false } = {}) {
   const captionSummary = document.createElement("div");
   captionSummary.className = "caption-grid";
   const template = CAPTION_TEMPLATES[formType] || CAPTION_TEMPLATES.stage || [];
@@ -6099,7 +6175,7 @@ function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage) 
     const title = document.createElement("strong");
     title.textContent = label || key;
     const grade = document.createElement("div");
-    grade.textContent = `Grade: ${gradeDisplay || "N/A"}`;
+    grade.textContent = hideGrades ? "Grade: CO" : `Grade: ${gradeDisplay || "N/A"}`;
     const comment = document.createElement("div");
     comment.textContent = value.comment || "";
     row.appendChild(title);

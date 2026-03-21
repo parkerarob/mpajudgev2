@@ -3,7 +3,7 @@ import {
   JUDGE_POSITIONS,
   STATUSES,
 } from "../state.js";
-import { mapOverallLabelFromTotal, normalizeGrade } from "./utils.js";
+import { mapOverallLabelFromTotal, normalizeGrade, normalizeGradeBand } from "./utils.js";
 
 const gradeOneLookup = window.GradeOneLookup;
 const GRADE_ONE_MAP = gradeOneLookup?.GRADE_ONE_MAP || {};
@@ -87,8 +87,9 @@ export function computeFinalRating(total) {
 
 export function computeOverallPacketRating(grade, stageScores, sightScore) {
   const normalizedGrade = normalizeGrade(grade);
+  const normalizedBand = normalizeGradeBand(grade) || normalizedGrade;
   const stageValues = (stageScores || []).filter((value) => Number.isFinite(value));
-  if (normalizedGrade === "I") {
+  if (["I", "II", "I/II"].includes(normalizedBand)) {
     if (stageValues.length !== 3) return { label: "N/A", value: null };
     const key = computeGradeOneKey(stageValues);
     const label = GRADE_ONE_MAP[key] || "N/A";
@@ -114,13 +115,30 @@ export function computeOverallPacketRating(grade, stageScores, sightScore) {
   return { label, value: label === "N/A" ? null : label };
 }
 
-export function isSubmissionComplete(submission) {
+export function isCommentsOnlySubmission(submission) {
+  return Boolean(submission?.commentsOnly);
+}
+
+export function isCommentsOnlyPacket(submissions = {}) {
+  return Object.values(submissions || {}).some((submission) => isCommentsOnlySubmission(submission));
+}
+
+export function getCommentsOnlyJudgeRatingLabel(submission) {
+  return isCommentsOnlySubmission(submission) ? "CO" : String(submission?.computedFinalRatingLabel || "N/A");
+}
+
+export function getCommentsOnlyCaptionTotalLabel(submission) {
+  return isCommentsOnlySubmission(submission) ? "CO" : String(submission?.captionScoreTotal ?? 0);
+}
+
+export function isSubmissionComplete(submission, { commentsOnly = false } = {}) {
   if (!submission) return false;
   if (!submission.locked) return false;
-  if (submission.status !== STATUSES.submitted) return false;
+  if (![STATUSES.submitted, STATUSES.released].includes(submission.status)) return false;
   if (!hasSubmissionAudio(submission)) return false;
   if (!submission.captions) return false;
   if (Object.keys(submission.captions).length < 7) return false;
+  if (commentsOnly || isCommentsOnlySubmission(submission)) return true;
   if (!Number.isFinite(submission.captionScoreTotal)) return false;
   if (!Number.isFinite(submission.computedFinalRatingJudge)) return false;
   return true;
@@ -128,8 +146,10 @@ export function isSubmissionComplete(submission) {
 
 export function computePacketSummary(grade, submissions) {
   const normalizedGrade = normalizeGrade(grade);
+  const normalizedBand = normalizeGradeBand(grade) || normalizedGrade;
+  const commentsOnly = isCommentsOnlyPacket(submissions);
   const requiredPositions =
-    normalizedGrade === "I"
+    ["I", "II", "I/II"].includes(normalizedBand)
       ? [JUDGE_POSITIONS.stage1, JUDGE_POSITIONS.stage2, JUDGE_POSITIONS.stage3]
       : [
           JUDGE_POSITIONS.stage1,
@@ -139,7 +159,7 @@ export function computePacketSummary(grade, submissions) {
         ];
 
   const blockingPositions = requiredPositions.filter((position) =>
-    !isSubmissionComplete(submissions[position])
+    !isSubmissionComplete(submissions[position], { commentsOnly })
   );
   const requiredComplete = blockingPositions.length === 0;
   const requiredReleased = requiredPositions.every(
@@ -152,10 +172,13 @@ export function computePacketSummary(grade, submissions) {
     submissions.stage3?.computedFinalRatingJudge,
   ];
   const sightScore = submissions.sight?.computedFinalRatingJudge;
-  const overall = computeOverallPacketRating(normalizedGrade, stageScores, sightScore);
+  const overall = commentsOnly
+    ? { label: "CO", value: "CO" }
+    : computeOverallPacketRating(normalizedGrade, stageScores, sightScore);
 
   return {
     grade: normalizedGrade,
+    commentsOnly,
     requiredPositions,
     blockingPositions,
     requiredComplete,

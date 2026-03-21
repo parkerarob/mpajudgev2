@@ -70,6 +70,7 @@ const CANONICAL_AUDIO_STATUS = {
   pending: "pending",
   ready: "ready",
   failed: "failed",
+  missing: "missing",
 };
 const GRADE_VALUES = {
   A: 1,
@@ -82,6 +83,10 @@ const APPCHECK_SENSITIVE_OPTIONS = {enforceAppCheck: ENFORCE_APP_CHECK};
 const APPCHECK_SENSITIVE_SECRET_OPTIONS = {
   enforceAppCheck: ENFORCE_APP_CHECK,
   secrets: [OPENAI_API_KEY],
+};
+const AUDIO_REPAIR_FUNCTION_OPTIONS = {
+  memory: "1GiB",
+  timeoutSeconds: 540,
 };
 
 let pdfLib = null;
@@ -249,17 +254,38 @@ async function buildCanonicalAudioAssetFromSegments({
     return sum + (Number.isFinite(value) && value > 0 ? value : 0);
   }, 0);
 
+  const missingObjectPaths = [];
+  async function tryDownloadSegment(segment, {destination} = {}) {
+    const objectPath = String(segment.audioPath || getStoragePathFromUrl(segment.audioUrl) || "").trim();
+    if (!objectPath) return null;
+    try {
+      if (destination) {
+        await bucket.file(objectPath).download({destination});
+        return {objectPath};
+      }
+      const [buffer] = await bucket.file(objectPath).download();
+      return {objectPath, buffer};
+    } catch (error) {
+      const isMissingObject = Number(error?.code) === 404 ||
+        String(error?.message || "").includes("No such object");
+      if (isMissingObject) {
+        missingObjectPaths.push(objectPath);
+        return null;
+      }
+      throw error;
+    }
+  }
+
   if (normalized.length === 1) {
     const segment = normalized[0];
-    const objectPath = String(segment.audioPath || getStoragePathFromUrl(segment.audioUrl) || "").trim();
-    if (!objectPath) {
+    const downloaded = await tryDownloadSegment(segment);
+    if (!downloaded?.buffer) {
       throw new Error("Unable to resolve single-segment audio path.");
     }
-    const [buffer] = await bucket.file(objectPath).download();
     const saved = await saveStorageObjectWithToken({
       bucket,
       objectPath: targetPath,
-      buffer,
+      buffer: downloaded.buffer,
       contentType: "audio/webm",
       metadata,
     });
@@ -274,6 +300,7 @@ async function buildCanonicalAudioAssetFromSegments({
   try {
     const concatListPath = path.join(tempDir, "concat.txt");
     const inputPaths = [];
+    const usableSegments = [];
     for (let index = 0; index < normalized.length; index += 1) {
       const segment = normalized[index];
       const objectPath = String(segment.audioPath || getStoragePathFromUrl(segment.audioUrl) || "").trim();
@@ -281,8 +308,33 @@ async function buildCanonicalAudioAssetFromSegments({
         throw new Error(`Unable to resolve audio path for segment ${index + 1}.`);
       }
       const localPath = path.join(tempDir, `segment_${String(index).padStart(3, "0")}.webm`);
-      await bucket.file(objectPath).download({destination: localPath});
+      const downloaded = await tryDownloadSegment(segment, {destination: localPath});
+      if (!downloaded) continue;
       inputPaths.push(localPath);
+      usableSegments.push(segment);
+    }
+    if (!usableSegments.length) {
+      const detail = missingObjectPaths.length ? ` Missing objects: ${missingObjectPaths.join(", ")}` : "";
+      throw new Error(`No usable audio objects available for canonical audio.${detail}`);
+    }
+    if (usableSegments.length === 1) {
+      const downloaded = await tryDownloadSegment(usableSegments[0]);
+      if (!downloaded?.buffer) {
+        const detail = missingObjectPaths.length ? ` Missing objects: ${missingObjectPaths.join(", ")}` : "";
+        throw new Error(`No usable audio objects available for canonical audio.${detail}`);
+      }
+      const saved = await saveStorageObjectWithToken({
+        bucket,
+        objectPath: targetPath,
+        buffer: downloaded.buffer,
+        contentType: "audio/webm",
+        metadata,
+      });
+      return {
+        ...saved,
+        durationSec: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
+        sourceSegments: usableSegments,
+      };
     }
     const concatContents = inputPaths
         .map((localPath) => `file '${localPath.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`)
@@ -312,7 +364,7 @@ async function buildCanonicalAudioAssetFromSegments({
     return {
       ...saved,
       durationSec: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
-      sourceSegments: normalized,
+      sourceSegments: usableSegments,
     };
   } finally {
     await fs.rm(tempDir, {recursive: true, force: true}).catch(() => {});
@@ -354,7 +406,10 @@ async function ensurePacketCanonicalAudio({
 
   try {
     const sessionsSnap = await packetRef.collection("sessions").orderBy("startedAt", "asc").get();
-    const audioSegments = buildAudioSegmentsFromSessionSnapshots(sessionsSnap.docs);
+    const sessionAudioSegments = buildAudioSegmentsFromSessionSnapshots(sessionsSnap.docs);
+    const audioSegments = sessionAudioSegments.length ?
+      sessionAudioSegments :
+      buildAudioSegmentsFromPacketAudio(currentPacket);
     if (!audioSegments.length) {
       throw new Error("No uploaded audio segments available.");
     }
@@ -605,6 +660,7 @@ async function renderStageSubmissionTemplatePdf({
   const schedule = context.schedule && typeof context.schedule === "object" ? context.schedule : {};
   const school = context.school && typeof context.school === "object" ? context.school : {};
   const director = context.director && typeof context.director === "object" ? context.director : {};
+  const commentsOnly = Boolean(entry.commentsOnly || submission?.commentsOnly);
   const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge");
   const displayEnsemble = String(
       schedule.ensembleName ||
@@ -621,7 +677,7 @@ async function renderStageSubmissionTemplatePdf({
   ).trim();
   const displayDirector = String(director.displayName || director.email || "").trim();
   const performanceGrade = String(entry.performanceGrade || grade || "").trim();
-  const finalRating = String(submission?.computedFinalRatingLabel || "").trim();
+  const finalRating = commentsOnly ? "CO" : String(submission?.computedFinalRatingLabel || "").trim();
   const scheduleDate = formatDateLabel(schedule.performanceAt || context.event?.startAt || null);
   const scheduleTime = formatTimeLabel(schedule.performanceAt || null);
   const repertoire = entry.repertoire && typeof entry.repertoire === "object" ? entry.repertoire : {};
@@ -647,22 +703,25 @@ async function renderStageSubmissionTemplatePdf({
     finalRating: ["finalRating", "01KKHMAEHMNV6JGSASBY304AMS"],
     adjudicatorSignatureName: ["adjudicatorSignatureName", "01KKHM7Q2D9702C0T1NXD1R3EA"],
     toneQualityComment: ["toneQualityComment", "01KKHM1WWE5BBPQEQXG3TBY0XF"],
-    toneQualityGrade: ["toneQualityGrade", "01KKHM89J6BG3PHXF55NCQ1M29"],
+    // The current fillable stage template has the grade field IDs vertically reversed
+    // relative to the comment boxes. Keep the semantic name first for older templates,
+    // but point the opaque ID fallback at the visually matching row in this template.
+    toneQualityGrade: ["toneQualityGrade", "01KKHM9ZWC19YN4S3AC83F8MRF"],
     intonationComment: ["intonationComment", "01KKHM254TNG0FHDPVGWYBMWPS"],
-    intonationGrade: ["intonationGrade", "01KKHM967CD3DQZ0MWWCQVB2B8"],
+    intonationGrade: ["intonationGrade", "01KKHM9V4J3GPJM3A7EJDC33EK"],
     balanceBlendComment: ["balanceBlendComment", "01KKHM2DPZG2TFMCTMD7Y3467V"],
-    balanceBlendGrade: ["balanceBlendGrade", "01KKHM9C1VP8Q8S72TEF68596D"],
+    balanceBlendGrade: ["balanceBlendGrade", "01KKHM9P6FFX7YNJMXYKRQXTWZ"],
     precisionComment: ["precisionComment", "01KKHM2XF5HAEACREZ9HFZMYYS"],
     precisionGrade: ["precisionGrade", "01KKHM9HWP34Q5ARQQ2G8GQ0NY"],
     basicMusicianshipComment: ["basicMusicianshipComment", "01KKHM2JE46W3EWSBQP7283D52"],
-    basicMusicianshipGrade: ["basicMusicianshipGrade", "01KKHM9P6FFX7YNJMXYKRQXTWZ"],
+    basicMusicianshipGrade: ["basicMusicianshipGrade", "01KKHM9C1VP8Q8S72TEF68596D"],
     interpretiveMusicianshipComment: [
       "interpretiveMusicianshipComment",
       "01KKHM343F5CWFAX44KYD2SN0J",
     ],
-    interpretiveMusicianshipGrade: ["interpretiveMusicianshipGrade", "01KKHM9V4J3GPJM3A7EJDC33EK"],
+    interpretiveMusicianshipGrade: ["interpretiveMusicianshipGrade", "01KKHM967CD3DQZ0MWWCQVB2B8"],
     generalFactorsComment: ["generalFactorsComment", "01KKHM7CDC5CW4RNCYKMF8YCVR"],
-    generalFactorsGrade: ["generalFactorsGrade", "01KKHM9ZWC19YN4S3AC83F8MRF"],
+    generalFactorsGrade: ["generalFactorsGrade", "01KKHM89J6BG3PHXF55NCQ1M29"],
   };
   const getTextField = (semanticName) => {
     const candidates = fieldNameMap[semanticName] || [semanticName];
@@ -740,7 +799,7 @@ async function renderStageSubmissionTemplatePdf({
     }
     setFieldText(
         fields.grade,
-        `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim(),
+        commentsOnly ? "" : `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim(),
         {alignment: TextAlignment.Center},
     );
   });
@@ -781,6 +840,7 @@ async function renderSightSubmissionTemplatePdf({
   const schedule = context.schedule && typeof context.schedule === "object" ? context.schedule : {};
   const school = context.school && typeof context.school === "object" ? context.school : {};
   const entry = context.entry && typeof context.entry === "object" ? context.entry : {};
+  const commentsOnly = Boolean(entry.commentsOnly || submission?.commentsOnly);
   const judgeName = String(submission?.judgeName || submission?.judgeEmail || "Unknown Judge").trim();
   const fieldNameMap = {
     finalRating: ["01KKY6PKC6V2BQWB75QBZ837KB"],
@@ -850,7 +910,7 @@ async function renderSightSubmissionTemplatePdf({
   setFieldText("eventTime", scheduleTime);
   setFieldText("memberCount", "NCBA Eastern");
   setFieldText("performanceGrade", String(grade || "").trim());
-  setFieldText("finalRating", String(submission?.computedFinalRatingLabel || "N/A").trim(), {
+  setFieldText("finalRating", commentsOnly ? "CO" : String(submission?.computedFinalRatingLabel || "N/A").trim(), {
     alignment: TextAlignment.Center,
   });
   setFieldText("adjudicatorSignatureName", judgeName);
@@ -876,7 +936,7 @@ async function renderSightSubmissionTemplatePdf({
     }
     setFieldText(
         fields.grade,
-        `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim(),
+        commentsOnly ? "" : `${value.gradeLetter || ""}${value.gradeModifier || ""}`.trim(),
         {alignment: TextAlignment.Center},
     );
   });
@@ -1047,9 +1107,11 @@ async function generateDirectorPacketExportInternal({
   const exportId = buildDirectorPacketExportId(eventId, ensembleId);
   const judgeAssets = {};
   const packetPdfBytes = [];
+  const packetCommentsOnly = Object.values(submissionsByPosition).some((submission) => Boolean(submission?.commentsOnly));
   for (const position of positions) {
     const submission = submissionsByPosition[position];
     if (!submission) continue;
+    const canonicalAudio = resolveCanonicalAudioFields(submission);
     const judgePdfBytes = await renderSubmissionTemplatePdf({
       eventId,
       ensembleId,
@@ -1081,20 +1143,12 @@ async function generateDirectorPacketExportInternal({
       formLabel: formLabelByJudgePosition(position),
       judgeName: submission.judgeName || "",
       judgeEmail: submission.judgeEmail || "",
+      commentsOnly: Boolean(submission.commentsOnly),
       pdfPath: judgePdfPath,
-      audioUrl: String(submission.canonicalAudioUrl || submission.audioUrl || ""),
-      audioPath: String(
-          submission.canonicalAudioPath ||
-          submission.audioPath ||
-          getStoragePathFromUrl(submission.canonicalAudioUrl || submission.audioUrl) ||
-          "",
-      ),
-      audioDurationSec: Number(
-          submission.canonicalAudioDurationSec ||
-          submission.audioDurationSec ||
-          0,
-      ),
-      audioSegments: normalizeAudioSegments(submission.audioSegments || []),
+      audioUrl: String(canonicalAudio.canonicalAudioUrl || ""),
+      audioPath: String(canonicalAudio.canonicalAudioPath || ""),
+      audioDurationSec: Number(canonicalAudio.canonicalAudioDurationSec || 0),
+      audioSegments: canonicalAudio.audioSegments,
       supplementalAudioDurationSec: Number(submission.supplementalAudioDurationSec || 0),
       supplementalAudioPath: String(submission.supplementalAudioPath || ""),
       supplementalAudioUrl: String(submission.supplementalAudioUrl || ""),
@@ -1128,6 +1182,7 @@ async function generateDirectorPacketExportInternal({
     ensembleId,
     schoolId,
     grade,
+    commentsOnly: packetCommentsOnly,
     status: "ready",
     templateVersion: DIRECTOR_PACKET_EXPORT_VERSION,
     judgeAssets,
@@ -1792,9 +1847,28 @@ async function checkRateLimit(uid, key, limit, windowSeconds) {
 
 function normalizeGrade(value) {
   if (!value) return null;
-  const text = String(value).trim().toUpperCase();
+  const text = String(value).trim().toUpperCase().replace(/[–—-]+/g, "/").replace(/\s+/g, "");
   const roman = ["I", "II", "III", "IV", "V", "VI"];
   if (roman.includes(text)) return text;
+  if (text.includes("/")) {
+    const parts = text.split("/").filter(Boolean);
+    if (parts.length === 2) {
+      const normalizedParts = parts.map((part) => {
+        if (roman.includes(part)) return part;
+        const numericPart = Number(part);
+        if (!Number.isNaN(numericPart) && numericPart >= 1 && numericPart <= 6) {
+          return roman[numericPart - 1];
+        }
+        return null;
+      });
+      if (normalizedParts.every(Boolean)) {
+        const levels = normalizedParts.map((part) => roman.indexOf(part) + 1).sort((a, b) => a - b);
+        if (levels[1] - levels[0] === 1) {
+          return `${roman[levels[0] - 1]}/${roman[levels[1] - 1]}`;
+        }
+      }
+    }
+  }
   const num = Number(text);
   if (!Number.isNaN(num) && num >= 1 && num <= 6) return roman[num - 1];
   return null;
@@ -1951,6 +2025,120 @@ function buildAudioSegmentsFromSessionSnapshots(sessionDocs = []) {
   );
 }
 
+function buildAudioSegmentsFromPacketAudio(packet = {}) {
+  const latestAudioUrl = String(packet.latestAudioUrl || "").trim();
+  const latestAudioPath = String(
+      packet.latestAudioPath || getStoragePathFromUrl(packet.latestAudioUrl) || "",
+  ).trim();
+  const durationSec = Number(packet.tapeDurationSec || packet.audioDurationSec || 0);
+  const fallbackSegment = !latestAudioUrl && !latestAudioPath ? null : {
+    sessionId: "packet_audio",
+    label: "Tape",
+    audioUrl: latestAudioUrl,
+    audioPath: latestAudioPath,
+    durationSec: Number.isFinite(durationSec) ? durationSec : 0,
+    sortOrder: 9999,
+    startedAtMs: 0,
+  };
+
+  const storedSegments = normalizeAudioSegments(packet.audioSegments || []);
+  if (!storedSegments.length) {
+    return fallbackSegment ? normalizeAudioSegments([fallbackSegment]) : [];
+  }
+  if (!fallbackSegment) return storedSegments;
+
+  const hasMatchingFallback = storedSegments.some((segment) => {
+    return (
+      (segment.audioPath && segment.audioPath === fallbackSegment.audioPath) ||
+      (segment.audioUrl && segment.audioUrl === fallbackSegment.audioUrl)
+    );
+  });
+  if (hasMatchingFallback) return storedSegments;
+  return normalizeAudioSegments([...storedSegments, fallbackSegment]);
+}
+
+function resolveCanonicalAudioFields(item = {}) {
+  const audioSegments = normalizeAudioSegments(item.audioSegments || []);
+  const canonicalAudioUrl = String(item.canonicalAudioUrl || "").trim();
+  const canonicalAudioPath = String(item.canonicalAudioPath || "").trim();
+  const canonicalAudioDurationSec = Number(item.canonicalAudioDurationSec || 0);
+  const canonicalAudioStatus = String(item.canonicalAudioStatus || "").trim();
+  if (canonicalAudioUrl || canonicalAudioPath) {
+    return {
+      canonicalAudioStatus: canonicalAudioStatus || CANONICAL_AUDIO_STATUS.ready,
+      canonicalAudioUrl,
+      canonicalAudioPath,
+      canonicalAudioDurationSec: Number.isFinite(canonicalAudioDurationSec) ?
+        canonicalAudioDurationSec :
+        0,
+      audioSegments,
+    };
+  }
+
+  const fallbackAudioUrl = String(item.audioUrl || item.latestAudioUrl || "").trim();
+  const fallbackAudioPath = String(item.audioPath || item.latestAudioPath || "").trim();
+  const fallbackAudioDurationSec = Number(item.audioDurationSec || item.tapeDurationSec || 0);
+  const canUseSingleSourceAsCanonical =
+    audioSegments.length <= 1 && (fallbackAudioUrl || fallbackAudioPath);
+
+  if (canUseSingleSourceAsCanonical) {
+    return {
+      canonicalAudioStatus: CANONICAL_AUDIO_STATUS.ready,
+      canonicalAudioUrl: fallbackAudioUrl,
+      canonicalAudioPath: fallbackAudioPath,
+      canonicalAudioDurationSec: Number.isFinite(fallbackAudioDurationSec) ?
+        fallbackAudioDurationSec :
+        0,
+      audioSegments,
+    };
+  }
+
+  return {
+    canonicalAudioStatus: canonicalAudioStatus || CANONICAL_AUDIO_STATUS.missing,
+    canonicalAudioUrl: "",
+    canonicalAudioPath: "",
+    canonicalAudioDurationSec: 0,
+    audioSegments,
+  };
+}
+
+async function refreshDirectorPacketExportJudgeAsset({
+  db,
+  eventId,
+  ensembleId,
+  judgePosition,
+  canonicalAudio = {},
+} = {}) {
+  const resolvedEventId = String(eventId || "").trim();
+  const resolvedEnsembleId = String(ensembleId || "").trim();
+  const resolvedJudgePosition = String(judgePosition || "").trim();
+  if (!db || !resolvedEventId || !resolvedEnsembleId || !resolvedJudgePosition) return false;
+  const exportRef = db
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(resolvedEventId, resolvedEnsembleId));
+  const exportSnap = await exportRef.get();
+  if (!exportSnap.exists) return false;
+  const exportData = exportSnap.data() || {};
+  const judgeAssets = exportData.judgeAssets && typeof exportData.judgeAssets === "object" ?
+    {...exportData.judgeAssets} :
+    {};
+  const currentAsset = judgeAssets[resolvedJudgePosition] && typeof judgeAssets[resolvedJudgePosition] === "object" ?
+    judgeAssets[resolvedJudgePosition] :
+    {};
+  judgeAssets[resolvedJudgePosition] = {
+    ...currentAsset,
+    audioUrl: String(canonicalAudio.canonicalAudioUrl || ""),
+    audioPath: String(canonicalAudio.canonicalAudioPath || ""),
+    audioDurationSec: Number(canonicalAudio.canonicalAudioDurationSec || 0),
+    audioSegments: normalizeAudioSegments(canonicalAudio.audioSegments || []),
+  };
+  await exportRef.set({
+    [FIELDS.packetExports.judgeAssets]: judgeAssets,
+    [FIELDS.packetExports.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+  return true;
+}
+
 async function signAudioSegments(audioSegments = [], {expiresAtMs} = {}) {
   const normalized = normalizeAudioSegments(audioSegments);
   const signed = [];
@@ -1980,8 +2168,9 @@ async function resolvePerformanceGrade(eventId, ensembleId) {
       .doc(ensembleId)
       .get();
   if (entrySnap.exists) {
+    const entry = entrySnap.data() || {};
     const grade = normalizeGrade(
-        entrySnap.data()[FIELDS.entries.performanceGrade],
+        entry[FIELDS.entries.performanceGrade] || entry.declaredGradeLevel,
     );
     if (grade) return grade;
   }
@@ -1991,7 +2180,10 @@ async function resolvePerformanceGrade(eventId, ensembleId) {
       .doc(ensembleId)
       .get();
   if (ensembleSnap.exists) {
-    const grade = normalizeGrade(ensembleSnap.data().performanceGrade);
+    const ensemble = ensembleSnap.data() || {};
+    const grade = normalizeGrade(
+        ensemble.performanceGrade || ensemble.declaredGradeLevel,
+    );
     if (grade) return grade;
   }
 
@@ -2004,8 +2196,9 @@ async function resolvePerformanceGrade(eventId, ensembleId) {
       .get();
 
   if (!scheduleSnap.empty) {
+    const scheduleEntry = scheduleSnap.docs[0].data() || {};
     const grade = normalizeGrade(
-        scheduleSnap.docs[0].data().performanceGrade,
+        scheduleEntry.performanceGrade || scheduleEntry.declaredGradeLevel,
     );
     if (grade) return grade;
   }
@@ -2014,7 +2207,7 @@ async function resolvePerformanceGrade(eventId, ensembleId) {
 }
 
 function requiredPositionsForGrade(grade) {
-  if (grade === "I") {
+  if (["I", "II", "I/II"].includes(String(grade || "").trim())) {
     return [
       JUDGE_POSITIONS.stage1,
       JUDGE_POSITIONS.stage2,
@@ -2064,45 +2257,74 @@ async function assertOfficialPacketEligibility({
 }
 
 function isSubmissionReady(submission) {
-  if (!submission) return false;
-  if (submission.status !== STATUSES.submitted) return false;
-  if (submission.locked !== true) return false;
-  if (!submission.audioUrl) return false;
-  if (String(submission.canonicalAudioStatus || CANONICAL_AUDIO_STATUS.ready) !== CANONICAL_AUDIO_STATUS.ready) {
-    return false;
+  return describeSubmissionReadiness(submission).length === 0;
+}
+
+function describeSubmissionReadiness(submission) {
+  const reasons = [];
+  if (!submission) return ["submission missing"];
+  const commentsOnly = isCommentsOnlyRecord(submission);
+  if (submission.status !== STATUSES.submitted) {
+    reasons.push(`status is ${String(submission.status || "missing")}`);
   }
-  if (!submission.captions) return false;
-  if (Object.keys(submission.captions).length < 7) return false;
-  if (typeof submission.captionScoreTotal !== "number") return false;
-  if (typeof submission.computedFinalRatingJudge !== "number") return false;
-  return true;
+  if (submission.locked !== true) {
+    reasons.push("not locked");
+  }
+  const canonicalAudio = resolveCanonicalAudioFields(submission);
+  if (!canonicalAudio.canonicalAudioUrl && !canonicalAudio.canonicalAudioPath) {
+    reasons.push("stitched tape missing");
+  }
+  const canonicalAudioStatus = String(
+      canonicalAudio.canonicalAudioStatus || CANONICAL_AUDIO_STATUS.ready,
+  );
+  if (
+    canonicalAudioStatus !== CANONICAL_AUDIO_STATUS.ready &&
+    canonicalAudioStatus !== CANONICAL_AUDIO_STATUS.missing
+  ) {
+    reasons.push(`stitched tape ${canonicalAudioStatus}`);
+  }
+  if (!submission.captions || typeof submission.captions !== "object") {
+    reasons.push("captions missing");
+  } else if (Object.keys(submission.captions).length < 7) {
+    reasons.push(`captions incomplete (${Object.keys(submission.captions).length}/7)`);
+  }
+  if (!commentsOnly && typeof submission.captionScoreTotal !== "number") {
+    reasons.push("caption total missing");
+  }
+  if (!commentsOnly && typeof submission.computedFinalRatingJudge !== "number") {
+    reasons.push("judge overall rating missing");
+  }
+  return Array.from(new Set(reasons));
 }
 
 function normalizeCanonicalPacketAssessment({official = null, submission = null} = {}) {
   if (official) {
+    const canonicalAudio = resolveCanonicalAudioFields({
+      ...(submission || {}),
+      ...official,
+    });
     return {
       ...(submission || {}),
       ...official,
       locked: true,
       status: official.status === STATUSES.released ? STATUSES.released : STATUSES.submitted,
-      canonicalAudioStatus:
-        submission?.canonicalAudioStatus ||
-        CANONICAL_AUDIO_STATUS.ready,
-      canonicalAudioUrl:
-        official.audioUrl ||
-        submission?.canonicalAudioUrl ||
-        submission?.audioUrl ||
-        "",
-      canonicalAudioPath:
-        official.audioPath ||
-        submission?.canonicalAudioPath ||
-        submission?.audioPath ||
-        "",
-      canonicalAudioDurationSec:
-        Number(official.audioDurationSec || submission?.canonicalAudioDurationSec || submission?.audioDurationSec || 0),
+      commentsOnly: Boolean(official.commentsOnly || submission?.commentsOnly),
+      canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+      canonicalAudioUrl: canonicalAudio.canonicalAudioUrl,
+      canonicalAudioPath: canonicalAudio.canonicalAudioPath,
+      canonicalAudioDurationSec: canonicalAudio.canonicalAudioDurationSec,
     };
   }
-  return submission || null;
+  if (!submission) return null;
+  const canonicalAudio = resolveCanonicalAudioFields(submission);
+  return {
+    ...submission,
+    commentsOnly: Boolean(submission.commentsOnly),
+    canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+    canonicalAudioUrl: canonicalAudio.canonicalAudioUrl,
+    canonicalAudioPath: canonicalAudio.canonicalAudioPath,
+    canonicalAudioDurationSec: canonicalAudio.canonicalAudioDurationSec,
+  };
 }
 
 function buildCanonicalPacketAssessments({positions = [], officialDocs = [], submissionDocs = []} = {}) {
@@ -2134,6 +2356,53 @@ function computeFinalRatingFromTotal(total) {
   if (total >= 25 && total <= 31) return {label: "IV", value: 4};
   if (total >= 32 && total <= 35) return {label: "V", value: 5};
   return {label: "N/A", value: null};
+}
+
+function isCommentsOnlyRecord(record = {}) {
+  return Boolean(record?.commentsOnly);
+}
+
+function buildCommentsOnlyRatingFields({
+  commentsOnly = false,
+  captions = {},
+  fallbackLabel = "N/A",
+} = {}) {
+  if (commentsOnly) {
+    return {
+      captionScoreTotal: null,
+      computedFinalRatingJudge: null,
+      computedFinalRatingLabel: "CO",
+    };
+  }
+  if (!captions || typeof captions !== "object" || Object.keys(captions).length < 7) {
+    return {
+      captionScoreTotal: null,
+      computedFinalRatingJudge: null,
+      computedFinalRatingLabel: String(fallbackLabel || "N/A"),
+    };
+  }
+  const captionScoreTotal = calculateCaptionTotal(captions);
+  const rating = computeFinalRatingFromTotal(captionScoreTotal);
+  return {
+    captionScoreTotal,
+    computedFinalRatingJudge: rating.value,
+    computedFinalRatingLabel: rating.label,
+  };
+}
+
+async function resolveEntryCommentsOnly(db, eventId, ensembleId) {
+  if (!db || !eventId || !ensembleId) return false;
+  try {
+    const entrySnap = await db
+        .collection(COLLECTIONS.events)
+        .doc(eventId)
+        .collection(COLLECTIONS.entries)
+        .doc(ensembleId)
+        .get();
+    return Boolean(entrySnap.exists && entrySnap.data()?.commentsOnly);
+  } catch {
+    return false;
+  }
 }
 
 function normalizeReviewState(value) {
@@ -3056,6 +3325,7 @@ exports.createOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
     [FIELDS.packets.ensembleId]: ensembleId,
     [FIELDS.packets.ensembleSnapshot]: ensembleSnapshot,
     [FIELDS.packets.directorEntrySnapshot]: data.directorEntrySnapshot || null,
+    [FIELDS.packets.commentsOnly]: Boolean(data.directorEntrySnapshot?.commentsOnly),
     [FIELDS.packets.formType]: formType,
     [FIELDS.packets.assignmentEventId]: assignment?.eventId || "",
     [FIELDS.packets.judgePosition]: assignment?.judgePosition || "",
@@ -3156,8 +3426,6 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
   const requestedMode = normalizeAdjudicationMode(data.mode);
   const nextStatus = "locked";
   const captions = data.captions || {};
-  const captionScoreTotal = calculateCaptionTotal(captions);
-  const rating = computeFinalRatingFromTotal(captionScoreTotal);
   let currentStatus = "draft";
   const packetSnapBeforeSubmit = await packetRef.get();
   if (!packetSnapBeforeSubmit.exists) {
@@ -3301,6 +3569,13 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
         data.ensembleSnapshot :
         null;
     const baseSnapshot = incomingSnapshot || packet.ensembleSnapshot || null;
+    const directorEntrySnapshot =
+      data.directorEntrySnapshot ?? packet.directorEntrySnapshot ?? null;
+    const commentsOnly = Boolean(directorEntrySnapshot?.commentsOnly || packet.commentsOnly);
+    const scoreFields = buildCommentsOnlyRatingFields({
+      commentsOnly,
+      captions,
+    });
     const nextEnsembleSnapshot =
       baseSnapshot && typeof baseSnapshot === "object" ?
         {
@@ -3322,7 +3597,8 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
       [FIELDS.packets.ensembleId]: nextEnsembleId,
       [FIELDS.packets.ensembleSnapshot]: nextEnsembleSnapshot,
       [FIELDS.packets.directorEntrySnapshot]:
-        data.directorEntrySnapshot ?? packet.directorEntrySnapshot ?? null,
+        directorEntrySnapshot,
+      [FIELDS.packets.commentsOnly]: commentsOnly,
       [FIELDS.packets.formType]: nextFormType,
       [FIELDS.packets.assignmentEventId]: packet.assignmentMode === "adminOverride" ?
         (packet.assignmentEventId || "") :
@@ -3360,9 +3636,9 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
       [FIELDS.packets.transcript]: String(data.transcript || ""),
       [FIELDS.packets.transcriptFull]: String(data.transcriptFull || data.transcript || ""),
       [FIELDS.packets.captions]: captions,
-      [FIELDS.packets.captionScoreTotal]: captionScoreTotal,
-      [FIELDS.packets.computedFinalRatingJudge]: rating.value,
-      [FIELDS.packets.computedFinalRatingLabel]: rating.label,
+      [FIELDS.packets.captionScoreTotal]: scoreFields.captionScoreTotal,
+      [FIELDS.packets.computedFinalRatingJudge]: scoreFields.computedFinalRatingJudge,
+      [FIELDS.packets.computedFinalRatingLabel]: scoreFields.computedFinalRatingLabel,
       canonicalAudioStatus: CANONICAL_AUDIO_STATUS.ready,
       canonicalAudioPath: canonicalAudio?.path || packet.canonicalAudioPath || "",
       canonicalAudioUrl: canonicalAudio?.url || packet.canonicalAudioUrl || "",
@@ -3409,9 +3685,10 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
         [FIELDS.rawAssessments.transcript]: currentTranscript,
         [FIELDS.rawAssessments.writtenComments]: currentTranscript,
         [FIELDS.rawAssessments.captions]: captions,
-        [FIELDS.rawAssessments.captionScoreTotal]: captionScoreTotal,
-        [FIELDS.rawAssessments.computedFinalRatingJudge]: rating.value,
-        [FIELDS.rawAssessments.computedFinalRatingLabel]: rating.label,
+        [FIELDS.rawAssessments.captionScoreTotal]: scoreFields.captionScoreTotal,
+        [FIELDS.rawAssessments.computedFinalRatingJudge]: scoreFields.computedFinalRatingJudge,
+        [FIELDS.rawAssessments.computedFinalRatingLabel]: scoreFields.computedFinalRatingLabel,
+        [FIELDS.rawAssessments.commentsOnly]: commentsOnly,
         [FIELDS.rawAssessments.transcriptStatus]:
           String(packet.transcriptStatus || data.transcriptStatus || (currentTranscript ? "complete" : "idle")),
         [FIELDS.rawAssessments.submittedAt]: admin.firestore.FieldValue.serverTimestamp(),
@@ -3622,6 +3899,7 @@ exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
     );
   }
   const db = admin.firestore();
+  const commentsOnly = await resolveEntryCommentsOnly(db, eventId, ensembleId);
   const rawRef = db.collection(COLLECTIONS.rawAssessments).doc(rawAssessmentId);
   const rawSnap = await rawRef.get();
   if (!rawSnap.exists) {
@@ -3632,6 +3910,70 @@ exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
   const officialAssessmentId = buildOfficialAssessmentId({eventId, ensembleId, judgePosition});
   const officialRef = db.collection(COLLECTIONS.officialAssessments).doc(officialAssessmentId);
   const submissionRef = db.collection(COLLECTIONS.submissions).doc(officialAssessmentId);
+  const packetId = String(raw.packetId || "").trim();
+  let packet = null;
+  let canonicalAudio = resolveCanonicalAudioFields(raw);
+  if (packetId) {
+    const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+    const packetSnap = await packetRef.get();
+    if (packetSnap.exists) {
+      packet = packetSnap.data() || {};
+      canonicalAudio = resolveCanonicalAudioFields(packet);
+      if (
+        String(packet.mode || "").trim().toLowerCase() === ADJUDICATION_MODES.official &&
+        (
+          !canonicalAudio.canonicalAudioUrl ||
+          canonicalAudio.canonicalAudioStatus !== CANONICAL_AUDIO_STATUS.ready
+        )
+      ) {
+        const refreshedCanonicalAudio = await ensurePacketCanonicalAudio({
+          packetRef,
+          packet,
+          packetId,
+          eventId,
+          ensembleId,
+          judgePosition,
+          force: false,
+        });
+        packet = {
+          ...packet,
+          canonicalAudioStatus: CANONICAL_AUDIO_STATUS.ready,
+          canonicalAudioUrl: refreshedCanonicalAudio.url,
+          canonicalAudioPath: refreshedCanonicalAudio.path,
+          canonicalAudioDurationSec: refreshedCanonicalAudio.durationSec,
+          audioSegments: refreshedCanonicalAudio.sourceSegments,
+          tapeDurationSec: refreshedCanonicalAudio.durationSec,
+        };
+        canonicalAudio = resolveCanonicalAudioFields(packet);
+      }
+    }
+  }
+  if (!canonicalAudio.canonicalAudioUrl && !canonicalAudio.canonicalAudioPath) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Canonical stitched audio is not ready for this source sheet.",
+    );
+  }
+  const sourceTranscript = String(
+      packet?.transcriptFull || packet?.transcript || raw.transcript || "",
+  ).trim();
+  const sourceWrittenComments = String(
+      packet?.transcriptFull || packet?.transcript || raw.writtenComments || raw.transcript || "",
+  ).trim();
+  const sourceCaptions = packet?.captions && typeof packet.captions === "object" ?
+    packet.captions :
+    (raw.captions || {});
+  const sourceJudgeRatingLabel = String(
+      packet?.computedFinalRatingLabel || raw.computedFinalRatingLabel || "N/A",
+  );
+  const sourceJudgeUid = String(packet?.createdByJudgeUid || raw.judgeUid || "").trim();
+  const sourceJudgeName = String(packet?.createdByJudgeName || raw.judgeName || "").trim();
+  const sourceJudgeEmail = String(packet?.createdByJudgeEmail || raw.judgeEmail || "").trim();
+  const scoreFields = buildCommentsOnlyRatingFields({
+    commentsOnly,
+    captions: sourceCaptions,
+    fallbackLabel: sourceJudgeRatingLabel,
+  });
   await db.runTransaction(async (tx) => {
     const officialSnap = await tx.get(officialRef);
     const officialExisting = officialSnap.exists ? (officialSnap.data() || {}) : {};
@@ -3639,28 +3981,33 @@ exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
       [FIELDS.officialAssessments.status]: STATUSES.officialized,
       [FIELDS.officialAssessments.releaseEligible]: true,
       [FIELDS.officialAssessments.sourceRawAssessmentId]: rawAssessmentId,
-      [FIELDS.officialAssessments.judgeUid]: raw.judgeUid || "",
-      [FIELDS.officialAssessments.judgeName]: raw.judgeName || "",
-      [FIELDS.officialAssessments.judgeEmail]: raw.judgeEmail || "",
+      [FIELDS.officialAssessments.judgeUid]: sourceJudgeUid,
+      [FIELDS.officialAssessments.judgeName]: sourceJudgeName,
+      [FIELDS.officialAssessments.judgeEmail]: sourceJudgeEmail,
       [FIELDS.officialAssessments.schoolId]: schoolId,
       [FIELDS.officialAssessments.eventId]: eventId,
       [FIELDS.officialAssessments.ensembleId]: ensembleId,
       [FIELDS.officialAssessments.judgePosition]: judgePosition,
       [FIELDS.officialAssessments.formType]: formType,
-      [FIELDS.officialAssessments.audioUrl]: raw.audioUrl || "",
-      [FIELDS.officialAssessments.audioPath]: raw.audioPath || "",
-      [FIELDS.officialAssessments.audioSegments]: raw.audioSegments || [],
-      [FIELDS.officialAssessments.audioDurationSec]: Number(raw.audioDurationSec || 0),
-      [FIELDS.officialAssessments.transcript]: raw.transcript || "",
+      [FIELDS.officialAssessments.audioUrl]: canonicalAudio.canonicalAudioUrl,
+      [FIELDS.officialAssessments.audioPath]: canonicalAudio.canonicalAudioPath,
+      [FIELDS.officialAssessments.audioSegments]: canonicalAudio.audioSegments,
+      [FIELDS.officialAssessments.audioDurationSec]: Number(canonicalAudio.canonicalAudioDurationSec || 0),
+      [FIELDS.officialAssessments.transcript]: sourceTranscript,
       [FIELDS.officialAssessments.writtenComments]:
-        raw.writtenComments || raw.transcript || "",
-      [FIELDS.officialAssessments.captions]: raw.captions || {},
+        sourceWrittenComments,
+      [FIELDS.officialAssessments.captions]: sourceCaptions,
       [FIELDS.officialAssessments.captionScoreTotal]:
-        Number.isFinite(Number(raw.captionScoreTotal)) ? Number(raw.captionScoreTotal) : null,
+        scoreFields.captionScoreTotal,
       [FIELDS.officialAssessments.computedFinalRatingJudge]:
-        Number.isFinite(Number(raw.computedFinalRatingJudge)) ? Number(raw.computedFinalRatingJudge) : null,
+        scoreFields.computedFinalRatingJudge,
       [FIELDS.officialAssessments.computedFinalRatingLabel]:
-        String(raw.computedFinalRatingLabel || "N/A"),
+        scoreFields.computedFinalRatingLabel,
+      [FIELDS.officialAssessments.commentsOnly]: commentsOnly,
+      canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+      canonicalAudioUrl: canonicalAudio.canonicalAudioUrl,
+      canonicalAudioPath: canonicalAudio.canonicalAudioPath,
+      canonicalAudioDurationSec: Number(canonicalAudio.canonicalAudioDurationSec || 0),
       [FIELDS.officialAssessments.reviewedAt]: admin.firestore.FieldValue.serverTimestamp(),
       [FIELDS.officialAssessments.reviewedByUid]: request.auth.uid,
       [FIELDS.officialAssessments.reviewedByName]:
@@ -3674,25 +4021,30 @@ exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
     tx.set(submissionRef, {
       [FIELDS.submissions.status]: STATUSES.submitted,
       [FIELDS.submissions.locked]: true,
-      [FIELDS.submissions.judgeUid]: raw.judgeUid || "",
-      [FIELDS.submissions.judgeName]: raw.judgeName || "",
-      [FIELDS.submissions.judgeEmail]: raw.judgeEmail || "",
+      [FIELDS.submissions.judgeUid]: sourceJudgeUid,
+      [FIELDS.submissions.judgeName]: sourceJudgeName,
+      [FIELDS.submissions.judgeEmail]: sourceJudgeEmail,
       [FIELDS.submissions.schoolId]: schoolId,
       [FIELDS.submissions.eventId]: eventId,
       [FIELDS.submissions.ensembleId]: ensembleId,
       [FIELDS.submissions.judgePosition]: judgePosition,
       [FIELDS.submissions.formType]: formType,
-      [FIELDS.submissions.audioUrl]: raw.audioUrl || "",
-      audioPath: raw.audioPath || "",
-      audioSegments: raw.audioSegments || [],
-      [FIELDS.submissions.audioDurationSec]: Number(raw.audioDurationSec || 0),
-      [FIELDS.submissions.transcript]: raw.transcript || "",
-      [FIELDS.submissions.captions]: raw.captions || {},
+      [FIELDS.submissions.audioUrl]: canonicalAudio.canonicalAudioUrl,
+      audioPath: canonicalAudio.canonicalAudioPath,
+      audioSegments: canonicalAudio.audioSegments,
+      [FIELDS.submissions.audioDurationSec]: Number(canonicalAudio.canonicalAudioDurationSec || 0),
+      [FIELDS.submissions.transcript]: sourceTranscript,
+      [FIELDS.submissions.captions]: sourceCaptions,
       [FIELDS.submissions.captionScoreTotal]:
-        Number.isFinite(Number(raw.captionScoreTotal)) ? Number(raw.captionScoreTotal) : null,
+        scoreFields.captionScoreTotal,
       [FIELDS.submissions.computedFinalRatingJudge]:
-        Number.isFinite(Number(raw.computedFinalRatingJudge)) ? Number(raw.computedFinalRatingJudge) : null,
-      [FIELDS.submissions.computedFinalRatingLabel]: String(raw.computedFinalRatingLabel || "N/A"),
+        scoreFields.computedFinalRatingJudge,
+      [FIELDS.submissions.computedFinalRatingLabel]: scoreFields.computedFinalRatingLabel,
+      [FIELDS.submissions.commentsOnly]: commentsOnly,
+      canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+      canonicalAudioUrl: canonicalAudio.canonicalAudioUrl,
+      canonicalAudioPath: canonicalAudio.canonicalAudioPath,
+      canonicalAudioDurationSec: Number(canonicalAudio.canonicalAudioDurationSec || 0),
       [FIELDS.submissions.submittedAt]: raw.submittedAt || admin.firestore.FieldValue.serverTimestamp(),
       [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -3708,16 +4060,17 @@ exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
       [FIELDS.rawAssessments.schoolId]: schoolId,
       [FIELDS.rawAssessments.judgePosition]: judgePosition,
       [FIELDS.rawAssessments.formType]: formType,
+      [FIELDS.rawAssessments.commentsOnly]: commentsOnly,
       [FIELDS.rawAssessments.reviewedAt]: admin.firestore.FieldValue.serverTimestamp(),
       [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     }, {merge: true});
   });
-  const packetId = String(raw.packetId || "").trim();
   if (packetId) {
     const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
     await packetRef.set({
       [FIELDS.packets.officialSubmissionId]: officialAssessmentId,
       [FIELDS.packets.officialAssessmentId]: officialAssessmentId,
+      [FIELDS.packets.commentsOnly]: commentsOnly,
       [FIELDS.packets.reviewState]: "approved",
       [FIELDS.packets.associationState]: "attached",
       [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
@@ -5476,6 +5829,7 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
   }
 
   const db = admin.firestore();
+  const commentsOnly = await resolveEntryCommentsOnly(db, eventId, ensembleId);
   const positions = requiredPositionsForGrade(grade);
   const submissionRefs = positions.map((position) => {
     const submissionId = `${eventId}_${ensembleId}_${position}`;
@@ -5495,11 +5849,16 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
       submissionDocs,
     });
     if (!assessments.every((item) => isSubmissionReady(item.assessment))) {
-      const blockers = assessments.map((item) => ({
-        position: item.position,
-        label: item.label,
-        ready: isSubmissionReady(item.assessment),
-      })).filter((item) => !item.ready);
+      const blockers = assessments.map((item) => {
+        const reasons = describeSubmissionReadiness(item.assessment);
+        return {
+          position: item.position,
+          label: item.label,
+          ready: reasons.length === 0,
+          reasons,
+          message: `${item.label}: ${reasons.join(", ")}`,
+        };
+      }).filter((item) => !item.ready);
       throw new HttpsError(
           "failed-precondition",
           "All required submissions must be complete, locked, and submitted.",
@@ -5507,7 +5866,7 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
       );
     }
 
-    if (grade === "I") {
+    if (["I", "II", "I/II"].includes(String(grade || "").trim()) && !commentsOnly) {
       const stageScores = [
         assessments[0]?.assessment?.computedFinalRatingJudge,
         assessments[1]?.assessment?.computedFinalRatingJudge,
@@ -5516,14 +5875,14 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
       if (stageScores.some((value) => typeof value !== "number")) {
         throw new HttpsError(
             "failed-precondition",
-            "Grade I packet missing stage ratings.",
+            "Grade I/II packet missing stage ratings.",
         );
       }
       const key = computeGradeOneKey(stageScores);
       if (!GRADE_ONE_MAP[key]) {
         throw new HttpsError(
             "failed-precondition",
-            `Grade I mapping missing for key ${key}.`,
+            `Grade I/II mapping missing for key ${key}.`,
         );
       }
     }
@@ -5532,6 +5891,12 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
     );
     assessments.forEach((item, index) => {
       const canonical = item.assessment || {};
+      const canonicalAudio = resolveCanonicalAudioFields(canonical);
+      const scoreFields = buildCommentsOnlyRatingFields({
+        commentsOnly,
+        captions: canonical.captions || {},
+        fallbackLabel: canonical.computedFinalRatingLabel || "N/A",
+      });
       tx.set(submissionRefs[index], {
         [FIELDS.submissions.status]: STATUSES.released,
         [FIELDS.submissions.locked]: true,
@@ -5546,29 +5911,26 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
           item.position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage
         ),
         [FIELDS.submissions.audioUrl]:
-          canonical.audioUrl ||
-          canonical.canonicalAudioUrl ||
-          "",
+          canonicalAudio.canonicalAudioUrl || "",
         audioPath:
-          canonical.audioPath ||
-          canonical.canonicalAudioPath ||
-          "",
+          canonicalAudio.canonicalAudioPath || "",
         [FIELDS.submissions.audioSegments]: canonical.audioSegments || [],
         [FIELDS.submissions.audioDurationSec]: Number(
-            canonical.audioDurationSec ||
-            canonical.canonicalAudioDurationSec ||
-            0,
+            canonicalAudio.canonicalAudioDurationSec || 0,
         ),
+        canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+        canonicalAudioUrl: canonicalAudio.canonicalAudioUrl,
+        canonicalAudioPath: canonicalAudio.canonicalAudioPath,
+        canonicalAudioDurationSec: Number(canonicalAudio.canonicalAudioDurationSec || 0),
         [FIELDS.submissions.transcript]: canonical.transcript || "",
         [FIELDS.submissions.captions]: canonical.captions || {},
         [FIELDS.submissions.captionScoreTotal]:
-          Number.isFinite(Number(canonical.captionScoreTotal)) ? Number(canonical.captionScoreTotal) : null,
+          scoreFields.captionScoreTotal,
         [FIELDS.submissions.computedFinalRatingJudge]:
-          Number.isFinite(Number(canonical.computedFinalRatingJudge)) ?
-              Number(canonical.computedFinalRatingJudge) :
-              null,
+          scoreFields.computedFinalRatingJudge,
         [FIELDS.submissions.computedFinalRatingLabel]:
-          String(canonical.computedFinalRatingLabel || "N/A"),
+          scoreFields.computedFinalRatingLabel,
+        [FIELDS.submissions.commentsOnly]: commentsOnly,
         submittedAt:
           canonical.submittedAt ||
           admin.firestore.FieldValue.serverTimestamp(),
@@ -5579,7 +5941,13 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
     });
     assessments.forEach((item, index) => {
       const canonical = item.assessment || {};
+      const canonicalAudio = resolveCanonicalAudioFields(canonical);
       const officialExisting = officialDocs[index]?.exists ? (officialDocs[index].data() || {}) : {};
+      const scoreFields = buildCommentsOnlyRatingFields({
+        commentsOnly,
+        captions: canonical.captions || {},
+        fallbackLabel: canonical.computedFinalRatingLabel || "N/A",
+      });
       tx.set(officialRefs[index], {
         [FIELDS.officialAssessments.status]: STATUSES.released,
         [FIELDS.officialAssessments.releaseEligible]: canonical.releaseEligible !== false,
@@ -5596,31 +5964,28 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
           item.position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage
         ),
         [FIELDS.officialAssessments.audioUrl]:
-          canonical.audioUrl ||
-          canonical.canonicalAudioUrl ||
-          "",
+          canonicalAudio.canonicalAudioUrl || "",
         [FIELDS.officialAssessments.audioPath]:
-          canonical.audioPath ||
-          canonical.canonicalAudioPath ||
-          "",
+          canonicalAudio.canonicalAudioPath || "",
         [FIELDS.officialAssessments.audioSegments]: canonical.audioSegments || [],
         [FIELDS.officialAssessments.audioDurationSec]: Number(
-            canonical.audioDurationSec ||
-            canonical.canonicalAudioDurationSec ||
-            0,
+            canonicalAudio.canonicalAudioDurationSec || 0,
         ),
+        canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+        canonicalAudioUrl: canonicalAudio.canonicalAudioUrl,
+        canonicalAudioPath: canonicalAudio.canonicalAudioPath,
+        canonicalAudioDurationSec: Number(canonicalAudio.canonicalAudioDurationSec || 0),
         [FIELDS.officialAssessments.transcript]: canonical.transcript || "",
         [FIELDS.officialAssessments.writtenComments]:
           canonical.writtenComments || canonical.transcript || "",
         [FIELDS.officialAssessments.captions]: canonical.captions || {},
         [FIELDS.officialAssessments.captionScoreTotal]:
-          Number.isFinite(Number(canonical.captionScoreTotal)) ? Number(canonical.captionScoreTotal) : null,
+          scoreFields.captionScoreTotal,
         [FIELDS.officialAssessments.computedFinalRatingJudge]:
-          Number.isFinite(Number(canonical.computedFinalRatingJudge)) ?
-              Number(canonical.computedFinalRatingJudge) :
-              null,
+          scoreFields.computedFinalRatingJudge,
         [FIELDS.officialAssessments.computedFinalRatingLabel]:
-          String(canonical.computedFinalRatingLabel || "N/A"),
+          scoreFields.computedFinalRatingLabel,
+        [FIELDS.officialAssessments.commentsOnly]: commentsOnly,
         [FIELDS.officialAssessments.releasedAt]: admin.firestore.FieldValue.serverTimestamp(),
         releasedBy: request.auth.uid,
         [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
@@ -5770,6 +6135,300 @@ exports.unreleasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => 
   }, {merge: true});
   await batch.commit();
   return {released: false, grade};
+});
+
+exports.repairPacketReleaseState = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+
+  const grade = await resolvePerformanceGrade(eventId, ensembleId);
+  if (!grade) {
+    throw new HttpsError("failed-precondition", "Performance grade required.");
+  }
+
+  const db = admin.firestore();
+  const positions = requiredPositionsForGrade(grade);
+  const submissionRefs = positions.map((position) =>
+    db.collection(COLLECTIONS.submissions).doc(`${eventId}_${ensembleId}_${position}`),
+  );
+  const officialRefs = positions.map((position) =>
+    db.collection(COLLECTIONS.officialAssessments).doc(`${eventId}_${ensembleId}_${position}`),
+  );
+
+  let releasedPositions = [];
+  await db.runTransaction(async (tx) => {
+    const submissionDocs = await Promise.all(submissionRefs.map((ref) => tx.get(ref)));
+    const officialDocs = await Promise.all(officialRefs.map((ref) => tx.get(ref)));
+    const assessments = buildCanonicalPacketAssessments({
+      positions,
+      officialDocs,
+      submissionDocs,
+    });
+    releasedPositions = assessments
+        .filter((item) => item.assessment?.status === STATUSES.released)
+        .map((item) => item.position);
+
+    if (!releasedPositions.length) {
+      throw new HttpsError(
+          "failed-precondition",
+          "No partial release state found for this results packet.",
+      );
+    }
+    if (releasedPositions.length === positions.length) {
+      throw new HttpsError(
+          "failed-precondition",
+          "All required submissions are already released. Use Unrelease Results Packet instead.",
+      );
+    }
+
+    assessments.forEach((item, index) => {
+      const canonical = item.assessment || {};
+      const canonicalAudio = resolveCanonicalAudioFields(canonical);
+      tx.set(submissionRefs[index], {
+        [FIELDS.submissions.status]: STATUSES.submitted,
+        [FIELDS.submissions.locked]: true,
+        [FIELDS.submissions.judgeUid]: canonical.judgeUid || "",
+        [FIELDS.submissions.judgeName]: canonical.judgeName || "",
+        [FIELDS.submissions.judgeEmail]: canonical.judgeEmail || "",
+        [FIELDS.submissions.schoolId]: canonical.schoolId || "",
+        [FIELDS.submissions.eventId]: canonical.eventId || eventId,
+        [FIELDS.submissions.ensembleId]: canonical.ensembleId || ensembleId,
+        [FIELDS.submissions.judgePosition]: canonical.judgePosition || item.position,
+        [FIELDS.submissions.formType]: canonical.formType || (
+          item.position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage
+        ),
+        [FIELDS.submissions.audioUrl]:
+          canonicalAudio.canonicalAudioUrl || canonical.audioUrl || "",
+        audioPath:
+          canonicalAudio.canonicalAudioPath || canonical.audioPath || "",
+        [FIELDS.submissions.audioSegments]: canonical.audioSegments || [],
+        [FIELDS.submissions.audioDurationSec]: Number(
+            canonicalAudio.canonicalAudioDurationSec ||
+            canonical.audioDurationSec ||
+            0,
+        ),
+        canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+        canonicalAudioUrl: canonicalAudio.canonicalAudioUrl,
+        canonicalAudioPath: canonicalAudio.canonicalAudioPath,
+        canonicalAudioDurationSec: Number(canonicalAudio.canonicalAudioDurationSec || 0),
+        [FIELDS.submissions.transcript]: canonical.transcript || "",
+        [FIELDS.submissions.captions]: canonical.captions || {},
+        [FIELDS.submissions.captionScoreTotal]:
+          Number.isFinite(Number(canonical.captionScoreTotal)) ? Number(canonical.captionScoreTotal) : null,
+        [FIELDS.submissions.computedFinalRatingJudge]:
+          Number.isFinite(Number(canonical.computedFinalRatingJudge)) ?
+              Number(canonical.computedFinalRatingJudge) :
+              null,
+        [FIELDS.submissions.computedFinalRatingLabel]:
+          String(canonical.computedFinalRatingLabel || "N/A"),
+        submittedAt:
+          canonical.submittedAt ||
+          admin.firestore.FieldValue.serverTimestamp(),
+        releasedAt: admin.firestore.FieldValue.delete(),
+        releasedBy: admin.firestore.FieldValue.delete(),
+        [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    });
+
+    officialDocs.forEach((docSnap, index) => {
+      if (!docSnap.exists) return;
+      tx.set(officialRefs[index], {
+        [FIELDS.officialAssessments.status]: STATUSES.officialized,
+        [FIELDS.officialAssessments.releasedAt]: admin.firestore.FieldValue.delete(),
+        releasedBy: admin.firestore.FieldValue.delete(),
+        [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    });
+  });
+
+  const exportRef = db
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  await exportRef.set({
+    status: "revoked",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+
+  return {
+    ok: true,
+    grade,
+    repaired: true,
+    releasedPositions,
+  };
+});
+
+exports.setPacketCommentsOnly = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertOpsLead(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const commentsOnly = Boolean(data.commentsOnly);
+  const reason = String(data.reason || "").trim();
+
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+
+  const grade = await resolvePerformanceGrade(eventId, ensembleId);
+  if (!grade) {
+    throw new HttpsError("failed-precondition", "Performance grade required.");
+  }
+
+  const db = admin.firestore();
+  const entryRef = db.collection(COLLECTIONS.events).doc(eventId).collection(COLLECTIONS.entries).doc(ensembleId);
+  const positions = requiredPositionsForGrade(grade);
+  const submissionRefs = positions.map((position) =>
+    db.collection(COLLECTIONS.submissions).doc(`${eventId}_${ensembleId}_${position}`),
+  );
+  const officialRefs = positions.map((position) =>
+    db.collection(COLLECTIONS.officialAssessments).doc(`${eventId}_${ensembleId}_${position}`),
+  );
+
+  let requiredReleased = false;
+  await db.runTransaction(async (tx) => {
+    const [, ...docSnaps] = await Promise.all([
+      tx.get(entryRef),
+      ...submissionRefs.map((ref) => tx.get(ref)),
+      ...officialRefs.map((ref) => tx.get(ref)),
+    ]);
+    const submissionDocs = docSnaps.slice(0, submissionRefs.length);
+    const officialDocs = docSnaps.slice(submissionRefs.length);
+
+    tx.set(entryRef, {
+      [FIELDS.entries.commentsOnly]: commentsOnly,
+      commentsOnlyReason: reason,
+      commentsOnlyUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      commentsOnlyUpdatedBy: request.auth.uid,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    const assessments = buildCanonicalPacketAssessments({
+      positions,
+      officialDocs,
+      submissionDocs,
+    });
+    requiredReleased = assessments.length > 0 &&
+      assessments.every((item) => item.assessment?.status === STATUSES.released);
+
+    assessments.forEach((item, index) => {
+      const assessment = item.assessment || {};
+      const scoreFields = buildCommentsOnlyRatingFields({
+        commentsOnly,
+        captions: assessment.captions || {},
+        fallbackLabel: assessment.computedFinalRatingLabel || "N/A",
+      });
+      if (submissionDocs[index]?.exists) {
+        tx.set(submissionRefs[index], {
+          [FIELDS.submissions.commentsOnly]: commentsOnly,
+          [FIELDS.submissions.captionScoreTotal]: scoreFields.captionScoreTotal,
+          [FIELDS.submissions.computedFinalRatingJudge]: scoreFields.computedFinalRatingJudge,
+          [FIELDS.submissions.computedFinalRatingLabel]: scoreFields.computedFinalRatingLabel,
+          [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+      }
+      if (officialDocs[index]?.exists) {
+        tx.set(officialRefs[index], {
+          [FIELDS.officialAssessments.commentsOnly]: commentsOnly,
+          [FIELDS.officialAssessments.captionScoreTotal]: scoreFields.captionScoreTotal,
+          [FIELDS.officialAssessments.computedFinalRatingJudge]: scoreFields.computedFinalRatingJudge,
+          [FIELDS.officialAssessments.computedFinalRatingLabel]: scoreFields.computedFinalRatingLabel,
+          [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+      }
+    });
+  });
+
+  const packetQuerySnap = await db
+      .collection(COLLECTIONS.packets)
+      .where(FIELDS.packets.officialEventId, "==", eventId)
+      .where(FIELDS.packets.ensembleId, "==", ensembleId)
+      .get()
+      .catch(() => null);
+  if (packetQuerySnap && !packetQuerySnap.empty) {
+    const batch = db.batch();
+    packetQuerySnap.docs.forEach((docSnap) => {
+      const packet = docSnap.data() || {};
+      const scoreFields = buildCommentsOnlyRatingFields({
+        commentsOnly,
+        captions: packet.captions || {},
+        fallbackLabel: packet.computedFinalRatingLabel || "N/A",
+      });
+      batch.set(docSnap.ref, {
+        [FIELDS.packets.commentsOnly]: commentsOnly,
+        [FIELDS.packets.captionScoreTotal]: scoreFields.captionScoreTotal,
+        [FIELDS.packets.computedFinalRatingJudge]: scoreFields.computedFinalRatingJudge,
+        [FIELDS.packets.computedFinalRatingLabel]: scoreFields.computedFinalRatingLabel,
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    });
+    await batch.commit();
+  }
+
+  const rawQuerySnap = await db
+      .collection(COLLECTIONS.rawAssessments)
+      .where(FIELDS.rawAssessments.eventId, "==", eventId)
+      .where(FIELDS.rawAssessments.ensembleId, "==", ensembleId)
+      .get()
+      .catch(() => null);
+  if (rawQuerySnap && !rawQuerySnap.empty) {
+    const batch = db.batch();
+    rawQuerySnap.docs.forEach((docSnap) => {
+      const raw = docSnap.data() || {};
+      const scoreFields = buildCommentsOnlyRatingFields({
+        commentsOnly,
+        captions: raw.captions || {},
+        fallbackLabel: raw.computedFinalRatingLabel || "N/A",
+      });
+      batch.set(docSnap.ref, {
+        [FIELDS.rawAssessments.commentsOnly]: commentsOnly,
+        [FIELDS.rawAssessments.captionScoreTotal]: scoreFields.captionScoreTotal,
+        [FIELDS.rawAssessments.computedFinalRatingJudge]: scoreFields.computedFinalRatingJudge,
+        [FIELDS.rawAssessments.computedFinalRatingLabel]: scoreFields.computedFinalRatingLabel,
+        [FIELDS.rawAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    });
+    await batch.commit();
+  }
+
+  if (requiredReleased) {
+    try {
+      await generateDirectorPacketExportInternal({
+        eventId,
+        ensembleId,
+        grade,
+        actorUid: request.auth.uid,
+      });
+    } catch (error) {
+      await markDirectorPacketExportFailure({
+        eventId,
+        ensembleId,
+        error: error?.message || String(error),
+        actorUid: request.auth.uid,
+      });
+      throw new HttpsError("internal", error?.message || "Unable to regenerate comments-only packet export.");
+    }
+  } else {
+    await db.collection(COLLECTIONS.packetExports)
+        .doc(buildDirectorPacketExportId(eventId, ensembleId))
+        .set({
+          status: "revoked",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+  }
+
+  return {
+    ok: true,
+    eventId,
+    ensembleId,
+    commentsOnly,
+    grade,
+  };
 });
 
 exports.regenerateDirectorPacketExport = onCall(async (request) => {
@@ -6099,6 +6758,162 @@ exports.getDirectorPacketAssets = onCall(async (request) => {
   };
 });
 
+exports.listDirectorReleasedPackets = onCall(async (request) => {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError("unauthenticated", "Authentication required.");
+  }
+  const data = request.data || {};
+  const requestedEventId = String(data.eventId || "").trim();
+  const requestedSchoolId = String(data.schoolId || "").trim();
+  const db = admin.firestore();
+  const userSnap = await db.collection(COLLECTIONS.users).doc(request.auth.uid).get();
+  const user = userSnap.exists ? (userSnap.data() || {}) : {};
+  const role = String(user.role || "");
+  const isAdmin = isAdminProfile(user);
+
+  let schoolId = "";
+  if (isAdmin) {
+    schoolId = requestedSchoolId || String(user.schoolId || "").trim();
+  } else {
+    if (role !== "director") {
+      throw new HttpsError("permission-denied", "Not authorized.");
+    }
+    schoolId = String(user.schoolId || "").trim();
+  }
+  if (!schoolId) {
+    throw new HttpsError("failed-precondition", "No school attached to this account.");
+  }
+
+  let exportsQuery = db
+      .collection(COLLECTIONS.packetExports)
+      .where(FIELDS.packetExports.schoolId, "==", schoolId);
+  if (requestedEventId) {
+    exportsQuery = exportsQuery.where(FIELDS.packetExports.eventId, "==", requestedEventId);
+  }
+  const exportsSnap = await exportsQuery.get();
+  const exportDocs = exportsSnap.docs
+      .map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }))
+      .filter((item) => String(item.status || "").trim() === "ready");
+
+  const schoolSnap = await db.collection(COLLECTIONS.schools).doc(schoolId).get();
+  const schoolName = schoolSnap.exists ? String(schoolSnap.data()?.name || "").trim() : schoolId;
+
+  const [directorSnap, eventDocs, ensembleDocs] = await Promise.all([
+    db
+        .collection(COLLECTIONS.users)
+        .where(FIELDS.users.schoolId, "==", schoolId)
+        .where(FIELDS.users.role, "==", "director")
+        .limit(1)
+        .get(),
+    Promise.all(
+        Array.from(new Set(exportDocs.map((item) => String(item.eventId || "").trim()).filter(Boolean)))
+            .map(async (eventId) => {
+              const snap = await db.collection(COLLECTIONS.events).doc(eventId).get();
+              return [eventId, snap];
+            }),
+    ),
+    Promise.all(
+        Array.from(
+            new Set(
+                exportDocs
+                    .map((item) => String(item.ensembleId || "").trim())
+                    .filter(Boolean),
+            ),
+        ).map(async (ensembleId) => {
+          const snap = await db
+              .collection(COLLECTIONS.schools)
+              .doc(schoolId)
+              .collection(COLLECTIONS.ensembles)
+              .doc(ensembleId)
+              .get();
+          return [ensembleId, snap];
+        }),
+    ),
+  ]);
+
+  const directorData = directorSnap.empty ? {} : (directorSnap.docs[0].data() || {});
+  const directorName = String(
+      directorData.displayName ||
+      directorData.name ||
+      directorData.email ||
+      "",
+  ).trim();
+  const eventNameById = new Map(
+      eventDocs.map(([eventId, snap]) => [eventId, snap.exists ? String(snap.data()?.name || "").trim() : ""]),
+  );
+  const ensembleNameById = new Map(
+      ensembleDocs.map(([ensembleId, snap]) => [ensembleId, snap.exists ? String(snap.data()?.name || "").trim() : ""]),
+  );
+
+  const groups = [];
+  for (const exportData of exportDocs) {
+    const eventId = String(exportData.eventId || "").trim();
+    const ensembleId = String(exportData.ensembleId || "").trim();
+    if (!eventId || !ensembleId) continue;
+    const grade = String(exportData.grade || "").trim() || await resolvePerformanceGrade(eventId, ensembleId) || "";
+    const assessments = await loadCanonicalPacketAssessmentsForEvent({
+      db,
+      eventId,
+      ensembleId,
+      grade,
+    });
+    const submissions = {};
+    assessments.forEach(({position, assessment}) => {
+      if (!assessment) return;
+      submissions[position] = {
+        id: `${eventId}_${ensembleId}_${position}`,
+        eventId,
+        ensembleId,
+        schoolId,
+        judgePosition: position,
+        ...assessment,
+        audioUrl: String(
+            assessment.canonicalAudioUrl ||
+            assessment.audioUrl ||
+            "",
+        ).trim(),
+        audioPath: String(
+            assessment.canonicalAudioPath ||
+            assessment.audioPath ||
+            "",
+        ).trim(),
+        audioDurationSec: Number(
+            assessment.canonicalAudioDurationSec ||
+            assessment.audioDurationSec ||
+            0,
+        ),
+      };
+    });
+    groups.push({
+      type: "scheduled",
+      eventId,
+      ensembleId,
+      schoolId,
+      eventName: eventNameById.get(eventId) || eventId,
+      schoolName: schoolName || schoolId,
+      ensembleName: ensembleNameById.get(ensembleId) || ensembleId,
+      directorName: directorName || "Unknown",
+      grade,
+      submissions,
+    });
+  }
+
+  groups.sort((a, b) => {
+    const eventCompare = String(a.eventName || a.eventId || "").localeCompare(
+        String(b.eventName || b.eventId || ""),
+    );
+    if (eventCompare !== 0) return eventCompare;
+    return String(a.ensembleName || a.ensembleId || "").localeCompare(
+        String(b.ensembleName || b.ensembleId || ""),
+    );
+  });
+
+  return {groups};
+});
+
 exports.attachManualPacketAudio = onCall(async (request) => {
   await assertAdmin(request);
   const data = request.data || {};
@@ -6176,6 +6991,7 @@ exports.attachManualPacketAudio = onCall(async (request) => {
 
   if (targetType === "open") {
     const packetId = String(data.packetId || "").trim();
+    const mode = String(data.mode || "supplemental").trim().toLowerCase();
     if (!packetId) {
       throw new HttpsError("invalid-argument", "packetId is required for open packets.");
     }
@@ -6184,13 +7000,38 @@ exports.attachManualPacketAudio = onCall(async (request) => {
     if (!packetSnap.exists) {
       throw new HttpsError("not-found", "Packet not found.");
     }
+    if (mode === "primary") {
+      const normalizedDurationSec = Number.isFinite(durationSec) ? durationSec : 0;
+      await packetRef.set({
+        [FIELDS.packets.latestAudioPath]: audioPath,
+        [FIELDS.packets.latestAudioUrl]: audioUrl,
+        [FIELDS.packets.tapeDurationSec]: normalizedDurationSec,
+        [FIELDS.packets.audioSegments]: [{
+          sessionId: "manual_primary",
+          label: "Manual Tape",
+          audioUrl,
+          audioPath,
+          durationSec: normalizedDurationSec,
+          sortOrder: 0,
+          startedAtMs: 0,
+        }],
+        canonicalAudioStatus: CANONICAL_AUDIO_STATUS.missing,
+        canonicalAudioUrl: "",
+        canonicalAudioPath: "",
+        canonicalAudioDurationSec: 0,
+        canonicalAudioError: "",
+        canonicalAudioUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      return {ok: true, targetType, packetId, mode};
+    }
     await packetRef.set({
       supplementalLatestAudioPath: audioPath,
       supplementalLatestAudioUrl: audioUrl,
       supplementalLatestAudioDurationSec: Number.isFinite(durationSec) ? durationSec : 0,
       [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     }, {merge: true});
-    return {ok: true, targetType, packetId};
+    return {ok: true, targetType, packetId, mode};
   }
 
   throw new HttpsError("invalid-argument", "targetType must be scheduled or open.");
@@ -6471,13 +7312,23 @@ exports.repairManualAudioOverrides = onCall(async (request) => {
   return summary;
 });
 
-exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
+exports.repairOpenSubmissionAudioMetadata = onCall(AUDIO_REPAIR_FUNCTION_OPTIONS, async (request) => {
   await assertAdmin(request);
   const data = request.data || {};
   const dryRun = data.dryRun !== false;
+  const scopedEventId = String(data.eventId || "").trim();
+  const scopedSchoolId = String(data.schoolId || "").trim();
+  const scopedEnsembleId = String(data.ensembleId || "").trim();
+  const scopedPacketId = String(data.packetId || "").trim();
   const db = admin.firestore();
   const summary = {
     dryRun,
+    scope: {
+      eventId: scopedEventId,
+      schoolId: scopedSchoolId,
+      ensembleId: scopedEnsembleId,
+      packetId: scopedPacketId,
+    },
     packetsScanned: 0,
     packetsUpdated: 0,
     submissionsUpdated: 0,
@@ -6485,13 +7336,47 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
     exportsUpdated: 0,
     skippedNoSubmission: 0,
     skippedNoSessions: 0,
+    failedPackets: 0,
     samples: [],
+    failures: [],
   };
 
-  const packetsSnap = await db.collection(COLLECTIONS.packets).get();
-  for (const packetDoc of packetsSnap.docs) {
+  let packetDocs = [];
+  if (scopedPacketId) {
+    const packetSnap = await db.collection(COLLECTIONS.packets).doc(scopedPacketId).get();
+    packetDocs = packetSnap.exists ? [packetSnap] : [];
+  } else if (scopedSchoolId) {
+    const packetsSnap = await db
+        .collection(COLLECTIONS.packets)
+        .where(FIELDS.packets.schoolId, "==", scopedSchoolId)
+        .get();
+    packetDocs = packetsSnap.docs;
+  } else if (scopedEnsembleId) {
+    const packetsSnap = await db
+        .collection(COLLECTIONS.packets)
+        .where(FIELDS.packets.ensembleId, "==", scopedEnsembleId)
+        .get();
+    packetDocs = packetsSnap.docs;
+  } else {
+    const packetsSnap = await db.collection(COLLECTIONS.packets).get();
+    packetDocs = packetsSnap.docs;
+  }
+
+  for (const packetDoc of packetDocs) {
     summary.packetsScanned += 1;
     const packet = packetDoc.data() || {};
+    const packetEventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
+    const packetSchoolId = String(packet.schoolId || "").trim();
+    const packetEnsembleId = String(packet.ensembleId || "").trim();
+    if (scopedEventId && packetEventId !== scopedEventId) {
+      continue;
+    }
+    if (scopedSchoolId && packetSchoolId !== scopedSchoolId) {
+      continue;
+    }
+    if (scopedEnsembleId && packetEnsembleId !== scopedEnsembleId) {
+      continue;
+    }
     const fallbackSubmissionId =
       packet.officialEventId &&
       packet.ensembleId &&
@@ -6502,23 +7387,60 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
       String(packet.officialSubmissionId || "").trim() || String(fallbackSubmissionId || "").trim();
 
     const sessionsSnap = await packetDoc.ref.collection("sessions").orderBy("startedAt", "asc").get();
-    const audioSegments = buildAudioSegmentsFromSessionSnapshots(sessionsSnap.docs);
+    const sessionAudioSegments = buildAudioSegmentsFromSessionSnapshots(sessionsSnap.docs);
+    const audioSegments = sessionAudioSegments.length ?
+      sessionAudioSegments :
+      buildAudioSegmentsFromPacketAudio(packet);
     if (!audioSegments.length) {
       summary.skippedNoSessions += 1;
       continue;
     }
-
-    const primaryAudio = audioSegments[0] || null;
-    const totalDurationSec = audioSegments.reduce((sum, segment) => {
-      const value = Number(segment?.durationSec || 0);
-      return sum + (Number.isFinite(value) && value > 0 ? value : 0);
-    }, 0);
+    const expectedCanonicalAudio = resolveCanonicalAudioFields(packet);
+    const repairEventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
+    const repairJudgePosition = String(packet.officialJudgePosition || packet.judgePosition || "").trim();
+    if (!dryRun && String(packet.mode || "").trim().toLowerCase() === ADJUDICATION_MODES.official) {
+      try {
+        await ensurePacketCanonicalAudio({
+          packetRef: packetDoc.ref,
+          packet,
+          packetId: packetDoc.id,
+          eventId: repairEventId,
+          ensembleId: String(packet.ensembleId || "").trim(),
+          judgePosition: repairJudgePosition,
+          force: true,
+        });
+      } catch (error) {
+        summary.failedPackets += 1;
+        summary.failures.push({
+          packetId: packetDoc.id,
+          submissionId: officialSubmissionId || "",
+          eventId: repairEventId,
+          schoolId: packetSchoolId,
+          ensembleId: packetEnsembleId,
+          judgePosition: repairJudgePosition,
+          message: String(error?.message || error),
+          audioPathsTried: audioSegments
+              .map((segment) => String(segment.audioPath || getStoragePathFromUrl(segment.audioUrl) || "").trim())
+              .filter(Boolean),
+        });
+        continue;
+      }
+    }
+    const packetAudio = dryRun ?
+      expectedCanonicalAudio :
+      resolveCanonicalAudioFields((await packetDoc.ref.get()).data() || {});
+    if (!packetAudio.canonicalAudioUrl && !packetAudio.canonicalAudioPath) {
+      summary.skippedNoSubmission += 1;
+      continue;
+    }
 
     const packetPatch = {
       [FIELDS.packets.audioSegments]: audioSegments,
-      [FIELDS.packets.latestAudioUrl]: primaryAudio?.audioUrl || String(packet.latestAudioUrl || ""),
-      [FIELDS.packets.latestAudioPath]: primaryAudio?.audioPath || String(packet.latestAudioPath || ""),
-      [FIELDS.packets.tapeDurationSec]: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
+      canonicalAudioStatus: packetAudio.canonicalAudioStatus,
+      canonicalAudioUrl: packetAudio.canonicalAudioUrl,
+      canonicalAudioPath: packetAudio.canonicalAudioPath,
+      canonicalAudioDurationSec: Number(packetAudio.canonicalAudioDurationSec || 0),
+      [FIELDS.packets.tapeDurationSec]: Number(packetAudio.canonicalAudioDurationSec || 0),
       [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     };
 
@@ -6548,83 +7470,61 @@ exports.repairOpenSubmissionAudioMetadata = onCall(async (request) => {
 
     const submission = submissionSnap.data() || {};
     const submissionPatch = {
-      audioPath: primaryAudio?.audioPath || String(submission.audioPath || ""),
-      [FIELDS.submissions.audioUrl]: primaryAudio?.audioUrl || String(submission.audioUrl || ""),
+      audioPath: packetAudio.canonicalAudioPath,
+      [FIELDS.submissions.audioUrl]: packetAudio.canonicalAudioUrl,
       [FIELDS.submissions.audioSegments]: audioSegments,
-      [FIELDS.submissions.audioDurationSec]: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
+      [FIELDS.submissions.audioDurationSec]: Number(packetAudio.canonicalAudioDurationSec || 0),
+      canonicalAudioStatus: packetAudio.canonicalAudioStatus,
+      canonicalAudioUrl: packetAudio.canonicalAudioUrl,
+      canonicalAudioPath: packetAudio.canonicalAudioPath,
+      canonicalAudioDurationSec: Number(packetAudio.canonicalAudioDurationSec || 0),
       [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     };
     const officialPatch = {
-      [FIELDS.officialAssessments.audioPath]: primaryAudio?.audioPath || String(officialSnap.data()?.audioPath || ""),
-      [FIELDS.officialAssessments.audioUrl]: primaryAudio?.audioUrl || String(officialSnap.data()?.audioUrl || ""),
+      [FIELDS.officialAssessments.audioPath]: packetAudio.canonicalAudioPath,
+      [FIELDS.officialAssessments.audioUrl]: packetAudio.canonicalAudioUrl,
       [FIELDS.officialAssessments.audioSegments]: audioSegments,
-      [FIELDS.officialAssessments.audioDurationSec]: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
+      [FIELDS.officialAssessments.audioDurationSec]: Number(packetAudio.canonicalAudioDurationSec || 0),
+      canonicalAudioStatus: packetAudio.canonicalAudioStatus,
+      canonicalAudioUrl: packetAudio.canonicalAudioUrl,
+      canonicalAudioPath: packetAudio.canonicalAudioPath,
+      canonicalAudioDurationSec: Number(packetAudio.canonicalAudioDurationSec || 0),
       [FIELDS.officialAssessments.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
     };
-
-    const eventId = String(submission.eventId || packet.officialEventId || "").trim();
+    const eventId = String(submission.eventId || packet.officialEventId || packet.assignmentEventId || "").trim();
     const ensembleId = String(submission.ensembleId || packet.ensembleId || "").trim();
-    const judgePosition = String(submission.judgePosition || packet.officialJudgePosition || "").trim();
-    const exportPatch =
-      eventId && ensembleId && judgePosition ?
-        {
-          [FIELDS.packetExports.judgeAssets]: {
-            [judgePosition]: {
-              ...(primaryAudio ? {
-                audioUrl: primaryAudio.audioUrl,
-                audioPath: primaryAudio.audioPath,
-              } : {}),
-              audioDurationSec: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
-              audioSegments,
-            },
-          },
-          [FIELDS.packetExports.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
-        } :
-        null;
+    const judgePosition = String(submission.judgePosition || packet.officialJudgePosition || packet.judgePosition || "").trim();
 
     if (!dryRun) {
       await submissionRef.set(submissionPatch, {merge: true});
       if (officialSnap.exists) {
         await officialRef.set(officialPatch, {merge: true});
       }
-      if (exportPatch) {
-        const exportRef = db
-            .collection(COLLECTIONS.packetExports)
-            .doc(buildDirectorPacketExportId(eventId, ensembleId));
-        const exportSnap = await exportRef.get();
-        if (exportSnap.exists) {
-          const exportData = exportSnap.data() || {};
-          const judgeAssets = exportData.judgeAssets && typeof exportData.judgeAssets === "object" ?
-            {...exportData.judgeAssets} :
-            {};
-          const currentAsset = judgeAssets[judgePosition] && typeof judgeAssets[judgePosition] === "object" ?
-            judgeAssets[judgePosition] :
-            {};
-          judgeAssets[judgePosition] = {
-            ...currentAsset,
-            ...(primaryAudio ? {
-              audioUrl: primaryAudio.audioUrl,
-              audioPath: primaryAudio.audioPath,
-            } : {}),
-            audioDurationSec: Number.isFinite(totalDurationSec) ? totalDurationSec : 0,
-            audioSegments,
-          };
-          await exportRef.set({
-            [FIELDS.packetExports.judgeAssets]: judgeAssets,
-            [FIELDS.packetExports.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
-          }, {merge: true});
-        }
+      if (eventId && ensembleId && judgePosition) {
+        await refreshDirectorPacketExportJudgeAsset({
+          db,
+          eventId,
+          ensembleId,
+          judgePosition,
+          canonicalAudio: packetAudio,
+        });
       }
     }
     summary.submissionsUpdated += 1;
     if (officialSnap.exists) {
       summary.officialAssessmentsUpdated += 1;
     }
-    if (exportPatch) {
+    if (eventId && ensembleId && judgePosition) {
       summary.exportsUpdated += 1;
     }
   }
 
+  if (summary.samples.length > 25) {
+    summary.samples = summary.samples.slice(0, 25);
+  }
+  if (summary.failures.length > 25) {
+    summary.failures = summary.failures.slice(0, 25);
+  }
   return summary;
 });
 
@@ -6730,10 +7630,11 @@ exports.repairPacketSubmissionLinkage = onCall(async (request) => {
     ).trim();
     const packetCaptions =
       packet.captions && typeof packet.captions === "object" ? packet.captions : {};
-    const packetAudioSegments = Array.isArray(packet.audioSegments) ? packet.audioSegments : [];
-    const packetAudioUrl = String(packet.canonicalAudioUrl || packet.latestAudioUrl || "").trim();
-    const packetAudioPath = String(packet.canonicalAudioPath || packet.latestAudioPath || "").trim();
-    const packetAudioDurationSec = Number(packet.canonicalAudioDurationSec || packet.tapeDurationSec || 0);
+    const packetCanonicalAudio = resolveCanonicalAudioFields(packet);
+    const packetAudioSegments = packetCanonicalAudio.audioSegments;
+    const packetAudioUrl = String(packetCanonicalAudio.canonicalAudioUrl || "").trim();
+    const packetAudioPath = String(packetCanonicalAudio.canonicalAudioPath || "").trim();
+    const packetAudioDurationSec = Number(packetCanonicalAudio.canonicalAudioDurationSec || 0);
     const packetJudgePosition = String(packet.officialJudgePosition || packet.judgePosition || "").trim();
     const packetEventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
     const packetEnsembleId = String(packet.ensembleId || "").trim();
@@ -6748,6 +7649,15 @@ exports.repairPacketSubmissionLinkage = onCall(async (request) => {
     const packetOfficialStatus = String(packet.status || "").trim() === "released" ?
       STATUSES.released :
       STATUSES.officialized;
+    if (!packetAudioUrl && packetAudioSegments.length > 1) {
+      summary.skippedIncomplete += 1;
+      summary.samples.push({
+        packetId: packetDoc.id,
+        toSubmissionId: expectedSubmissionId,
+        missingCanonicalAudio: true,
+      });
+      continue;
+    }
     const captionsJson = JSON.stringify(packetCaptions);
     const expectedSubmissionCaptionsJson = JSON.stringify(
         expectedSubmission?.captions && typeof expectedSubmission.captions === "object" ?
@@ -6930,6 +7840,10 @@ exports.repairPacketSubmissionLinkage = onCall(async (request) => {
         audioPath: packetAudioPath,
         [FIELDS.submissions.audioSegments]: packetAudioSegments,
         [FIELDS.submissions.audioDurationSec]: packetAudioDurationSec,
+        canonicalAudioStatus: packetCanonicalAudio.canonicalAudioStatus,
+        canonicalAudioUrl: packetAudioUrl,
+        canonicalAudioPath: packetAudioPath,
+        canonicalAudioDurationSec: packetAudioDurationSec,
         [FIELDS.submissions.transcript]: packetTranscript,
         [FIELDS.submissions.captions]: packetCaptions,
         [FIELDS.submissions.captionScoreTotal]:
@@ -6963,6 +7877,10 @@ exports.repairPacketSubmissionLinkage = onCall(async (request) => {
         audioPath: packetAudioPath,
         [FIELDS.submissions.audioSegments]: packetAudioSegments,
         [FIELDS.submissions.audioDurationSec]: packetAudioDurationSec,
+        canonicalAudioStatus: packetCanonicalAudio.canonicalAudioStatus,
+        canonicalAudioUrl: packetAudioUrl,
+        canonicalAudioPath: packetAudioPath,
+        canonicalAudioDurationSec: packetAudioDurationSec,
         [FIELDS.submissions.transcript]: packetTranscript,
         [FIELDS.submissions.captions]: packetCaptions,
         [FIELDS.submissions.captionScoreTotal]:
@@ -7007,6 +7925,10 @@ exports.repairPacketSubmissionLinkage = onCall(async (request) => {
         [FIELDS.officialAssessments.audioPath]: packetAudioPath,
         [FIELDS.officialAssessments.audioSegments]: packetAudioSegments,
         [FIELDS.officialAssessments.audioDurationSec]: packetAudioDurationSec,
+        canonicalAudioStatus: packetCanonicalAudio.canonicalAudioStatus,
+        canonicalAudioUrl: packetAudioUrl,
+        canonicalAudioPath: packetAudioPath,
+        canonicalAudioDurationSec: packetAudioDurationSec,
         [FIELDS.officialAssessments.transcript]: packetTranscript,
         [FIELDS.officialAssessments.writtenComments]: packetWrittenComments,
         [FIELDS.officialAssessments.captions]: packetCaptions,
@@ -7046,6 +7968,10 @@ exports.repairPacketSubmissionLinkage = onCall(async (request) => {
         [FIELDS.officialAssessments.audioPath]: packetAudioPath,
         [FIELDS.officialAssessments.audioSegments]: packetAudioSegments,
         [FIELDS.officialAssessments.audioDurationSec]: packetAudioDurationSec,
+        canonicalAudioStatus: packetCanonicalAudio.canonicalAudioStatus,
+        canonicalAudioUrl: packetAudioUrl,
+        canonicalAudioPath: packetAudioPath,
+        canonicalAudioDurationSec: packetAudioDurationSec,
         [FIELDS.officialAssessments.transcript]: packetTranscript,
         [FIELDS.officialAssessments.writtenComments]: packetWrittenComments,
         [FIELDS.officialAssessments.captions]: packetCaptions,
@@ -7075,7 +8001,7 @@ exports.repairPacketSubmissionLinkage = onCall(async (request) => {
   return summary;
 });
 
-exports.restoreCanonicalFromOpenPacket = onCall(async (request) => {
+exports.restoreCanonicalFromOpenPacket = onCall(AUDIO_REPAIR_FUNCTION_OPTIONS, async (request) => {
   await assertAdmin(request);
   const data = request.data || {};
   const packetId = String(data.packetId || "").trim();
@@ -7093,6 +8019,30 @@ exports.restoreCanonicalFromOpenPacket = onCall(async (request) => {
   const packet = packetSnap.data() || {};
   if (String(packet.mode || "").trim().toLowerCase() !== ADJUDICATION_MODES.official) {
     throw new HttpsError("failed-precondition", "Only official open packets can restore canonical records.");
+  }
+  const eventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
+  const ensembleId = String(packet.ensembleId || "").trim();
+  const judgePosition = String(packet.officialJudgePosition || packet.judgePosition || "").trim();
+  let canonicalAudio = resolveCanonicalAudioFields(packet);
+  if (!dryRun) {
+    const refreshedCanonicalAudio = await ensurePacketCanonicalAudio({
+      packetRef,
+      packet,
+      packetId,
+      eventId,
+      ensembleId,
+      judgePosition,
+      force: true,
+    });
+    canonicalAudio = resolveCanonicalAudioFields({
+      ...packet,
+      canonicalAudioStatus: CANONICAL_AUDIO_STATUS.ready,
+      canonicalAudioUrl: refreshedCanonicalAudio.url,
+      canonicalAudioPath: refreshedCanonicalAudio.path,
+      canonicalAudioDurationSec: refreshedCanonicalAudio.durationSec,
+      audioSegments: refreshedCanonicalAudio.sourceSegments,
+      tapeDurationSec: refreshedCanonicalAudio.durationSec,
+    });
   }
 
   const submissionId = buildExpectedPacketOfficialSubmissionId(packet);
@@ -7117,14 +8067,17 @@ exports.restoreCanonicalFromOpenPacket = onCall(async (request) => {
       packet.transcriptFull || packet.transcript || raw.writtenComments || raw.transcript || "",
   ).trim();
   const captions = packet.captions && typeof packet.captions === "object" ? packet.captions : {};
-  const audioSegments = Array.isArray(packet.audioSegments) ? packet.audioSegments : [];
-  const audioUrl = String(packet.canonicalAudioUrl || packet.latestAudioUrl || "").trim();
-  const audioPath = String(packet.canonicalAudioPath || packet.latestAudioPath || "").trim();
-  const audioDurationSec = Number(packet.canonicalAudioDurationSec || packet.tapeDurationSec || 0);
-  const eventId = String(packet.officialEventId || packet.assignmentEventId || "").trim();
-  const ensembleId = String(packet.ensembleId || "").trim();
+  const commentsOnly = Boolean(packet.directorEntrySnapshot?.commentsOnly || packet.commentsOnly);
+  const scoreFields = buildCommentsOnlyRatingFields({
+    commentsOnly,
+    captions,
+    fallbackLabel: packet.computedFinalRatingLabel || "N/A",
+  });
+  const audioSegments = canonicalAudio.audioSegments;
+  const audioUrl = String(canonicalAudio.canonicalAudioUrl || "").trim();
+  const audioPath = String(canonicalAudio.canonicalAudioPath || "").trim();
+  const audioDurationSec = Number(canonicalAudio.canonicalAudioDurationSec || 0);
   const schoolId = String(packet.schoolId || raw.schoolId || "").trim();
-  const judgePosition = String(packet.officialJudgePosition || packet.judgePosition || "").trim();
   const judgeUid = String(packet.createdByJudgeUid || raw.judgeUid || "").trim();
   const judgeName = String(packet.createdByJudgeName || raw.judgeName || "").trim();
   const judgeEmail = String(packet.createdByJudgeEmail || raw.judgeEmail || "").trim();
@@ -7182,13 +8135,18 @@ exports.restoreCanonicalFromOpenPacket = onCall(async (request) => {
     audioPath,
     [FIELDS.submissions.audioSegments]: audioSegments,
     [FIELDS.submissions.audioDurationSec]: audioDurationSec,
+    canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+    canonicalAudioUrl: audioUrl,
+    canonicalAudioPath: audioPath,
+    canonicalAudioDurationSec: audioDurationSec,
     [FIELDS.submissions.transcript]: transcript,
     [FIELDS.submissions.captions]: captions,
     [FIELDS.submissions.captionScoreTotal]:
-      Number.isFinite(Number(packet.captionScoreTotal)) ? Number(packet.captionScoreTotal) : null,
+      scoreFields.captionScoreTotal,
     [FIELDS.submissions.computedFinalRatingJudge]:
-      Number.isFinite(Number(packet.computedFinalRatingJudge)) ? Number(packet.computedFinalRatingJudge) : null,
-    [FIELDS.submissions.computedFinalRatingLabel]: String(packet.computedFinalRatingLabel || "N/A"),
+      scoreFields.computedFinalRatingJudge,
+    [FIELDS.submissions.computedFinalRatingLabel]: scoreFields.computedFinalRatingLabel,
+    [FIELDS.submissions.commentsOnly]: commentsOnly,
     [FIELDS.submissions.submittedAt]:
       packet.submittedAt || existingSubmission.submittedAt || raw.submittedAt || admin.firestore.FieldValue.serverTimestamp(),
     [FIELDS.submissions.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
@@ -7211,14 +8169,19 @@ exports.restoreCanonicalFromOpenPacket = onCall(async (request) => {
     [FIELDS.officialAssessments.audioPath]: audioPath,
     [FIELDS.officialAssessments.audioSegments]: audioSegments,
     [FIELDS.officialAssessments.audioDurationSec]: audioDurationSec,
+    canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+    canonicalAudioUrl: audioUrl,
+    canonicalAudioPath: audioPath,
+    canonicalAudioDurationSec: audioDurationSec,
     [FIELDS.officialAssessments.transcript]: transcript,
     [FIELDS.officialAssessments.writtenComments]: writtenComments,
     [FIELDS.officialAssessments.captions]: captions,
     [FIELDS.officialAssessments.captionScoreTotal]:
-      Number.isFinite(Number(packet.captionScoreTotal)) ? Number(packet.captionScoreTotal) : null,
+      scoreFields.captionScoreTotal,
     [FIELDS.officialAssessments.computedFinalRatingJudge]:
-      Number.isFinite(Number(packet.computedFinalRatingJudge)) ? Number(packet.computedFinalRatingJudge) : null,
-    [FIELDS.officialAssessments.computedFinalRatingLabel]: String(packet.computedFinalRatingLabel || "N/A"),
+      scoreFields.computedFinalRatingJudge,
+    [FIELDS.officialAssessments.computedFinalRatingLabel]: scoreFields.computedFinalRatingLabel,
+    [FIELDS.officialAssessments.commentsOnly]: commentsOnly,
     [FIELDS.officialAssessments.reviewedAt]:
       raw.reviewedAt || existingOfficial.reviewedAt || admin.firestore.FieldValue.serverTimestamp(),
     [FIELDS.officialAssessments.reviewedByUid]:
@@ -7230,8 +8193,184 @@ exports.restoreCanonicalFromOpenPacket = onCall(async (request) => {
       existingOfficial.createdAt || packet.createdAt || raw.createdAt || admin.firestore.FieldValue.serverTimestamp(),
   }, {merge: true});
   await batch.commit();
+  await refreshDirectorPacketExportJudgeAsset({
+    db,
+    eventId,
+    ensembleId,
+    judgePosition,
+    canonicalAudio,
+  });
 
   return result;
+});
+
+exports.recreateOpenPacketFromCanonical = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+  const judgePosition = String(data.judgePosition || "").trim();
+  if (!eventId || !ensembleId || !judgePosition) {
+    throw new HttpsError("invalid-argument", "eventId, ensembleId, and judgePosition required.");
+  }
+
+  const submissionId = buildOfficialAssessmentId({eventId, ensembleId, judgePosition});
+  const db = admin.firestore();
+  const [officialSnap, submissionSnap, entrySnap] = await Promise.all([
+    db.collection(COLLECTIONS.officialAssessments).doc(submissionId).get(),
+    db.collection(COLLECTIONS.submissions).doc(submissionId).get(),
+    db.collection(COLLECTIONS.events).doc(eventId).collection(COLLECTIONS.entries).doc(ensembleId).get(),
+  ]);
+
+  const official = officialSnap.exists ? (officialSnap.data() || {}) : null;
+  const submission = submissionSnap.exists ? (submissionSnap.data() || {}) : null;
+  const canonical = normalizeCanonicalPacketAssessment({official, submission});
+  if (!canonical) {
+    throw new HttpsError("not-found", "Canonical results packet slot not found.");
+  }
+
+  const existingPacketSnap = await db
+      .collection(COLLECTIONS.packets)
+      .where(FIELDS.packets.officialSubmissionId, "==", submissionId)
+      .limit(1)
+      .get();
+  if (!existingPacketSnap.empty) {
+    const existing = existingPacketSnap.docs[0];
+    return {
+      ok: true,
+      recreated: false,
+      packetId: existing.id,
+      submissionId,
+      judgePosition,
+      message: "A source sheet already exists for this results packet slot.",
+    };
+  }
+
+  const schoolId = String(
+      canonical.schoolId ||
+      data.schoolId ||
+      "",
+  ).trim();
+  const [schoolSnap, ensembleSnap] = schoolId ? await Promise.all([
+    db.collection(COLLECTIONS.schools).doc(schoolId).get().catch(() => null),
+    db.collection(COLLECTIONS.schools).doc(schoolId)
+        .collection(COLLECTIONS.ensembles).doc(ensembleId).get().catch(() => null),
+  ]) : [null, null];
+  const schoolName = String(
+      data.schoolName ||
+      schoolSnap?.data?.()?.name ||
+      "",
+  ).trim();
+  const ensembleName = normalizeEnsembleNameForSchool({
+    schoolName,
+    ensembleName: String(
+        data.ensembleName ||
+        ensembleSnap?.data?.()?.name ||
+        canonical.ensembleName ||
+        ensembleId,
+    ).trim(),
+  });
+  const directorEntrySnapshot = entrySnap.exists ? (entrySnap.data() || null) : null;
+  const commentsOnly = Boolean(directorEntrySnapshot?.commentsOnly || canonical.commentsOnly);
+  const canonicalAudio = resolveCanonicalAudioFields(canonical);
+  const normalizedSegments = normalizeAudioSegments(
+      canonicalAudio.audioSegments && canonicalAudio.audioSegments.length ?
+        canonicalAudio.audioSegments :
+        ((canonicalAudio.canonicalAudioUrl || canonicalAudio.canonicalAudioPath) ? [{
+          sessionId: "reconstructed",
+          label: "Reconstructed Tape",
+          audioUrl: canonicalAudio.canonicalAudioUrl,
+          audioPath: canonicalAudio.canonicalAudioPath,
+          durationSec: Number(canonicalAudio.canonicalAudioDurationSec || 0),
+          sortOrder: 0,
+          startedAtMs: 0,
+        }] : []),
+  );
+  const primarySegment = normalizedSegments[0] || null;
+  const packetRef = db.collection(COLLECTIONS.packets).doc();
+  const payload = {
+    [FIELDS.packets.status]: "locked",
+    [FIELDS.packets.locked]: true,
+    [FIELDS.packets.createdByJudgeUid]: String(canonical.judgeUid || "").trim(),
+    [FIELDS.packets.createdByJudgeName]: String(canonical.judgeName || "").trim(),
+    [FIELDS.packets.createdByJudgeEmail]: String(canonical.judgeEmail || "").trim(),
+    [FIELDS.packets.schoolName]: schoolName,
+    [FIELDS.packets.ensembleName]: ensembleName,
+    [FIELDS.packets.schoolId]: schoolId,
+    [FIELDS.packets.ensembleId]: ensembleId,
+    [FIELDS.packets.ensembleSnapshot]: {
+      schoolId,
+      schoolName,
+      ensembleId,
+      ensembleName,
+    },
+    [FIELDS.packets.directorEntrySnapshot]: directorEntrySnapshot,
+    [FIELDS.packets.formType]:
+      canonical.formType ||
+      (judgePosition === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage),
+    [FIELDS.packets.assignmentEventId]: eventId,
+    [FIELDS.packets.judgePosition]: judgePosition,
+    [FIELDS.packets.assignmentMode]: "reconstructedCanonical",
+    [FIELDS.packets.mode]: ADJUDICATION_MODES.official,
+    [FIELDS.packets.officialEventId]: eventId,
+    [FIELDS.packets.officialJudgePosition]: judgePosition,
+    [FIELDS.packets.officialSubmissionId]: submissionId,
+    [FIELDS.packets.officialAssessmentId]: submissionId,
+    [FIELDS.packets.transcript]: String(canonical.transcript || "").trim(),
+    [FIELDS.packets.transcriptFull]: String(
+        canonical.writtenComments ||
+        canonical.transcript ||
+        "",
+    ).trim(),
+    [FIELDS.packets.captions]: canonical.captions || {},
+    [FIELDS.packets.captionScoreTotal]:
+      commentsOnly ? null : (Number.isFinite(Number(canonical.captionScoreTotal)) ? Number(canonical.captionScoreTotal) : null),
+    [FIELDS.packets.computedFinalRatingJudge]:
+      commentsOnly ? null : (Number.isFinite(Number(canonical.computedFinalRatingJudge)) ? Number(canonical.computedFinalRatingJudge) : null),
+    [FIELDS.packets.computedFinalRatingLabel]: commentsOnly ? "CO" : String(canonical.computedFinalRatingLabel || "N/A"),
+    [FIELDS.packets.commentsOnly]: commentsOnly,
+    [FIELDS.packets.audioSessionCount]: normalizedSegments.length,
+    [FIELDS.packets.activeSessionId]: null,
+    [FIELDS.packets.segmentCount]: normalizedSegments.length,
+    [FIELDS.packets.tapeDurationSec]: Number(canonicalAudio.canonicalAudioDurationSec || 0),
+    [FIELDS.packets.audioSegments]: normalizedSegments,
+    [FIELDS.packets.latestAudioUrl]:
+      String(primarySegment?.audioUrl || canonicalAudio.canonicalAudioUrl || "").trim(),
+    [FIELDS.packets.latestAudioPath]:
+      String(primarySegment?.audioPath || canonicalAudio.canonicalAudioPath || "").trim(),
+    [FIELDS.packets.captureStatus]: STATUSES.submitted,
+    [FIELDS.packets.associationState]: "attached",
+    [FIELDS.packets.reviewState]: "approved",
+    [FIELDS.packets.excludedReason]: "",
+    [FIELDS.packets.submittedAt]:
+      canonical.submittedAt || admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.packets.releasedAt]: null,
+    canonicalAudioStatus: canonicalAudio.canonicalAudioStatus,
+    canonicalAudioUrl: canonicalAudio.canonicalAudioUrl,
+    canonicalAudioPath: canonicalAudio.canonicalAudioPath,
+    canonicalAudioDurationSec: Number(canonicalAudio.canonicalAudioDurationSec || 0),
+    canonicalAudioError: "",
+    canonicalAudioUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    reconstructedFromCanonical: true,
+    reconstructedFromSubmissionId: submissionId,
+    [FIELDS.packets.createdAt]: admin.firestore.FieldValue.serverTimestamp(),
+    [FIELDS.packets.updatedAt]: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  await packetRef.set(payload, {merge: true});
+  await writePacketAudit(packetRef, {
+    action: "recreate_from_canonical",
+    fromStatus: null,
+    toStatus: "locked",
+    actor: {uid: request.auth.uid, role: "admin"},
+  });
+
+  return {
+    ok: true,
+    recreated: true,
+    packetId: packetRef.id,
+    submissionId,
+    judgePosition,
+  };
 });
 
 exports.releaseMockPacketForAshleyTesting = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {

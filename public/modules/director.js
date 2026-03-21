@@ -1572,7 +1572,88 @@ export async function fetchDirectorAudioResultAsset({ audioResultId } = {}) {
   }
 }
 
+async function fetchDirectorReleasedPacketGroups({
+  eventId = "",
+  schoolId = "",
+} = {}) {
+  const fetchFn = httpsCallable(functions, "listDirectorReleasedPackets");
+  try {
+    const response = await fetchFn({
+      eventId: String(eventId || "").trim(),
+      schoolId: String(schoolId || "").trim(),
+    });
+    return {
+      ok: true,
+      groups: Array.isArray(response?.data?.groups) ? response.data.groups : [],
+    };
+  } catch (error) {
+    console.error("fetchDirectorReleasedPacketGroups failed", error);
+    return {
+      ok: false,
+      groups: [],
+      message: error?.message || "Unable to load released packets right now.",
+      error,
+    };
+  }
+}
+
 export function watchDirectorPackets(callback) {
+  if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
+  if (state.subscriptions.directorLegacyPackets) state.subscriptions.directorLegacyPackets();
+  if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
+  if (state.subscriptions.directorAudioResults) state.subscriptions.directorAudioResults();
+  state.subscriptions.directorLegacyPackets = null;
+  state.subscriptions.directorOpenPackets = null;
+  state.subscriptions.directorAudioResults = null;
+  state.director.packetGradeCache.clear();
+  if (state.director.packetLabelCache?.clear) {
+    state.director.packetLabelCache.clear();
+  }
+  if (state.director.packetAssetsCache?.clear) {
+    state.director.packetAssetsCache.clear();
+  }
+  state.director.packetWatchVersion += 1;
+  const watchVersion = state.director.packetWatchVersion;
+  if (!state.auth.userProfile || !isDirectorManager()) {
+    callback?.({ groups: [], hint: "" });
+    return;
+  }
+  const directorSchoolId = getDirectorSchoolId();
+  if (!directorSchoolId) {
+    callback?.({ groups: [], hint: "Select a school to continue." });
+    return;
+  }
+
+  let cancelled = false;
+  state.subscriptions.directorPackets = () => {
+    cancelled = true;
+  };
+
+  void (async () => {
+    const result = await fetchDirectorReleasedPacketGroups({
+      eventId: state.director.selectedEventId || state.event.active?.id || "",
+      schoolId: directorSchoolId,
+    });
+    if (cancelled || watchVersion !== state.director.packetWatchVersion) return;
+    if (!result?.ok) {
+      watchDirectorPacketsFromLegacySources(callback);
+      return;
+    }
+    const groups = (Array.isArray(result.groups) ? result.groups : []).map((group) => {
+      const summary = computePacketSummary(group?.grade || "", group?.submissions || {});
+      return {
+        ...group,
+        overall: summary.overall,
+      };
+    });
+    callback?.({
+      groups,
+      hint: groups.length ? "" : "No results released yet.",
+    });
+  })();
+}
+
+function watchDirectorPacketsFromLegacySources(callback) {
   if (state.subscriptions.directorPackets) state.subscriptions.directorPackets();
   if (state.subscriptions.directorOpenPackets) state.subscriptions.directorOpenPackets();
   if (state.subscriptions.directorAudioResults) state.subscriptions.directorAudioResults();

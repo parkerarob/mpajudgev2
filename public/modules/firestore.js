@@ -89,6 +89,7 @@ export async function fetchPacketSubmissions(eventId, ensembleId) {
       locked: true,
       status: officialStatus === "released" ? "released" : "submitted",
       sourceType: "officialAssessment",
+      commentsOnly: Boolean(official.commentsOnly || submission?.commentsOnly),
       releaseEligible: official.releaseEligible !== false,
       canonicalAudioUrl:
         official.audioUrl ||

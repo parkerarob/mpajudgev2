@@ -30,6 +30,8 @@ export function createAdminRenderers({
   regenerateDirectorPacketExport,
   releasePacket,
   unreleasePacket,
+  repairPacketReleaseState,
+  setPacketCommentsOnly,
   deleteScheduledAssessment,
   deleteScheduledPacket,
   lockOpenPacket,
@@ -46,6 +48,7 @@ export function createAdminRenderers({
   repairOpenSubmissionAudioMetadata,
   repairPacketSubmissionLinkage,
   restoreCanonicalFromOpenPacket,
+  recreateOpenPacketFromCanonical,
   deleteAllUnreleasedPackets,
   cleanupTestArtifacts,
   renderAssessmentCard,
@@ -76,6 +79,20 @@ export function createAdminRenderers({
   let adminSchoolDetailRenderInFlight = false;
   let adminSchoolDetailRenderQueued = false;
   let adminPacketsRenderInFlight = false;
+
+  function isCommentsOnlySubmission(submission) {
+    return Boolean(submission?.commentsOnly);
+  }
+
+  function getSubmissionRatingLabel(submission) {
+    return isCommentsOnlySubmission(submission) ? "CO" : (submission?.computedFinalRatingLabel || "N/A");
+  }
+
+  function getSubmissionCaptionTotalLabel(submission) {
+    return isCommentsOnlySubmission(submission) ? "CO" : (
+      Number.isFinite(Number(submission?.captionScoreTotal)) ? String(Number(submission.captionScoreTotal)) : "N/A"
+    );
+  }
   let adminPacketsRenderQueued = false;
   let registeredRenderInFlight = false;
   let registeredRenderQueued = false;
@@ -86,8 +103,34 @@ export function createAdminRenderers({
   function formatBlockerError(error, fallbackMessage) {
     const blockers = Array.isArray(error?.details?.blockers) ? error.details.blockers : [];
     if (!blockers.length) return error?.message || fallbackMessage;
-    const lines = blockers.map((blocker) => `- ${blocker.message || blocker.code || "Blocked"}`);
+    const lines = blockers.map((blocker) => {
+      const label =
+        blocker.message ||
+        blocker.label ||
+        blocker.position ||
+        blocker.code ||
+        "Blocked";
+      return `- ${label}`;
+    });
     return `${fallbackMessage}\n${lines.join("\n")}`;
+  }
+
+  function openSourceSheetFromResultsView(packetId) {
+    const resolvedPacketId = String(packetId || "").trim();
+    if (!resolvedPacketId) return false;
+    document.querySelectorAll("[data-attached-source-toggle]").forEach((button) => {
+      if (String(button.dataset.expanded || "") === "true") return;
+      button.click();
+    });
+    const selectorId = globalThis.CSS?.escape ? globalThis.CSS.escape(resolvedPacketId) : resolvedPacketId;
+    const row = document.querySelector(`[data-source-packet-id="${selectorId}"]`);
+    if (!row) return false;
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    const viewButton = row.querySelector(`[data-source-packet-view-for="${selectorId}"]`);
+    if (viewButton && /view source sheet/i.test(viewButton.textContent || "")) {
+      viewButton.click();
+    }
+    return true;
   }
 
   function formatPacketTimestamp(value) {
@@ -110,6 +153,355 @@ export function createAdminRenderers({
   function formatJudgeRatingLabel(value) {
     const label = String(value || "").trim();
     return label || "N/A";
+  }
+
+  function formatReleaseAuditStatus(summary) {
+    if (summary?.hasPartialReleaseState) return "Partial Release";
+    if (summary?.requiredReleased) return "Released";
+    if (summary?.requiredComplete) return "Ready but not released";
+    return "Blocked";
+  }
+
+  function formatReleaseAuditBlockers(summary) {
+    if (summary?.hasPartialReleaseState) {
+      return `Released early: ${(summary.releasedPositions || [])
+        .map((position) => JUDGE_POSITION_LABELS[position] || position)
+        .join(", ")}`;
+    }
+    const blockers = Array.isArray(summary?.blockingPositions) ? summary.blockingPositions : [];
+    if (!blockers.length) {
+      return summary?.requiredReleased || summary?.requiredComplete ? "None" : "Unknown";
+    }
+    return blockers.map((position) => JUDGE_POSITION_LABELS[position] || position).join(", ");
+  }
+
+  function renderAdminPacketsAuditTable({ entries = [], packetDataByEntryId = new Map(), eventId = "" } = {}) {
+    if (!els.adminPacketsAuditBody || !els.adminPacketsAuditHint) return;
+    els.adminPacketsAuditBody.innerHTML = "";
+    if (!eventId) {
+      els.adminPacketsAuditHint.textContent = "Set an active event to begin.";
+      return;
+    }
+    if (!entries.length) {
+      els.adminPacketsAuditHint.textContent = "No scheduled ensembles for the active event.";
+      return;
+    }
+    let releasedCount = 0;
+    entries.forEach((entry) => {
+      const ensembleId = String(entry.ensembleId || "").trim();
+      const schoolId = String(entry.schoolId || "").trim();
+      const schoolName = entry.schoolName || getSchoolNameById(state.admin.schoolsList, schoolId) || "Unknown school";
+      const ensembleName = normalizeEnsembleDisplayName({
+        schoolName,
+        ensembleName: entry.ensembleName || "",
+        ensembleId,
+      });
+      const packetData = packetDataByEntryId.get(entry.id) || null;
+      const summary = packetData?.summary || null;
+      if (summary?.requiredReleased) releasedCount += 1;
+
+      const row = document.createElement("tr");
+
+      const nameCell = document.createElement("td");
+      nameCell.textContent = `${schoolName} - ${ensembleName}`;
+      row.appendChild(nameCell);
+
+      const gradeCell = document.createElement("td");
+      gradeCell.textContent = packetData?.grade || "—";
+      row.appendChild(gradeCell);
+
+      const overallCell = document.createElement("td");
+      overallCell.textContent = summary?.overall?.label || "—";
+      row.appendChild(overallCell);
+
+      const releaseCell = document.createElement("td");
+      releaseCell.textContent = formatReleaseAuditStatus(summary);
+      row.appendChild(releaseCell);
+
+      const blockerCell = document.createElement("td");
+      blockerCell.textContent = formatReleaseAuditBlockers(summary);
+      row.appendChild(blockerCell);
+
+      const actionCell = document.createElement("td");
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "ghost";
+      openBtn.textContent = "Open";
+      openBtn.addEventListener("click", async () => {
+        state.admin.packetsSchoolId = schoolId;
+        if (els.adminPacketsSchoolSelect) {
+          els.adminPacketsSchoolSelect.value = schoolId;
+        }
+        await renderAdminPacketsBySchedule();
+      });
+      actionCell.appendChild(openBtn);
+      row.appendChild(actionCell);
+
+      els.adminPacketsAuditBody.appendChild(row);
+    });
+    els.adminPacketsAuditHint.textContent = `Released to director: ${releasedCount} of ${entries.length}`;
+  }
+
+  function hasSubmissionTraceAudio(submission) {
+    if (!submission || typeof submission !== "object") return false;
+    return Boolean(String(submission.canonicalAudioUrl || submission.canonicalAudioPath || "").trim());
+  }
+
+  function describeSubmissionTrace(position, submission) {
+    if (!submission) {
+      return {
+        label: JUDGE_POSITION_LABELS[position] || position,
+        state: "Missing",
+        detail: "No canonical sheet found for this required slot.",
+      };
+    }
+    const issues = [];
+    if (submission.status !== "released") {
+      if (submission.status !== "submitted") issues.push(`status ${submission.status || "missing"}`);
+      if (!submission.locked) issues.push("unlocked");
+      if (!hasSubmissionTraceAudio(submission)) issues.push("stitched tape missing");
+      const captionCount =
+        submission.captions && typeof submission.captions === "object" ?
+          Object.keys(submission.captions).length :
+          0;
+      if (captionCount < 7) issues.push(`captions ${captionCount}/7`);
+      if (!submission.commentsOnly && !Number.isFinite(Number(submission.captionScoreTotal))) issues.push("no caption total");
+      if (!submission.commentsOnly && !Number.isFinite(Number(submission.computedFinalRatingJudge))) issues.push("no rating");
+    }
+    const ratingLabel = submission.commentsOnly ? "CO" : formatJudgeRatingLabel(submission.computedFinalRatingLabel);
+    const detailParts = [
+      `Status: ${submission.status || "missing"}`,
+      `Locked: ${submission.locked ? "yes" : "no"}`,
+      `Stitched Tape: ${hasSubmissionTraceAudio(submission) ? "yes" : "no"}`,
+      `Rating: ${ratingLabel}`,
+    ];
+    if (issues.length) detailParts.push(`Issues: ${issues.join(", ")}`);
+    const traceState =
+      submission.status === "released" ?
+        "Released" :
+        issues.length ?
+          "Blocked" :
+          "Ready";
+    return {
+      label: JUDGE_POSITION_LABELS[position] || position,
+      state: traceState,
+      detail: detailParts.join(" - "),
+    };
+  }
+
+  function getReleasedPositions(summary, submissions) {
+    const requiredPositions = Array.isArray(summary?.requiredPositions) ? summary.requiredPositions : [];
+    return requiredPositions.filter((position) => submissions?.[position]?.status === "released");
+  }
+
+  function augmentSummary(summary, submissions) {
+    if (!summary || typeof summary !== "object") return summary;
+    const releasedPositions = getReleasedPositions(summary, submissions);
+    return {
+      ...summary,
+      releasedPositions,
+      hasPartialReleaseState: releasedPositions.length > 0 && !summary.requiredReleased,
+    };
+  }
+
+  async function renderPacketReleaseTrace({ eventId, ensembleId, packetData, wrapper }) {
+    if (!wrapper) return;
+    wrapper.innerHTML = "";
+    const summary = augmentSummary(packetData?.summary || null, packetData?.submissions || {});
+    const submissions = packetData?.submissions && typeof packetData.submissions === "object" ?
+      packetData.submissions :
+      {};
+
+    const overview = document.createElement("div");
+    overview.className = "note";
+    if (summary?.hasPartialReleaseState) {
+      overview.textContent = `Director Release: Invalid partial release state detected. Released early: ${summary.releasedPositions
+        .map((position) => JUDGE_POSITION_LABELS[position] || position)
+        .join(", ")}.`;
+    } else if (summary?.requiredReleased) {
+      overview.textContent = "Director Release: Released to director.";
+    } else if (summary?.requiredComplete) {
+      overview.textContent = "Director Release: Not released. Results Packet is complete but still withheld.";
+    } else {
+      overview.textContent = "Director Release: Not released. Results Packet is incomplete.";
+    }
+    wrapper.appendChild(overview);
+
+    if (Array.isArray(summary?.blockingPositions) && summary.blockingPositions.length) {
+      const blockers = document.createElement("div");
+      blockers.className = "note";
+      blockers.textContent = `Blocking positions: ${summary.blockingPositions
+        .map((position) => JUDGE_POSITION_LABELS[position] || position)
+        .join(", ")}`;
+      wrapper.appendChild(blockers);
+    }
+
+    const slotList = document.createElement("div");
+    slotList.className = "stack";
+    const requiredPositions = Array.isArray(summary?.requiredPositions) ? summary.requiredPositions : [];
+    requiredPositions.forEach((position) => {
+      const item = describeSubmissionTrace(position, submissions[position]);
+      const row = document.createElement("div");
+      row.className = "note";
+      row.textContent = `${item.label}: ${item.state}. ${item.detail}`;
+      slotList.appendChild(row);
+    });
+    wrapper.appendChild(slotList);
+
+    const exportWrap = document.createElement("div");
+    exportWrap.className = "note";
+    exportWrap.textContent = "Director packet export: checking...";
+    wrapper.appendChild(exportWrap);
+
+    try {
+      const assets = await fetchDirectorPacketAssets({ eventId, ensembleId });
+      if (!assets?.ok) {
+        exportWrap.textContent = summary?.requiredReleased ?
+          `Director packet export: unavailable. ${assets?.message || "Not found."}` :
+          "Director packet export: not available yet because this packet is not released.";
+        return;
+      }
+      if (assets.status === "ready") {
+        exportWrap.textContent = "Director packet export: ready.";
+        return;
+      }
+      if (assets.status === "failed") {
+        exportWrap.textContent = `Director packet export: failed. ${assets.error || "Unknown error."}`;
+        return;
+      }
+      exportWrap.textContent = `Director packet export: ${assets.status || "pending"}.`;
+    } catch (error) {
+      exportWrap.textContent = `Director packet export: unable to trace. ${error?.message || "Unknown error."}`;
+    }
+  }
+
+  async function renderDirectorAccessTrace({ eventId, entry, packetData, wrapper }) {
+    if (!wrapper || !entry) return;
+    wrapper.innerHTML = "";
+
+    const schoolId = String(entry.schoolId || "").trim();
+    const ensembleId = String(entry.ensembleId || "").trim();
+    const submissions = packetData?.submissions && typeof packetData.submissions === "object" ?
+      packetData.submissions :
+      {};
+
+    const intro = document.createElement("div");
+    intro.className = "note";
+    intro.textContent = "Compare these school links. If they do not all point to the same school, the director can lose access to registration or released packets.";
+    wrapper.appendChild(intro);
+
+    const rows = [];
+    rows.push({
+      label: "Schedule Entry",
+      schoolId: schoolId || "Missing",
+      detail: `${entry.schoolName || "Unknown school"} - ${entry.ensembleName || ensembleId || "Unknown ensemble"}`,
+    });
+
+    rows.push({
+      label: "Event Entry",
+      schoolId: String(packetData?.entrySchoolId || schoolId || "Missing"),
+      detail: `Grade: ${packetData?.grade || "Unknown"}`,
+    });
+
+    let schoolEnsembleStatus = "Unknown";
+    try {
+      const schoolEnsembleSnap =
+        schoolId && ensembleId ?
+          await getDocs(
+            query(
+              collection(db, COLLECTIONS.schools, schoolId, COLLECTIONS.ensembles),
+              where("__name__", "==", ensembleId)
+            )
+          ) :
+          null;
+      schoolEnsembleStatus = schoolEnsembleSnap && !schoolEnsembleSnap.empty ?
+        "Exists" :
+        "Missing";
+    } catch (error) {
+      schoolEnsembleStatus = `Unable to load (${error?.message || "Unknown error"})`;
+    }
+    rows.push({
+      label: "School Ensemble Roster Doc",
+      schoolId: schoolId || "Missing",
+      detail: `${schoolEnsembleStatus} for ensemble ${ensembleId || "Unknown"}`,
+    });
+
+    const canonicalSchoolIds = Array.from(new Set(
+      Object.entries(submissions)
+        .map(([position, submission]) => ({
+          position,
+          schoolId: String(submission?.schoolId || "").trim(),
+        }))
+        .filter((item) => item.schoolId)
+        .map((item) => item.schoolId)
+    ));
+    rows.push({
+      label: "Canonical Packet Slots",
+      schoolId: canonicalSchoolIds.join(", ") || "Missing",
+      detail: Object.entries(submissions)
+        .map(([position, submission]) =>
+          `${JUDGE_POSITION_LABELS[position] || position}: ${String(submission?.schoolId || "Missing")}`
+        )
+        .join(" | ") || "No canonical submissions loaded.",
+    });
+
+    let exportSchoolId = "Not found";
+    let exportStatus = "No export record found.";
+    try {
+      const exportSnap = await getDocs(
+        query(
+          collection(db, COLLECTIONS.packetExports),
+          where("eventId", "==", eventId),
+          where("ensembleId", "==", ensembleId)
+        )
+      );
+      if (!exportSnap.empty) {
+        const exportData = exportSnap.docs[0].data() || {};
+        exportSchoolId = String(exportData.schoolId || "").trim() || "Missing";
+        exportStatus = `Status: ${String(exportData.status || "unknown")}`;
+      }
+    } catch (error) {
+      exportStatus = `Unable to load export record: ${error?.message || "Unknown error"}`;
+    }
+    rows.push({
+      label: "Packet Export",
+      schoolId: exportSchoolId,
+      detail: exportStatus,
+    });
+
+    let directorDetail = "No director users found for this school.";
+    try {
+      const directorsSnap = schoolId ?
+        await getDocs(
+          query(
+            collection(db, COLLECTIONS.users),
+            where("schoolId", "==", schoolId)
+          )
+        ) :
+        { docs: [] };
+      const directors = directorsSnap.docs
+        .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+        .filter((user) => user.role === "director" || user?.roles?.director === true);
+      if (directors.length) {
+        directorDetail = directors
+          .map((user) => `${user.displayName || user.name || user.email || user.id} (${user.email || user.id})`)
+          .join(" | ");
+      }
+    } catch (error) {
+      directorDetail = `Unable to load director assignment: ${error?.message || "Unknown error"}`;
+    }
+    rows.push({
+      label: "Assigned Director Users",
+      schoolId: schoolId || "Missing",
+      detail: directorDetail,
+    });
+
+    rows.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "note";
+      row.textContent = `${item.label}: ${item.schoolId}. ${item.detail}`;
+      wrapper.appendChild(row);
+    });
   }
 
   function formatCaptionKeyLabel(value) {
@@ -163,7 +555,7 @@ export function createAdminRenderers({
     } else if (audioSegments.length > 1) {
       const partsLabel = document.createElement("div");
       partsLabel.className = "note";
-      partsLabel.textContent = `Recorded Audio Segments: ${audioSegments.length}`;
+      partsLabel.textContent = `Tape Segments: ${audioSegments.length}`;
       container.appendChild(partsLabel);
       audioSegments.forEach((segment, index) => {
         if (!segment.audioUrl) return;
@@ -354,8 +746,8 @@ export function createAdminRenderers({
     }
     if (els.adminSubmissionsHint) {
       els.adminSubmissionsHint.textContent = items.length
-        ? `${items.length} submission${items.length === 1 ? "" : "s"} in queue.`
-        : "No submissions in this filter.";
+        ? `${items.length} source sheet${items.length === 1 ? "" : "s"} in queue.`
+        : "No source sheets in this filter.";
     }
     els.adminSubmissionsList.innerHTML = "";
     items.forEach((item) => {
@@ -407,10 +799,10 @@ export function createAdminRenderers({
       const emptyNote = document.createElement("div");
       emptyNote.className = "note";
       emptyNote.textContent = items.length
-        ? "Select a submission to review."
+        ? "Select a source sheet to review."
         : state.event.active?.id
-          ? "No submissions are waiting in this queue."
-          : "Set an active event to begin reviewing submissions.";
+          ? "No source sheets are waiting in this queue."
+          : "Set an active event to begin reviewing source sheets.";
       empty.appendChild(emptyNote);
       const actions = document.createElement("div");
       actions.className = "row";
@@ -489,10 +881,12 @@ export function createAdminRenderers({
     const scoringMeta = document.createElement("div");
     scoringMeta.className = "note";
     scoringMeta.textContent = [
-      `Judge Overall Rating ${formatJudgeRatingLabel(selected.computedFinalRatingLabel)}`,
-      Number.isFinite(Number(selected.captionScoreTotal))
-        ? `Caption Total ${Number(selected.captionScoreTotal)}`
-        : "Caption Total N/A",
+      `Judge Overall Rating ${selected.commentsOnly ? "CO" : formatJudgeRatingLabel(selected.computedFinalRatingLabel)}`,
+      selected.commentsOnly ?
+        "Caption Total CO" :
+        (Number.isFinite(Number(selected.captionScoreTotal))
+          ? `Caption Total ${Number(selected.captionScoreTotal)}`
+          : "Caption Total N/A"),
     ].join(" • ");
     els.adminSubmissionDetail.appendChild(scoringMeta);
 
@@ -605,7 +999,7 @@ export function createAdminRenderers({
     reassignBtn.textContent = "Reassign";
     const officializeBtn = document.createElement("button");
     officializeBtn.type = "button";
-    officializeBtn.textContent = "Approve to Packet";
+    officializeBtn.textContent = "Add to Results Packet";
     const excludeBtn = document.createElement("button");
     excludeBtn.type = "button";
     excludeBtn.className = "ghost";
@@ -668,15 +1062,15 @@ export function createAdminRenderers({
 
     officializeBtn.addEventListener("click", async () => {
       const next = getSelection();
-      status.textContent = "Approving to packet...";
+      status.textContent = "Adding to Results Packet...";
       try {
         await officializeRawAssessment({
           rawAssessmentId: selected.id,
           ...next,
         });
-        status.textContent = "Approved to packet.";
+        status.textContent = "Added to Results Packet.";
       } catch (error) {
-        status.textContent = error?.message || "Unable to approve to packet.";
+        status.textContent = error?.message || "Unable to add to Results Packet.";
       }
     });
 
@@ -750,7 +1144,7 @@ export function createAdminRenderers({
       const buildSlotCell = (submission) => {
         const cell = document.createElement("td");
         cell.className = "admin-ratings-slot";
-        cell.textContent = submission?.computedFinalRatingLabel || "—";
+        cell.textContent = submission ? getSubmissionRatingLabel(submission) : "—";
         return cell;
       };
       const scheduleEntries = await fetchScheduleEntries(eventId).catch(() => []);
@@ -1203,7 +1597,7 @@ export function createAdminRenderers({
     if (!els.adminSubmissionsWorkflowCard) return;
     let step = "Start";
     let nextTitle = "Set an active event to begin.";
-    let nextHint = "Then review incoming assessments and approve them into packet slots.";
+    let nextHint = "Then review incoming source sheets and add them into the Results Packet.";
     let nextActionLabel = "Open Settings";
     let nextAction = () => {
       window.location.hash = "#admin/settings";
@@ -1211,39 +1605,39 @@ export function createAdminRenderers({
 
     if (hasActiveEvent && totalCount === 0) {
       step = "Queue";
-      nextTitle = "No assessments are waiting in the queue.";
-      nextHint = "Use the judge workspace to submit a fresh assessment, then return here for review.";
+      nextTitle = "No source sheets are waiting in the queue.";
+      nextHint = "Use the judge workspace to submit a fresh source sheet, then return here for review.";
       nextActionLabel = "Open Judge Workspace";
       nextAction = () => {
         window.location.hash = "#judge-open";
       };
     } else if (hasActiveEvent && pendingCount > 0 && !hasSelection) {
       step = "Queue";
-      nextTitle = "Select an assessment to review.";
-      nextHint = `${pendingCount}/${totalCount} assessments currently need review.`;
+      nextTitle = "Select a source sheet to review.";
+      nextHint = `${pendingCount}/${totalCount} source sheets currently need review.`;
       nextActionLabel = "Open Review Queue";
       nextAction = () => {
         els.adminSubmissionsList?.scrollIntoView({ behavior: "smooth", block: "start" });
       };
     } else if (hasActiveEvent && pendingCount > 0 && hasSelection) {
       step = "Review";
-      nextTitle = "Review the selected assessment and fix routing if needed.";
-      nextHint = "Confirm ensemble, judge position, caption scoring, and audio before approving it into the packet.";
-      nextActionLabel = "Open Assessment Detail";
+      nextTitle = "Review the selected source sheet and fix routing if needed.";
+      nextHint = "Confirm ensemble, judge position, scoring, and tape before adding it to the Results Packet.";
+      nextActionLabel = "Open Source Sheet Detail";
       nextAction = () => {
         els.adminSubmissionDetail?.scrollIntoView({ behavior: "smooth", block: "start" });
       };
     } else if (hasActiveEvent && totalCount > 0 && officializedCount < totalCount) {
       step = "Approve";
-      nextTitle = "Approve reviewed assessments into packet slots.";
-      nextHint = `${officializedCount}/${totalCount} assessments already approved into packets.`;
+      nextTitle = "Add reviewed source sheets into the Results Packet.";
+      nextHint = `${officializedCount}/${totalCount} source sheets already added into Results Packets.`;
       nextActionLabel = "Open Review Queue";
       nextAction = () => {
         els.adminSubmissionsList?.scrollIntoView({ behavior: "smooth", block: "start" });
       };
     } else if (hasActiveEvent && totalCount > 0 && officializedCount >= totalCount) {
       step = "Done";
-      nextTitle = "All queued assessments are approved into packet slots.";
+      nextTitle = "All queued source sheets are added into Results Packets.";
       nextHint = "Move to Packets & Results to manage release-ready results packets.";
       nextActionLabel = "Open Packets & Results";
       nextAction = () => {
@@ -1336,7 +1730,7 @@ export function createAdminRenderers({
     } else if (hasActiveEvent && hasSchoolSelected && totalCount > 0 && releasedCount >= totalCount) {
       step = "Done";
       nextTitle = "All results packets for this school are released.";
-      nextHint = "Use View Results Packet to spot-check content or manage Open Judge sheets.";
+      nextHint = "Use View Results Packet to spot-check content or manage Source Sheets.";
       nextActionLabel = "Review Released Results";
       nextAction = () => {
         els.adminPacketsList?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1397,6 +1791,7 @@ export function createAdminRenderers({
       transcript: String(packet.transcriptFull || packet.transcript || "").trim(),
       captions: packet.captions && typeof packet.captions === "object" ? packet.captions : {},
       formType: packet.formType || "stage",
+      commentsOnly: Boolean(packet.commentsOnly),
       captionScoreTotal: Number.isFinite(Number(packet.captionScoreTotal))
         ? Number(packet.captionScoreTotal)
         : null,
@@ -1988,6 +2383,8 @@ export function createAdminRenderers({
         els.adminPacketsHint.textContent = "Set an active event to begin.";
         els.adminPacketsList.innerHTML = "";
         els.adminPacketsSchoolSelect.innerHTML = "";
+        if (els.adminPacketsAuditBody) els.adminPacketsAuditBody.innerHTML = "";
+        if (els.adminPacketsAuditHint) els.adminPacketsAuditHint.textContent = "Set an active event to begin.";
         renderAdminPacketsWorkflowGuidance({
           hasActiveEvent: false,
           hasSchoolSelected: false,
@@ -2036,26 +2433,32 @@ export function createAdminRenderers({
         const repairOpenTapeBtn = document.createElement("button");
         repairOpenTapeBtn.type = "button";
         repairOpenTapeBtn.className = "ghost";
-        repairOpenTapeBtn.textContent = "Repair Open Tape Metadata";
+        repairOpenTapeBtn.textContent = "Restitch Packet Tape";
         repairOpenTapeBtn.addEventListener("click", async () => {
           const runDry = window.confirm(
             "Run a DRY RUN first?\nOK = Dry run only (safe preview)\nCancel = Apply fixes now"
           );
           repairOpenTapeBtn.disabled = true;
           try {
-            const result = await repairOpenSubmissionAudioMetadata({ dryRun: runDry });
+            const result = await repairOpenSubmissionAudioMetadata({
+              dryRun: runDry,
+              eventId,
+              schoolId: state.admin.packetsSchoolId || "",
+            });
             await renderAdminPacketsBySchedule();
             alertUser(
-              `${runDry ? "Dry run complete" : "Open tape metadata repair complete"}.\n` +
+              `${runDry ? "Dry run complete" : "Packet tape restitch complete"}.\n` +
+              `Scope: selected school\n` +
               `Open packets updated: ${result.packetsUpdated || 0}\n` +
-              `Official assessments updated: ${result.submissionsUpdated || 0}\n` +
+              `Submission docs updated: ${result.submissionsUpdated || 0}\n` +
+              `Official assessments updated: ${result.officialAssessmentsUpdated || 0}\n` +
               `Results packet exports updated: ${result.exportsUpdated || 0}\n` +
               `Skipped (no sessions): ${result.skippedNoSessions || 0}\n` +
-              `Skipped (no official assessment): ${result.skippedNoSubmission || 0}`
+              `Skipped (no canonical slot or stitched tape): ${result.skippedNoSubmission || 0}`
             );
           } catch (error) {
             console.error("repairOpenSubmissionAudioMetadata failed", error);
-            alertUser(error?.message || "Unable to repair open tape metadata.");
+            alertUser(error?.message || "Unable to restitch packet tape.");
           } finally {
             repairOpenTapeBtn.disabled = false;
           }
@@ -2094,10 +2497,10 @@ export function createAdminRenderers({
         const restorePacketBtn = document.createElement("button");
         restorePacketBtn.type = "button";
         restorePacketBtn.className = "ghost";
-        restorePacketBtn.textContent = "Restore Canonical From Open Sheet";
+        restorePacketBtn.textContent = "Restore Results Packet From Source Sheet";
         restorePacketBtn.addEventListener("click", async () => {
           const packetId = String(
-            window.prompt("Enter the Open Sheet ID to restore from:", "") || ""
+            window.prompt("Enter the Source Sheet ID to restore from:", "") || ""
           ).trim();
           if (!packetId) return;
           const runDry = window.confirm(
@@ -2108,15 +2511,15 @@ export function createAdminRenderers({
             const result = await restoreCanonicalFromOpenPacket({ packetId, dryRun: runDry });
             await renderAdminPacketsBySchedule();
             alertUser(
-              `${runDry ? "Dry run complete" : "Canonical restore complete"}.\n` +
-              `Open Sheet ID: ${result.packetId || packetId}\n` +
-              `Target submission: ${result.submissionId || "Unknown"}\n` +
-              `Judge slot: ${result.judgePosition || "Unknown"}\n` +
+              `${runDry ? "Dry run complete" : "Results Packet restore complete"}.\n` +
+              `Source Sheet ID: ${result.packetId || packetId}\n` +
+              `Results Packet Slot: ${result.submissionId || "Unknown"}\n` +
+              `Judge Slot: ${result.judgePosition || "Unknown"}\n` +
               `Judge: ${result.packetJudgeName || "Unknown"}`
             );
           } catch (error) {
             console.error("restoreCanonicalFromOpenPacket failed", error);
-            alertUser(error?.message || "Unable to restore canonical data from that open sheet.");
+            alertUser(error?.message || "Unable to restore Results Packet data from that source sheet.");
           } finally {
             restorePacketBtn.disabled = false;
           }
@@ -2141,6 +2544,7 @@ export function createAdminRenderers({
       if (!ordered.length) {
         els.adminPacketsHint.textContent = "No scheduled ensembles for the active event.";
         els.adminPacketsSchoolSelect.innerHTML = "";
+        renderAdminPacketsAuditTable({ entries: [], eventId });
         renderAdminPacketsWorkflowGuidance({
           hasActiveEvent: true,
           hasSchoolSelected: false,
@@ -2207,9 +2611,9 @@ export function createAdminRenderers({
         els.adminPacketsHint.textContent = "Loading results packet status for selected school...";
       }
       const packetDataByEntryId = new Map();
-      if (filtered.length) {
+      if (ordered.length) {
         const packetPayloads = await Promise.all(
-          filtered.map(async (entry) => {
+          ordered.map(async (entry) => {
             const packetData = await getPacketData({ eventId, entry });
             return { entryId: entry.id, packetData };
           })
@@ -2220,6 +2624,7 @@ export function createAdminRenderers({
           packetDataByEntryId.set(entryId, packetData);
         });
       }
+      renderAdminPacketsAuditTable({ entries: ordered, packetDataByEntryId, eventId });
       let reviewedCount = 0;
       let releaseReadyCount = 0;
       let releasedCount = 0;
@@ -2250,7 +2655,7 @@ export function createAdminRenderers({
         });
         const performLabel = formatPerformanceAt(entry.performanceAt) || String(entry.stageTime || "").trim();
         const packetData = packetDataByEntryId.get(entry.id) || null;
-        const summary = packetData?.summary || null;
+        const summary = augmentSummary(packetData?.summary || null, packetData?.submissions || {});
         reviewedCount += 1;
         if (summary?.requiredComplete) releaseReadyCount += 1;
         if (summary?.requiredReleased) releasedCount += 1;
@@ -2286,6 +2691,29 @@ export function createAdminRenderers({
         meta.className = "note";
         meta.textContent = `Director: ${packetData?.directorName || "Unknown"} - Grade: ${packetData?.grade || "Unknown"} - Overall: ${summary?.overall?.label || "N/A"}`;
         li.appendChild(meta);
+
+        if (summary?.commentsOnly) {
+          const commentsOnlyMeta = document.createElement("div");
+          commentsOnlyMeta.className = "note";
+          commentsOnlyMeta.textContent = "Comments Only: this ensemble will receive comments only. Caption grades and ratings are suppressed as CO.";
+          li.appendChild(commentsOnlyMeta);
+        }
+
+        const releaseMeta = document.createElement("div");
+        releaseMeta.className = "note";
+        releaseMeta.textContent = summary?.requiredReleased ?
+          "Director Release: Released to director." :
+          "Director Release: Not released to director.";
+        li.appendChild(releaseMeta);
+
+        if (summary?.hasPartialReleaseState) {
+          const partialNote = document.createElement("div");
+          partialNote.className = "note";
+          partialNote.textContent = `Partial release detected: ${summary.releasedPositions
+            .map((position) => JUDGE_POSITION_LABELS[position] || position)
+            .join(", ")} already marked released. Repair before releasing this packet.`;
+          li.appendChild(partialNote);
+        }
 
         if (summary && !summary.requiredComplete) {
           const blockerNote = document.createElement("div");
@@ -2325,6 +2753,67 @@ export function createAdminRenderers({
           }
         });
         actions.appendChild(releaseBtn);
+
+        const commentsOnlyBtn = document.createElement("button");
+        commentsOnlyBtn.type = "button";
+        commentsOnlyBtn.className = "ghost";
+        commentsOnlyBtn.textContent = summary?.commentsOnly ? "Clear Comments Only" : "Force Comments Only";
+        commentsOnlyBtn.addEventListener("click", async () => {
+          const nextValue = !summary?.commentsOnly;
+          const reason = nextValue ?
+            String(window.prompt("Optional reason for forcing Comments Only:", "") || "").trim() :
+            "";
+          const ok = confirmUser(
+            nextValue ?
+              `Force ${schoolName} - ${ensembleName} to Comments Only?\n\nJudge ratings and packet overall will display as CO, and caption grades will be suppressed in Results Packet views and exports.` :
+              `Clear Comments Only for ${schoolName} - ${ensembleName}?\n\nThis will restore normal ratings from the existing caption data where available.`
+          );
+          if (!ok) return;
+          commentsOnlyBtn.disabled = true;
+          try {
+            await setPacketCommentsOnly({ eventId, ensembleId, commentsOnly: nextValue, reason });
+            scheduleAdminPreflightRefresh?.({ immediate: true });
+            await renderAdminPacketsBySchedule();
+          } catch (error) {
+            console.error("setPacketCommentsOnly failed", error);
+            alertUser(error?.message || "Unable to update Comments Only state.");
+          } finally {
+            commentsOnlyBtn.disabled = false;
+          }
+        });
+        actions.appendChild(commentsOnlyBtn);
+
+        if (summary?.hasPartialReleaseState) {
+          const repairReleaseBtn = document.createElement("button");
+          repairReleaseBtn.type = "button";
+          repairReleaseBtn.className = "ghost";
+          repairReleaseBtn.textContent = "Repair Release State";
+          repairReleaseBtn.addEventListener("click", async () => {
+            const ok = confirmUser(
+              `Repair partial release state for ${schoolName} - ${ensembleName}?\n\nThis will reset prematurely released sheet statuses back to an unreleased packet state and revoke the existing director packet export. Scores, comments, and tape data stay intact.`
+            );
+            if (!ok) return;
+            repairReleaseBtn.disabled = true;
+            try {
+              const result = await repairPacketReleaseState({ eventId, ensembleId });
+              scheduleAdminPreflightRefresh?.({ immediate: true });
+              await renderAdminPacketsBySchedule();
+              alertUser(
+                `Release state repaired.\n` +
+                `Scope: ${schoolName} - ${ensembleName}\n` +
+                `Released early: ${(result.releasedPositions || [])
+                  .map((position) => JUDGE_POSITION_LABELS[position] || position)
+                  .join(", ") || "None"}`
+              );
+            } catch (error) {
+              console.error("repairPacketReleaseState failed", error);
+              alertUser(error?.message || "Unable to repair release state.");
+            } finally {
+              repairReleaseBtn.disabled = false;
+            }
+          });
+          actions.appendChild(repairReleaseBtn);
+        }
 
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
@@ -2372,6 +2861,172 @@ export function createAdminRenderers({
           }
         });
         actions.appendChild(viewBtn);
+
+        const restitchBtn = document.createElement("button");
+        restitchBtn.type = "button";
+        restitchBtn.className = "ghost";
+        restitchBtn.textContent = "Restitch This Packet Tape";
+        restitchBtn.addEventListener("click", async () => {
+          const runDry = window.confirm(
+            "Run a DRY RUN first?\nOK = Dry run only (safe preview)\nCancel = Apply fixes now"
+          );
+          restitchBtn.disabled = true;
+          try {
+            const result = await repairOpenSubmissionAudioMetadata({
+              dryRun: runDry,
+              eventId,
+              schoolId: entry.schoolId || "",
+              ensembleId,
+            });
+            const firstFailurePacketId = Array.isArray(result.failures) && result.failures.length ?
+              String(result.failures[0].packetId || "").trim() :
+              "";
+            const failureLines = Array.isArray(result.failures) ? result.failures.slice(0, 5).map((failure) => {
+              const slotLabel = JUDGE_POSITION_LABELS[failure.judgePosition] || failure.judgePosition || "Unknown Slot";
+              const triedPaths = Array.isArray(failure.audioPathsTried) && failure.audioPathsTried.length ?
+                `\n  Paths tried: ${failure.audioPathsTried.join(", ")}` :
+                "";
+              return `- ${slotLabel} | Packet ${failure.packetId || "unknown"}\n  ${failure.message || "Repair failed."}${triedPaths}`;
+            }) : [];
+            await renderAdminPacketsBySchedule();
+            alertUser(
+              `${runDry ? "Dry run complete" : "Packet tape restitch complete"}.\n` +
+              `Scope: ${schoolName} - ${ensembleName}\n` +
+              `Open packets updated: ${result.packetsUpdated || 0}\n` +
+              `Submission docs updated: ${result.submissionsUpdated || 0}\n` +
+              `Official assessments updated: ${result.officialAssessmentsUpdated || 0}\n` +
+              `Results packet exports updated: ${result.exportsUpdated || 0}\n` +
+              `Skipped (no sessions): ${result.skippedNoSessions || 0}\n` +
+              `Skipped (no canonical slot or stitched tape): ${result.skippedNoSubmission || 0}\n` +
+              `Failed packets: ${result.failedPackets || 0}` +
+              (failureLines.length ? `\nFailures:\n${failureLines.join("\n")}` : "")
+            );
+            if (firstFailurePacketId) {
+              const shouldOpen = confirmUser(
+                `Open failing Source Sheet ${firstFailurePacketId} now?`
+              );
+              if (shouldOpen) {
+                const opened = openSourceSheetFromResultsView(firstFailurePacketId);
+                if (!opened) {
+                  alertUser(`Unable to find Source Sheet ${firstFailurePacketId} in the current list.`);
+                }
+              }
+            }
+          } catch (error) {
+            console.error("repairOpenSubmissionAudioMetadata failed", error);
+            alertUser(error?.message || "Unable to restitch packet tape.");
+          } finally {
+            restitchBtn.disabled = false;
+          }
+        });
+        actions.appendChild(restitchBtn);
+
+        const recreateSourceBtn = document.createElement("button");
+        recreateSourceBtn.type = "button";
+        recreateSourceBtn.className = "ghost";
+        recreateSourceBtn.textContent = "Recreate Missing Source Sheet";
+        recreateSourceBtn.addEventListener("click", async () => {
+          const rawChoice = window.prompt(
+            `Enter the judge position to recreate from the Results Packet (${(summary?.requiredPositions || [])
+              .map((position) => JUDGE_POSITION_LABELS[position] || position)
+              .join(", ")}):`,
+            ""
+          );
+          const judgePosition = String(rawChoice || "").trim().toLowerCase();
+          if (!judgePosition) return;
+          if (!(summary?.requiredPositions || []).includes(judgePosition)) {
+            alertUser("Invalid judge position for this Results Packet.");
+            return;
+          }
+          const ok = confirmUser(
+            `Recreate a Source Sheet for ${schoolName} - ${ensembleName} (${JUDGE_POSITION_LABELS[judgePosition] || judgePosition}) from the current Results Packet record?\n\nThis creates a reconstructed locked Source Sheet behind the official slot. It does not change the Results Packet itself.`
+          );
+          if (!ok) return;
+          recreateSourceBtn.disabled = true;
+          try {
+            const result = await recreateOpenPacketFromCanonical({
+              eventId,
+              ensembleId,
+              judgePosition,
+              schoolId: entry.schoolId || "",
+              schoolName,
+              ensembleName,
+            });
+            await renderAdminPacketsBySchedule();
+            alertUser(
+              result.recreated === false ?
+                `A Source Sheet already exists for ${JUDGE_POSITION_LABELS[judgePosition] || judgePosition}.\nSource Sheet ID: ${result.packetId || "Unknown"}` :
+                `Source Sheet recreated.\nJudge Slot: ${JUDGE_POSITION_LABELS[judgePosition] || judgePosition}\nSource Sheet ID: ${result.packetId || "Unknown"}`
+            );
+          } catch (error) {
+            console.error("recreateOpenPacketFromCanonical failed", error);
+            alertUser(error?.message || "Unable to recreate source sheet from Results Packet.");
+          } finally {
+            recreateSourceBtn.disabled = false;
+          }
+        });
+        actions.appendChild(recreateSourceBtn);
+
+        const tracePanel = document.createElement("div");
+        tracePanel.className = "packet-panel is-hidden";
+        const traceBtn = document.createElement("button");
+        traceBtn.type = "button";
+        traceBtn.className = "ghost";
+        traceBtn.textContent = "Trace Release Status";
+        traceBtn.addEventListener("click", async () => {
+          const isHidden = tracePanel.classList.contains("is-hidden");
+          if (isHidden) {
+            tracePanel.classList.remove("is-hidden");
+            traceBtn.textContent = "Hide Release Trace";
+            tracePanel.innerHTML = "";
+            const loading = document.createElement("div");
+            loading.className = "note";
+            loading.textContent = "Tracing release state...";
+            tracePanel.appendChild(loading);
+            await renderPacketReleaseTrace({
+              eventId,
+              ensembleId,
+              packetData,
+              wrapper: tracePanel,
+            });
+          } else {
+            tracePanel.classList.add("is-hidden");
+            traceBtn.textContent = "Trace Release Status";
+          }
+        });
+        actions.appendChild(traceBtn);
+
+        const accessTracePanel = document.createElement("div");
+        accessTracePanel.className = "packet-panel is-hidden";
+        const accessTraceBtn = document.createElement("button");
+        accessTraceBtn.type = "button";
+        accessTraceBtn.className = "ghost";
+        accessTraceBtn.textContent = "Trace Director Access";
+        accessTraceBtn.addEventListener("click", async () => {
+          const isHidden = accessTracePanel.classList.contains("is-hidden");
+          if (isHidden) {
+            accessTracePanel.classList.remove("is-hidden");
+            accessTraceBtn.textContent = "Hide Director Access Trace";
+            accessTracePanel.innerHTML = "";
+            const loading = document.createElement("div");
+            loading.className = "note";
+            loading.textContent = "Tracing director access...";
+            accessTracePanel.appendChild(loading);
+            await renderDirectorAccessTrace({
+              eventId,
+              entry,
+              packetData: {
+                ...packetData,
+                entrySchoolId: entry.schoolId || "",
+              },
+              wrapper: accessTracePanel,
+            });
+          } else {
+            accessTracePanel.classList.add("is-hidden");
+            accessTraceBtn.textContent = "Trace Director Access";
+          }
+        });
+        actions.appendChild(accessTraceBtn);
 
         const attachAudioBtn = document.createElement("button");
         attachAudioBtn.type = "button";
@@ -2477,6 +3132,8 @@ export function createAdminRenderers({
           li.appendChild(statusRow);
         }
         li.appendChild(panel);
+        li.appendChild(tracePanel);
+        li.appendChild(accessTracePanel);
 
         const audioOnlyRows = audioResultsByEnsemble.get(ensembleId) || [];
         if (audioOnlyRows.length) {
@@ -2549,12 +3206,12 @@ export function createAdminRenderers({
       const openSection = document.createElement("li");
       openSection.className = "panel";
       const openTitle = document.createElement("h4");
-      openTitle.textContent = "Open Judge Sheets";
+      openTitle.textContent = "Source Sheets";
       openSection.appendChild(openTitle);
       const openHint = document.createElement("p");
       openHint.className = "hint";
       openHint.textContent =
-        "Action-needed open sheets for this school. Canonical-linked source sheets are hidden below unless you reveal them for recovery.";
+        "Action-needed source sheets for this school. Source sheets already behind the Results Packet are hidden below unless you reveal them for recovery.";
       openSection.appendChild(openHint);
 
       const buildExpectedOpenSubmissionId = (packet) => {
@@ -2626,6 +3283,7 @@ export function createAdminRenderers({
       }) => {
         const row = document.createElement("div");
         row.className = "panel";
+        row.dataset.sourcePacketId = packet.id;
         const top = document.createElement("div");
         top.className = "row row--between row--center";
         const title = document.createElement("strong");
@@ -2661,21 +3319,21 @@ export function createAdminRenderers({
           packet.createdByJudgeEmail ||
           packet.createdByJudgeUid ||
           "Unknown judge";
-        const ratingLabel = packet.computedFinalRatingLabel || "N/A";
+        const ratingLabel = packet.commentsOnly ? "CO" : (packet.computedFinalRatingLabel || "N/A");
         const updatedLabel = formatPacketTimestamp(packet.updatedAt) || "Recently updated";
         meta.textContent = `Judge: ${judgeLabel} - Judge Overall Rating: ${ratingLabel} - Updated: ${updatedLabel}`;
         row.appendChild(meta);
         if (isOfficialPacket && expectedSubmissionId) {
           const targetMeta = document.createElement("div");
           targetMeta.className = "note";
-          targetMeta.textContent = `Target slot: ${expectedSubmissionId}`;
+          targetMeta.textContent = `Results Packet Slot: ${expectedSubmissionId}`;
           row.appendChild(targetMeta);
         }
         if (isCanonicalLinked) {
           const attachedMeta = document.createElement("div");
           attachedMeta.className = "note";
           attachedMeta.textContent =
-            "Attached source sheet only. The canonical packet slot already exists and remains the source of truth.";
+            "Source sheet behind Results Packet only. The Results Packet remains the source of truth.";
           row.appendChild(attachedMeta);
         }
         if (conflictingPackets.length) {
@@ -2692,11 +3350,11 @@ export function createAdminRenderers({
         if (isOfficialPacket && expectedSubmissionId) {
           const resolveBtn = document.createElement("button");
           resolveBtn.type = "button";
-          resolveBtn.textContent = "Use This Open Sheet";
+          resolveBtn.textContent = "Use This Sheet in Results Packet";
           resolveBtn.addEventListener("click", async () => {
             const ok = confirmUser(
-              `Restore the canonical ${expectedSubmissionId || "submission"} from Open Sheet ${packet.id}?\n\n` +
-              `This uses this packet as the source of truth for the official slot and overwrites the current canonical record for that judge position.`
+              `Restore the Results Packet slot ${expectedSubmissionId || "submission"} from Source Sheet ${packet.id}?\n\n` +
+              `This uses this sheet as the source of truth for that Results Packet slot and overwrites the current official record for that judge position.`
             );
             if (!ok) return;
             resolveBtn.disabled = true;
@@ -2705,8 +3363,8 @@ export function createAdminRenderers({
               scheduleAdminPreflightRefresh?.({ immediate: true });
               await renderAdminPacketsBySchedule();
               alertUser(
-                `Canonical slot restored from Open Sheet ${packet.id}.\n` +
-                `Review and delete any duplicate conflicting sheets if they are no longer needed.`
+                `Results Packet slot restored from Source Sheet ${packet.id}.\n` +
+                `Review and delete any duplicate conflicting source sheets if they are no longer needed.`
               );
             } catch (error) {
               console.error("Conflict resolution restore failed", error);
@@ -2720,18 +3378,19 @@ export function createAdminRenderers({
         const viewBtn = document.createElement("button");
         viewBtn.type = "button";
         viewBtn.className = "ghost";
-        viewBtn.textContent = "View Open Sheet";
+        viewBtn.textContent = "View Source Sheet";
+        viewBtn.dataset.sourcePacketViewFor = packet.id;
         const detail = document.createElement("div");
         detail.className = "packet-panel is-hidden";
         viewBtn.addEventListener("click", async () => {
           const isHidden = detail.classList.contains("is-hidden");
           detail.classList.toggle("is-hidden", !isHidden);
-          viewBtn.textContent = isHidden ? "Hide Open Sheet" : "View Open Sheet";
+          viewBtn.textContent = isHidden ? "Hide Source Sheet" : "View Source Sheet";
           if (isHidden) {
             detail.innerHTML = "";
             const topMeta = document.createElement("div");
             topMeta.className = "note";
-            topMeta.textContent = `Open Sheet ID: ${packet.id} - Updated: ${formatPacketTimestamp(packet.updatedAt) || "Recently updated"}`;
+            topMeta.textContent = `Source Sheet ID: ${packet.id} - Updated: ${formatPacketTimestamp(packet.updatedAt) || "Recently updated"}`;
             detail.appendChild(topMeta);
             const summaryCard = renderAssessmentCard(
               toOpenSubmission(packet),
@@ -2746,7 +3405,7 @@ export function createAdminRenderers({
             const lockBtn = document.createElement("button");
             lockBtn.type = "button";
             lockBtn.className = "ghost";
-            lockBtn.textContent = isLocked ? "Unlock Open Sheet" : "Lock Open Sheet";
+            lockBtn.textContent = isLocked ? "Unlock Source Sheet" : "Lock Source Sheet";
             lockBtn.addEventListener("click", async () => {
               lockBtn.disabled = true;
               try {
@@ -2815,14 +3474,28 @@ export function createAdminRenderers({
         attachOpenAudioBtn.textContent = "Attach Audio";
         attachOpenAudioBtn.addEventListener("click", async () => {
           const openStatusKey = `open:${packet.id}`;
+          const replacePrimary = confirmUser(
+            "Replace the primary tape on this Source Sheet?\n\n" +
+            "OK = Replace Primary Tape\n" +
+            "Cancel = Attach as Supplemental Audio"
+          );
           const file = await pickAudioFile();
           if (!file) return;
           setManualAudioStatus(openStatusKey, `Uploading ${file.name}...`);
           await renderAdminPacketsBySchedule();
           attachOpenAudioBtn.disabled = true;
           try {
-            await attachManualAudioToOpenPacket({ packetId: packet.id, file });
-            setManualAudioStatus(openStatusKey, "Upload complete. Audio attached to open sheet.");
+            await attachManualAudioToOpenPacket({
+              packetId: packet.id,
+              file,
+              mode: replacePrimary ? "primary" : "supplemental",
+            });
+            setManualAudioStatus(
+              openStatusKey,
+              replacePrimary ?
+                "Upload complete. Primary tape replaced on source sheet." :
+                "Upload complete. Supplemental audio attached to source sheet."
+            );
             await renderAdminPacketsBySchedule();
           } catch (error) {
             console.error("Attach open sheet audio failed", error);
@@ -2841,7 +3514,7 @@ export function createAdminRenderers({
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
         deleteBtn.className = "ghost";
-        deleteBtn.textContent = "Delete Open Sheet";
+        deleteBtn.textContent = "Delete Source Sheet";
         const openStatus = normalizeOpenPacketStatus(packet.status);
         if (openStatus === "released") {
           deleteBtn.disabled = true;
@@ -2850,8 +3523,8 @@ export function createAdminRenderers({
         deleteBtn.addEventListener("click", async () => {
           const label = `${packet.schoolName || "School"} - ${packet.ensembleName || "Ensemble"}`;
           const deleteMessage = isCanonicalLinked ?
-            `Delete Open Judge sheet for ${label}?\n\nThis removes only the source open sheet and its source audio/session artifacts. The canonical packet slot remains intact.` :
-            `Delete Open Judge sheet for ${label}?\n\nThis removes the source open sheet, recorded audio, and sessions.`;
+            `Delete Source Sheet for ${label}?\n\nThis removes only the source sheet and its tape/session artifacts. The Results Packet remains intact.` :
+            `Delete Source Sheet for ${label}?\n\nThis removes the source sheet, tape, and sessions.`;
           const ok = confirmUser(deleteMessage);
           if (!ok) return;
           deleteBtn.disabled = true;
@@ -2883,8 +3556,8 @@ export function createAdminRenderers({
         const empty = document.createElement("div");
         empty.className = "note";
         empty.textContent = attachedSourcePackets.length
-          ? "No action-needed open sheets. All remaining source sheets are attached below for recovery only."
-          : "No Open Judge sheets found for this school.";
+          ? "No action-needed source sheets. All remaining source sheets are attached below for recovery only."
+          : "No Source Sheets found for this school.";
         openSection.appendChild(empty);
       } else {
         const openList = document.createElement("div");
@@ -2901,20 +3574,23 @@ export function createAdminRenderers({
         const toggleBtn = document.createElement("button");
         toggleBtn.type = "button";
         toggleBtn.className = "ghost";
-        toggleBtn.textContent = `Show Attached Source Sheets (${attachedSourcePackets.length})`;
+        toggleBtn.dataset.attachedSourceToggle = "1";
+        toggleBtn.dataset.expanded = "false";
+        toggleBtn.textContent = `Show Source Sheets Behind Results Packet (${attachedSourcePackets.length})`;
         const attachedHint = document.createElement("div");
         attachedHint.className = "note is-hidden";
         attachedHint.textContent =
-          "These source open sheets are hidden from the main list because the canonical packet slot already exists. Reveal them only for recovery or audio troubleshooting.";
+          "These source sheets are hidden from the main list because the Results Packet slot already exists. Reveal them only for recovery or tape troubleshooting.";
         const attachedList = document.createElement("div");
         attachedList.className = "stack is-hidden";
         toggleBtn.addEventListener("click", () => {
           const shouldShow = attachedList.classList.contains("is-hidden");
           attachedList.classList.toggle("is-hidden", !shouldShow);
           attachedHint.classList.toggle("is-hidden", !shouldShow);
+          toggleBtn.dataset.expanded = shouldShow ? "true" : "false";
           toggleBtn.textContent = shouldShow ?
-            `Hide Attached Source Sheets (${attachedSourcePackets.length})` :
-            `Show Attached Source Sheets (${attachedSourcePackets.length})`;
+            `Hide Source Sheets Behind Results Packet (${attachedSourcePackets.length})` :
+            `Show Source Sheets Behind Results Packet (${attachedSourcePackets.length})`;
         });
         attachedWrap.appendChild(toggleBtn);
         attachedWrap.appendChild(attachedHint);

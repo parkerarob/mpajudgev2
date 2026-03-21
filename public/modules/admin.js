@@ -796,6 +796,23 @@ export async function unreleasePacket({ eventId, ensembleId }) {
   return unreleasePacketFn({ eventId, ensembleId });
 }
 
+export async function repairPacketReleaseState({ eventId, ensembleId }) {
+  const fn = httpsCallable(functions, "repairPacketReleaseState");
+  const response = await fn({ eventId, ensembleId });
+  return response.data || {};
+}
+
+export async function setPacketCommentsOnly({ eventId, ensembleId, commentsOnly, reason = "" }) {
+  const fn = httpsCallable(functions, "setPacketCommentsOnly");
+  const response = await fn({
+    eventId,
+    ensembleId,
+    commentsOnly: Boolean(commentsOnly),
+    reason,
+  });
+  return response.data || {};
+}
+
 export async function releaseMockPacketForAshleyTesting({ schoolId = "", ensembleId = "", grade = "IV" } = {}) {
   const fn = httpsCallable(functions, "releaseMockPacketForAshleyTesting");
   const response = await fn({ schoolId, ensembleId, grade });
@@ -898,7 +915,7 @@ export async function attachManualAudioToScheduledPacket({
   return { ok: true, ...(response?.data || {}), audioUrl: upload.url };
 }
 
-export async function attachManualAudioToOpenPacket({ packetId, file } = {}) {
+export async function attachManualAudioToOpenPacket({ packetId, file, mode = "supplemental" } = {}) {
   if (!packetId || !file) {
     return { ok: false, message: "packetId and file are required." };
   }
@@ -910,6 +927,7 @@ export async function attachManualAudioToOpenPacket({ packetId, file } = {}) {
   const response = await fn({
     targetType: "open",
     packetId,
+    mode: String(mode || "supplemental").trim().toLowerCase() === "primary" ? "primary" : "supplemental",
     audioPath: path,
     audioUrl: upload.url,
     durationSec: upload.durationSec,
@@ -966,9 +984,21 @@ export async function repairManualAudioOverrides({ dryRun = true } = {}) {
   return response?.data || {};
 }
 
-export async function repairOpenSubmissionAudioMetadata({ dryRun = true } = {}) {
+export async function repairOpenSubmissionAudioMetadata({
+  dryRun = true,
+  eventId = "",
+  schoolId = "",
+  ensembleId = "",
+  packetId = "",
+} = {}) {
   const fn = httpsCallable(functions, "repairOpenSubmissionAudioMetadata");
-  const response = await fn({ dryRun: dryRun !== false });
+  const response = await fn({
+    dryRun: dryRun !== false,
+    eventId: String(eventId || "").trim(),
+    schoolId: String(schoolId || "").trim(),
+    ensembleId: String(ensembleId || "").trim(),
+    packetId: String(packetId || "").trim(),
+  });
   return response?.data || {};
 }
 
@@ -983,6 +1013,26 @@ export async function restoreCanonicalFromOpenPacket({ packetId = "", dryRun = t
   const response = await fn({
     packetId: String(packetId || "").trim(),
     dryRun: dryRun !== false,
+  });
+  return response?.data || {};
+}
+
+export async function recreateOpenPacketFromCanonical({
+  eventId = "",
+  ensembleId = "",
+  judgePosition = "",
+  schoolId = "",
+  schoolName = "",
+  ensembleName = "",
+} = {}) {
+  const fn = httpsCallable(functions, "recreateOpenPacketFromCanonical");
+  const response = await fn({
+    eventId: String(eventId || "").trim(),
+    ensembleId: String(ensembleId || "").trim(),
+    judgePosition: String(judgePosition || "").trim(),
+    schoolId: String(schoolId || "").trim(),
+    schoolName: String(schoolName || "").trim(),
+    ensembleName: String(ensembleName || "").trim(),
   });
   return response?.data || {};
 }

@@ -275,6 +275,26 @@
               <button type="button" class="ghost" id="adminPacketsReleaseAshleyMockBtn">Release Mock to Ashley HS</button>
             </div>
             <div class="panel is-hidden" id="adminPacketsMockPanel"></div>
+            <div class="panel stack">
+              <h4>Release Audit</h4>
+              <p class="hint">All scheduled ensembles for the active event and whether the Results Packet has been released to the director.</p>
+              <div class="note" id="adminPacketsAuditHint">Set an active event to begin.</div>
+              <div class="schedule-timeline-table-wrap">
+                <table class="schedule-timeline-table" role="grid">
+                  <thead>
+                    <tr>
+                      <th scope="col">School / Ensemble</th>
+                      <th scope="col">Grade</th>
+                      <th scope="col">Overall</th>
+                      <th scope="col">Director Release</th>
+                      <th scope="col">Blockers</th>
+                      <th scope="col">Open</th>
+                    </tr>
+                  </thead>
+                  <tbody id="adminPacketsAuditBody"></tbody>
+                </table>
+              </div>
+            </div>
             <label>
               School
               <select id="adminPacketsSchoolSelect"></select>
@@ -335,14 +355,14 @@
           <div id="adminViewSubmissions" class="admin-view stack is-hidden" data-admin-view="submissions">
           <div class="panel">
             <h3>Review Queue</h3>
-            <p class="hint">Review submitted event-day sheets, fix routing if needed, and approve them into packet slots.</p>
+            <p class="hint">Review submitted Event Day source sheets, fix routing if needed, and add them into the Results Packet.</p>
             <div class="admin-workflow-card stack" id="adminSubmissionsWorkflowCard">
               <div class="row row--between row--center">
                 <div class="admin-workflow-title">Next Step</div>
                 <span class="badge" id="adminSubmissionsCurrentStepPill">Start</span>
               </div>
               <div class="admin-workflow-next" id="adminSubmissionsNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminSubmissionsNextStepHint">Then review incoming assessments and approve them into packet slots.</div>
+              <div class="hint" id="adminSubmissionsNextStepHint">Then review incoming source sheets and add them into the Results Packet.</div>
               <div class="row">
                 <button type="button" class="ghost btn--sm" id="adminSubmissionsWorkflowActionBtn">Open Next Step</button>
               </div>
@@ -354,7 +374,7 @@
               </div>
             </div>
             <div class="row row--between row--center">
-              <div class="note" id="adminSubmissionsHint">Waiting for judge assessments.</div>
+              <div class="note" id="adminSubmissionsHint">Waiting for submitted source sheets.</div>
               <label>
                 Filter
                 <select id="adminSubmissionsFilter">
@@ -704,7 +724,7 @@
       <section class="card judge-open-card" id="judgeOpenCard" role="tabpanel" aria-labelledby="judgeOpenTab">
         <div class="ios-screen">
           <div class="panel stack" id="judgeOpenModeSelectView">
-            <p class="hint">Practice mode does not affect official event results.</p>
+            <p class="hint">Practice mode does not affect the official Results Packet.</p>
             <div class="row">
               <button type="button" class="btn--secondary" id="judgeOpenChoosePracticeBtn">Open Practice</button>
               <button type="button" class="btn-primary" id="judgeOpenChooseOfficialBtn">Open Event Day</button>
@@ -1265,8 +1285,12 @@
 
           <div class="stack is-hidden director-results-shell" id="directorResultsSection">
             <details class="accordion-card group director-results-card" id="directorResultsPanel" open>
-              <summary><div><strong>Official Results Packet</strong></div></summary>
+              <summary><div><strong>Results Packet</strong></div></summary>
               <div class="stack">
+                <div class="panel stack" id="directorDebugPanel">
+                  <strong>Director Debug</strong>
+                  <div class="note" id="directorDebugSummary">Runtime debug not loaded yet.</div>
+                </div>
                 <div class="empty stack" id="directorEmpty">
                   <div>No results released yet.</div>
                   <div class="row">

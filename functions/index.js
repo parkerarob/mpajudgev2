@@ -2207,7 +2207,7 @@ async function resolvePerformanceGrade(eventId, ensembleId) {
 }
 
 function requiredPositionsForGrade(grade) {
-  if (["I", "II", "I/II"].includes(String(grade || "").trim())) {
+  if (["I", "I/II"].includes(String(grade || "").trim())) {
     return [
       JUDGE_POSITIONS.stage1,
       JUDGE_POSITIONS.stage2,
@@ -5866,7 +5866,7 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
       );
     }
 
-    if (["I", "II", "I/II"].includes(String(grade || "").trim()) && !commentsOnly) {
+    if (["I", "I/II"].includes(String(grade || "").trim()) && !commentsOnly) {
       const stageScores = [
         assessments[0]?.assessment?.computedFinalRatingJudge,
         assessments[1]?.assessment?.computedFinalRatingJudge,

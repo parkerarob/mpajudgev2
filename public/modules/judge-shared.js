@@ -89,7 +89,7 @@ export function computeOverallPacketRating(grade, stageScores, sightScore) {
   const normalizedGrade = normalizeGrade(grade);
   const normalizedBand = normalizeGradeBand(grade) || normalizedGrade;
   const stageValues = (stageScores || []).filter((value) => Number.isFinite(value));
-  if (["I", "II", "I/II"].includes(normalizedBand)) {
+  if (["I", "I/II"].includes(normalizedBand)) {
     if (stageValues.length !== 3) return { label: "N/A", value: null };
     const key = computeGradeOneKey(stageValues);
     const label = GRADE_ONE_MAP[key] || "N/A";
@@ -149,7 +149,7 @@ export function computePacketSummary(grade, submissions) {
   const normalizedBand = normalizeGradeBand(grade) || normalizedGrade;
   const commentsOnly = isCommentsOnlyPacket(submissions);
   const requiredPositions =
-    ["I", "II", "I/II"].includes(normalizedBand)
+    ["I", "I/II"].includes(normalizedBand)
       ? [JUDGE_POSITIONS.stage1, JUDGE_POSITIONS.stage2, JUDGE_POSITIONS.stage3]
       : [
           JUDGE_POSITIONS.stage1,

@@ -36,6 +36,15 @@ export function createDirectorPacketRenderers({
     return `${mins}:${String(secs).padStart(2, "0")}`;
   }
 
+  function normalizePacketGrade(value) {
+    const text = String(value || "").trim().toUpperCase().replace(/[–—-]+/g, "/").replace(/\s+/g, "");
+    return text || "";
+  }
+
+  function requiresSightForGrade(grade) {
+    return !["I", "I/II"].includes(normalizePacketGrade(grade));
+  }
+
   function renderPacketCaptionSummary(captions = {}, formType = FORM_TYPES.stage, { hideGrades = false } = {}) {
     const captionSummary = document.createElement("div");
     captionSummary.className = "caption-grid";
@@ -322,7 +331,8 @@ export function createDirectorPacketRenderers({
       return th;
     };
 
-    const positions = ["stage1", "stage2", "stage3", "sight"];
+    const showSightColumn = releasedGroups.some((group) => requiresSightForGrade(group?.grade));
+    const positions = showSightColumn ? ["stage1", "stage2", "stage3", "sight"] : ["stage1", "stage2", "stage3"];
     positions.forEach((position, index) => {
       const match = releasedGroups.find((group) => group?.submissions?.[position]?.judgeName);
       const judgeLastName = extractJudgeLastName(match?.submissions?.[position]?.judgeName || "");
@@ -343,10 +353,10 @@ export function createDirectorPacketRenderers({
     table.appendChild(thead);
 
     const tbody = document.createElement("tbody");
-    const buildSlotCell = (submission) => {
+    const buildSlotCell = (submission, { exempt = false } = {}) => {
       const cell = document.createElement("td");
       cell.className = "admin-ratings-slot";
-      cell.textContent = submission ? getSubmissionRatingLabel(submission) : "—";
+      cell.textContent = exempt ? "N/A" : (submission ? getSubmissionRatingLabel(submission) : "—");
       return cell;
     };
 
@@ -365,7 +375,8 @@ export function createDirectorPacketRenderers({
       row.appendChild(gradeCell);
 
       positions.forEach((position) => {
-        row.appendChild(buildSlotCell(group?.submissions?.[position] || null));
+        const exempt = position === "sight" && !requiresSightForGrade(group?.grade);
+        row.appendChild(buildSlotCell(group?.submissions?.[position] || null, { exempt }));
       });
 
       const overallCell = document.createElement("td");

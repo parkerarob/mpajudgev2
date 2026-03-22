@@ -455,6 +455,7 @@ export const els = {
   confirmedSchedulePreviewTable: document.getElementById("confirmedSchedulePreviewTable"),
   confirmedSchedulePreviewBody: document.getElementById("confirmedSchedulePreviewBody"),
   programPreviewBtn: document.getElementById("programPreviewBtn"),
+  resultsPdfBtn: document.getElementById("resultsPdfBtn"),
   programCsvBtn: document.getElementById("programCsvBtn"),
   programPublishBtn: document.getElementById("programPublishBtn"),
   programExportStatus: document.getElementById("programExportStatus"),

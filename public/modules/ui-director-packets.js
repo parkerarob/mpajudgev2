@@ -76,6 +76,39 @@ export function createDirectorPacketRenderers({
     return `${group.eventId || ""}_${group.ensembleId || ""}`;
   }
 
+  function renderDirectorResultsOverviewLink(groups = []) {
+    const resolvedEventId =
+      String(state.director.selectedEventId || "").trim() ||
+      String(groups[0]?.eventId || "").trim();
+    if (!resolvedEventId) return null;
+    const event = (Array.isArray(state.event.list) ? state.event.list : [])
+      .find((item) => String(item?.id || "").trim() === resolvedEventId) || null;
+    const pdfUrl = String(event?.resultsOverviewPdfUrl || "").trim();
+    if (!pdfUrl) return null;
+    const pdfName = String(event?.resultsOverviewPdfName || "Event Results Overview PDF").trim();
+
+    const section = document.createElement("div");
+    section.className = "panel stack";
+    const title = document.createElement("strong");
+    title.textContent = "Event Results Overview";
+    const hint = document.createElement("div");
+    hint.className = "note";
+    hint.textContent = "Open the event-wide results summary PDF prepared by admin.";
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const openLink = document.createElement("a");
+    openLink.className = "ghost";
+    openLink.href = pdfUrl;
+    openLink.target = "_blank";
+    openLink.rel = "noopener";
+    openLink.textContent = `Open ${pdfName}`;
+    actions.appendChild(openLink);
+    section.appendChild(title);
+    section.appendChild(hint);
+    section.appendChild(actions);
+    return section;
+  }
+
   function renderDirectorPacketAssetsSection(group, wrapper) {
     const eventId = String(group.eventId || "").trim();
     const ensembleId = String(group.ensembleId || "").trim();
@@ -476,6 +509,10 @@ export function createDirectorPacketRenderers({
     if (!groups.length) return;
 
     const overview = buildDirectorRatingsOverview(releasedResultGroups);
+    const eventResultsOverview = renderDirectorResultsOverviewLink(releasedResultGroups);
+    if (eventResultsOverview) {
+      els.directorPackets.appendChild(eventResultsOverview);
+    }
     if (overview) {
       els.directorPackets.appendChild(overview);
     }

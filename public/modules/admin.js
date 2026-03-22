@@ -59,6 +59,36 @@ async function uploadManualAudioBlob(path, file) {
   return { url, durationSec };
 }
 
+export async function publishEventResultsOverviewPdf({
+  eventId,
+  blob,
+  fileName = "Event_Results_Overview.pdf",
+} = {}) {
+  const resolvedEventId = String(eventId || "").trim();
+  if (!resolvedEventId) {
+    throw new Error("An active event is required.");
+  }
+  if (!blob) {
+    throw new Error("No PDF data was provided.");
+  }
+  const objectPath = `event_exports/${resolvedEventId}/results_overview.pdf`;
+  const storageRef = ref(storage, objectPath);
+  await uploadBytes(storageRef, blob, { contentType: "application/pdf" });
+  const url = await getDownloadURL(storageRef);
+  const eventRef = doc(db, COLLECTIONS.events, resolvedEventId);
+  await updateDoc(eventRef, {
+    resultsOverviewPdfUrl: url,
+    resultsOverviewPdfPath: objectPath,
+    resultsOverviewPdfName: String(fileName || "Event_Results_Overview.pdf"),
+    resultsOverviewUpdatedAt: serverTimestamp(),
+  });
+  return {
+    url,
+    path: objectPath,
+    fileName: String(fileName || "Event_Results_Overview.pdf"),
+  };
+}
+
 
 export async function createEvent({
   name,

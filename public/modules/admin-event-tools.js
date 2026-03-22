@@ -320,6 +320,8 @@ export function buildProgramRows({
         orderIndex: Number.isFinite(Number(scheduleEntry.orderIndex))
           ? Number(scheduleEntry.orderIndex)
           : index + 1,
+        schoolId,
+        ensembleId,
         performanceAt: toDateLike(scheduleEntry.performanceAt),
         schoolName,
         ensembleName,

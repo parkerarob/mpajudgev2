@@ -1,35 +1,23 @@
 # MPAapp
 
-`MPAJudgeV2` is the current repo name for MPAapp, the NCBA-style adjudication and event operations web app.
-
-Phase 1 is now live in production on `main`. The current operating model is:
-
-- Admin: `Dashboard`, `Registrations`, `Schedule & Flow`, `Live Submissions`, `Packets & Results`, `Announcer`, `Readiness`, `Settings`
-- Judge: capture-first official/practice workspaces with required caption scoring
-- Director: `Dashboard`, `Registration`, `My Ensembles`, `Event Info`, `Official Results Packet`
-
-## Current Product Model
-
-- Judges record audio, complete caption comments, assign caption scores, and submit.
-- AI assist is optional. It may help with transcript and caption drafting later, but it is not required for completion.
-- Admin reviews raw assessments in `Live Submissions`, corrects association when needed, and officializes assessments into results slots.
-- `officialAssessments` is the canonical released-results record. Legacy `submissions` remains as compatibility output where still needed.
-- Directors see released official results packets, audio, and generated files after admin release.
+`MPAJudgeV2` is the legacy repo name for the NCBA-style adjudication and event operations system.
 
 ## Project State
 
 - `MPAJudgeV2` remains the live Firebase production/archive system.
 - Unless a new production issue arises, the current Firebase app is now in maintenance freeze.
-- New product development is moving to the `NCBA MPA Event Management` rebuild lane in:
-  - `apps/web/`
-  - `supabase/`
-- The current app should receive only:
+- Active rebuild development has moved to:
+  - `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App`
+- The new active rebuild repo contains:
+  - the Next.js app in `apps/web/`
+  - the Supabase schema and migrations in `supabase/`
+  - rebuild design and migration docs in `docs/`
+- The current repo should receive only:
   - production bug fixes
   - reliability fixes
   - archival/access preservation work
-- New workflow, UX, and architecture work should target the rebuild, not the legacy Firebase SPA.
 
-## Architecture
+## Legacy Architecture
 
 Frontend (`public/`)
 - Single-page app built from `index.html` and ES modules
@@ -41,19 +29,13 @@ Backend (`functions/`)
 - Firebase Functions v2 callables
 - Packet, raw assessment, officialization, release, and export workflows live here
 
-Rebuild lane (`apps/web/`, `supabase/`)
-- `apps/web/` contains the new Next.js App Router frontend scaffold for the Supabase rebuild
-- `supabase/` contains the hosted PostgreSQL migrations, RLS, RPCs, and validation work
-- This lane is intentionally isolated from the frozen Firebase SPA so rebuild work does not destabilize archive access
-- This lane is the active development target for `NCBA MPA Event Management`
-
 Data and security
 - Firestore + Storage rules enforce role boundaries
 - One active event model
 - Protected director/school/event-entry data remains in place
 - Official results now flow through `officialAssessments`
 
-## Local Development
+## Legacy Local Development
 
 Install dependencies as needed:
 
@@ -68,27 +50,7 @@ Start emulators:
 firebase emulators:start
 ```
 
-Optional emulator seed:
-
-```bash
-npm --prefix functions run seed:emulator
-```
-
-Optional staging seed:
-
-```bash
-STAGING_PROJECT_ID=your-staging-project \
-STAGING_ADMIN_EMAIL=you@example.com \
-STAGING_ADMIN_PASSWORD='...' \
-STAGING_SHARED_PASSWORD='...' \
-npm --prefix functions run seed:staging
-```
-
-Notes:
-- `seed:staging` now requires an explicit target project and passwords.
-- Protected project IDs are blocked unless `ALLOW_PROTECTED_PROJECT=true` is set intentionally.
-
-## Verification
+## Legacy Verification
 
 Unit tests:
 
@@ -108,31 +70,7 @@ Security suite:
 npm run test:security
 ```
 
-Smoke E2E:
-
-```bash
-npm run test:e2e:smoke
-npm run report:e2e:smoke
-```
-
-Release E2E:
-
-```bash
-npm run test:e2e:release
-npm run report:e2e:release
-```
-
-Combined baseline:
-
-```bash
-npm run verify:baseline
-```
-
-Notes:
-- E2E requires the appropriate `MPA_*` env vars for admin, director, and judge logins.
-- `verify:baseline` skips E2E when the required env vars are not present unless `MPA_REQUIRE_E2E=true`.
-
-## Deployment
+## Legacy Deployment
 
 Hosting only:
 
@@ -160,10 +98,6 @@ firebase deploy --only hosting,functions,firestore:rules,storage
 
 ## Operational Notes
 
-- Prefer operational clarity over feature breadth.
-- Treat the legacy Firebase app as frozen unless a new issue requires intervention.
-- Do not reintroduce hidden legacy judge/admin paths as primary workflows.
-- Use `Admin > Live Submissions` for review, reassignment, exclusion, and raw-assessment cleanup.
-- Use `Admin > Packets & Results` for official packet review, per-position management, release/unrelease, and result file generation.
-- Use `Admin > Readiness` for preflight checks, walkthroughs, and rehearsal cleanup.
-- Generated results packet PDFs now use the current stage and sight form templates and current district/site labels.
+- Treat this repo as the legacy support lane by default.
+- Do not add new product architecture to this repo unless the task explicitly requires legacy-system work.
+- Prefer the new rebuild repo for workflow, UX, schema, and platform evolution.

@@ -56,7 +56,9 @@ export function createAdminHandlerBinder({
   buildProgramRows,
   buildProgramCsv,
   buildProgramHtml,
+  getPacketData,
   publishPublicProgram,
+  publishEventResultsOverviewPdf,
   collection,
   getDocs,
   query,
@@ -309,6 +311,358 @@ export function createAdminHandlerBinder({
       getSchoolNameById,
       normalizeEnsembleDisplayName,
     });
+  };
+
+  const getResultsRatingLabel = (submission, { commentsOnly = false } = {}) => {
+    if (commentsOnly || submission?.commentsOnly) return "CO";
+    return String(submission?.computedFinalRatingLabel || "").trim() || "N/A";
+  };
+
+  const formatJudgeHeaderName = (value) => {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    const parts = text.split(/\s+/).filter(Boolean);
+    const last = parts[parts.length - 1] || "";
+    return last.replace(/[^a-zA-Z'-]/g, "").toUpperCase();
+  };
+
+  const loadResultsOverviewRows = async () => {
+    const event = getActiveEvent();
+    if (!event?.id) throw new Error("Set the active 2026 event first.");
+    const [scheduleEntries, registeredEntries, usersSnap] = await Promise.all([
+      fetchScheduleEntries(event.id),
+      fetchRegisteredEnsembles(event.id),
+      getDocs(query(collection(db, COLLECTIONS.users))),
+    ]);
+    const directorProfiles = usersSnap.docs.map((docSnap) => ({ uid: docSnap.id, ...docSnap.data() }));
+    const baseRows = buildProgramRows({
+      scheduleEntries,
+      registeredEntries,
+      directorProfiles,
+      schoolsList: state.admin.schoolsList,
+      getSchoolNameById,
+      normalizeEnsembleDisplayName,
+    });
+    const entriesByEnsembleId = new Map(
+      (Array.isArray(registeredEntries) ? registeredEntries : [])
+        .map((entry) => [String(entry.ensembleId || entry.id || "").trim(), entry])
+        .filter(([ensembleId]) => ensembleId)
+    );
+
+    const rows = await Promise.all(baseRows.map(async (row) => {
+      const ensembleId = String(row.ensembleId || "").trim();
+      const entry = entriesByEnsembleId.get(ensembleId) || {
+        ensembleId,
+        schoolId: row.schoolId || "",
+      };
+      const packet = await getPacketData({ eventId: event.id, entry });
+      const submissions = packet?.submissions || {};
+      const summary = packet?.summary || {};
+      const commentsOnly = Boolean(summary.commentsOnly);
+      const requiredPositions = Array.isArray(summary.requiredPositions) ? summary.requiredPositions : [];
+      const normalizedGrade = String(packet?.grade || row.grade || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[–—-]+/g, "/")
+        .replace(/\s+/g, "");
+      const repertoireText = (Array.isArray(row.programLines) ? row.programLines : [])
+        .filter(Boolean)
+        .join("\n");
+
+      return {
+        schoolName: row.schoolName || "",
+        ensembleName: row.ensembleName || "",
+        grade: packet?.grade || row.grade || "",
+        repertoireText: repertoireText || "No repertoire saved.",
+        stage1: getResultsRatingLabel(submissions.stage1, { commentsOnly }),
+        stage1JudgeName: String(submissions.stage1?.judgeName || "").trim(),
+        stage2: getResultsRatingLabel(submissions.stage2, { commentsOnly }),
+        stage2JudgeName: String(submissions.stage2?.judgeName || "").trim(),
+        stage3: getResultsRatingLabel(submissions.stage3, { commentsOnly }),
+        stage3JudgeName: String(submissions.stage3?.judgeName || "").trim(),
+        sight: commentsOnly
+          ? "CO"
+          : ["I", "I/II"].includes(normalizedGrade)
+            ? "N/A"
+            : requiredPositions.includes("sight")
+              ? getResultsRatingLabel(submissions.sight, { commentsOnly })
+              : "N/A",
+        sightJudgeName: String(submissions.sight?.judgeName || "").trim(),
+        overall: commentsOnly ? "CO" : String(summary?.overall?.label || "N/A"),
+      };
+    }));
+    const judgeHeaders = {
+      stage1: "",
+      stage2: "",
+      stage3: "",
+      sight: "",
+    };
+    rows.forEach((row) => {
+      if (!judgeHeaders.stage1 && row.stage1JudgeName) judgeHeaders.stage1 = row.stage1JudgeName;
+      if (!judgeHeaders.stage2 && row.stage2JudgeName) judgeHeaders.stage2 = row.stage2JudgeName;
+      if (!judgeHeaders.stage3 && row.stage3JudgeName) judgeHeaders.stage3 = row.stage3JudgeName;
+      if (!judgeHeaders.sight && row.sightJudgeName) judgeHeaders.sight = row.sightJudgeName;
+    });
+    return {
+      rows,
+      judgeHeaders,
+    };
+  };
+
+  const buildResultsOverviewPdf = ({ eventName, eventDateLabel, rows = [], judgeHeaders = {} } = {}) => {
+    const pdfWidth = 792;
+    const pdfHeight = 612;
+    const left = 24;
+    const right = pdfWidth - 24;
+    const bottom = pdfHeight - 26;
+    const columns = [
+      { key: "ensembleName", label: "Ensemble", width: 170, align: "left" },
+      { key: "grade", label: "Grade", width: 38, align: "center" },
+      { key: "repertoireText", label: "Repertoire", width: 228, align: "left" },
+      { key: "stage1", label: `S1-${formatJudgeHeaderName(judgeHeaders.stage1) || "S1"}`, width: 58, align: "center" },
+      { key: "stage2", label: `S2-${formatJudgeHeaderName(judgeHeaders.stage2) || "S2"}`, width: 58, align: "center" },
+      { key: "stage3", label: `S3-${formatJudgeHeaderName(judgeHeaders.stage3) || "S3"}`, width: 58, align: "center" },
+      { key: "sight", label: `SR-${formatJudgeHeaderName(judgeHeaders.sight) || "SR"}`, width: 64, align: "center" },
+      { key: "overall", label: "Overall", width: 58, align: "center" },
+    ];
+    const escapePdfText = (value) => String(value || "")
+      .replace(/[^\x20-\x7E]/g, "?")
+      .replaceAll("\\", "\\\\")
+      .replaceAll("(", "\\(")
+      .replaceAll(")", "\\)");
+    const wrapText = (value, maxChars) => {
+      const chunks = String(value || "").split(/\n+/);
+      const lines = [];
+      chunks.forEach((chunk) => {
+        const words = String(chunk || "").split(/\s+/).filter(Boolean);
+        if (!words.length) {
+          lines.push("");
+          return;
+        }
+        let current = "";
+        words.forEach((word) => {
+          const next = current ? `${current} ${word}` : word;
+          if (next.length > maxChars && current) {
+            lines.push(current);
+            current = word;
+          } else {
+            current = next;
+          }
+        });
+        if (current) lines.push(current);
+      });
+      return lines;
+    };
+    const maxCharsByColumn = {
+      ensembleName: 24,
+      grade: 6,
+      repertoireText: 52,
+      stage1: 11,
+      stage2: 11,
+      stage3: 11,
+      sight: 12,
+      overall: 8,
+    };
+    const glyphWidthUnits = {
+      " ": 0.28,
+      "/": 0.32,
+      "-": 0.34,
+      ".": 0.28,
+      "0": 0.56,
+      "1": 0.42,
+      "2": 0.56,
+      "3": 0.56,
+      "4": 0.56,
+      "5": 0.56,
+      "6": 0.56,
+      "7": 0.52,
+      "8": 0.56,
+      "9": 0.56,
+      A: 0.67,
+      B: 0.67,
+      C: 0.72,
+      D: 0.72,
+      E: 0.67,
+      F: 0.61,
+      G: 0.78,
+      H: 0.72,
+      I: 0.28,
+      J: 0.50,
+      K: 0.67,
+      L: 0.56,
+      M: 0.83,
+      N: 0.72,
+      O: 0.78,
+      P: 0.67,
+      Q: 0.78,
+      R: 0.72,
+      S: 0.67,
+      T: 0.61,
+      U: 0.72,
+      V: 0.67,
+      W: 0.94,
+      X: 0.67,
+      Y: 0.67,
+      Z: 0.61,
+    };
+    const estimatePdfTextWidth = (value, fontSize = 9) => {
+      const text = String(value || "");
+      const units = Array.from(text).reduce((sum, char) => (
+        sum + (glyphWidthUnits[char] ?? 0.56)
+      ), 0);
+      return units * fontSize;
+    };
+    const getAlignedTextX = (column, cellText, baseX, charWidth) => {
+      if (column?.align !== "center") return baseX + 2;
+      const estimatedTextWidth = estimatePdfTextWidth(cellText, charWidth);
+      return baseX + Math.max(2, (column.width - estimatedTextWidth) / 2);
+    };
+    const measureWrappedRow = (row) => {
+      const wrapped = columns.map((column) =>
+        wrapText(String(row?.[column.key] || ""), maxCharsByColumn[column.key] || 12)
+      );
+      const lineCount = Math.max(...wrapped.map((value) => Math.max(value.length, 1)), 1);
+      return {
+        wrapped,
+        rowHeight: Math.max(16, lineCount * 10 + 6),
+      };
+    };
+    const groupedRows = (() => {
+      const sorted = [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+        const schoolCompare = String(a?.schoolName || "").localeCompare(String(b?.schoolName || ""));
+        if (schoolCompare !== 0) return schoolCompare;
+        const ensembleCompare = String(a?.ensembleName || "").localeCompare(String(b?.ensembleName || ""));
+        if (ensembleCompare !== 0) return ensembleCompare;
+        return String(a?.grade || "").localeCompare(String(b?.grade || ""));
+      });
+      const groups = [];
+      let currentSchool = "";
+      sorted.forEach((row) => {
+        const schoolName = String(row?.schoolName || "Unknown School");
+        if (schoolName !== currentSchool) {
+          groups.push({ type: "school", schoolName });
+          currentSchool = schoolName;
+        }
+        groups.push({ type: "entry", row });
+      });
+      return groups;
+    })();
+    const pages = [];
+    let lines = [];
+    const addText = (text, x, yTop, size = 9, font = "F1", align = "left") => {
+      const y = pdfHeight - yTop;
+      const safe = escapePdfText(text);
+      if (align === "center") {
+        lines.push(`BT /${font} ${size} Tf 1 0 0 1 ${x} ${y} Tm (${safe}) Tj ET`);
+        return;
+      }
+      lines.push(`BT /${font} ${size} Tf 1 0 0 1 ${x} ${y} Tm (${safe}) Tj ET`);
+    };
+    const addLine = (x1, y1Top, x2, y2Top) => {
+      const y1 = pdfHeight - y1Top;
+      const y2 = pdfHeight - y2Top;
+      lines.push(`${x1} ${y1} m ${x2} ${y2} l S`);
+    };
+    const pushPage = () => {
+      pages.push(lines.join("\n"));
+      lines = [];
+    };
+    const drawHeader = () => {
+      addText("NCBA MPA Event Results Overview", left, 30, 16, "F2");
+      addText(String(eventName || "Active Event"), left, 48, 11, "F1");
+      if (eventDateLabel) addText(String(eventDateLabel), left, 63, 11, "F1");
+      let x = left;
+      const headerY = eventDateLabel ? 90 : 78;
+      addLine(left, headerY + 8, right, headerY + 8);
+      columns.forEach((column) => {
+        const headerFontSize = column.align === "center" ? 7.5 : 9;
+        const textX = getAlignedTextX(column, column.label || "", x, headerFontSize);
+        addText(column.label, textX, headerY, headerFontSize, "F2");
+        x += column.width;
+      });
+      return headerY + 18;
+    };
+
+    let y = drawHeader();
+    groupedRows.forEach((item, index) => {
+      if (item.type === "school") {
+        const schoolHeight = 18;
+        const nextEntry = groupedRows[index + 1]?.type === "entry" ? groupedRows[index + 1].row : null;
+        const nextEntryHeight = nextEntry ? measureWrappedRow(nextEntry).rowHeight : 0;
+        if (y + schoolHeight + nextEntryHeight > bottom) {
+          pushPage();
+          y = drawHeader();
+        }
+        if (index > 0) {
+          addLine(left, y - 4, right, y - 4);
+        }
+        addText(item.schoolName, left + 2, y + 9, 10, "F2");
+        y += schoolHeight;
+        return;
+      }
+      const row = item.row || {};
+      const { wrapped, rowHeight } = measureWrappedRow(row);
+      if (y + rowHeight > bottom) {
+        pushPage();
+        y = drawHeader();
+      }
+      if (index > 0) {
+        addLine(left, y - 4, right, y - 4);
+      }
+      let x = left;
+      wrapped.forEach((cellLines, columnIndex) => {
+        const column = columns[columnIndex];
+        cellLines.forEach((cellLine, lineIndex) => {
+          const textX = getAlignedTextX(column, cellLine || "", x, 9);
+          addText(cellLine, textX, y + 8 + (lineIndex * 10), 9, "F1");
+        });
+        x += column.width;
+      });
+      y += rowHeight;
+    });
+    pushPage();
+
+    const encoder = new TextEncoder();
+    const objects = ["<< /Type /Catalog /Pages 2 0 R >>"];
+    const kids = [];
+    const pageObjectNumbers = [];
+    const fontHelveticaObj = 3;
+    const fontHelveticaBoldObj = 4;
+    let nextObjectNumber = 5;
+
+    pages.forEach((content, index) => {
+      const contentLength = encoder.encode(content).length;
+      const pageObjectNumber = nextObjectNumber++;
+      const contentObjectNumber = nextObjectNumber++;
+      pageObjectNumbers.push(pageObjectNumber);
+      kids.push(`${pageObjectNumber} 0 R`);
+      objects.push(
+        index === 0
+          ? ""
+          : ""
+      );
+      objects[pageObjectNumber - 1] =
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfWidth} ${pdfHeight}] /Resources << /Font << /F1 ${fontHelveticaObj} 0 R /F2 ${fontHelveticaBoldObj} 0 R >> >> /Contents ${contentObjectNumber} 0 R >>`;
+      objects[contentObjectNumber - 1] = `<< /Length ${contentLength} >>\nstream\n${content}\nendstream`;
+    });
+    objects[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pages.length} >>`;
+    objects[2] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+    objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>";
+
+    let pdf = "%PDF-1.4\n";
+    const offsets = [0];
+    objects.forEach((objectBody, index) => {
+      offsets.push(encoder.encode(pdf).length);
+      pdf += `${index + 1} 0 obj\n${objectBody}\nendobj\n`;
+    });
+    const xrefOffset = encoder.encode(pdf).length;
+    pdf += `xref\n0 ${objects.length + 1}\n`;
+    pdf += "0000000000 65535 f \n";
+    offsets.slice(1).forEach((offset) => {
+      pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+    });
+    pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+    return new Blob([pdf], { type: "application/pdf" });
   };
 
   const buildPublicProgramSnapshot = ({ eventName, rows }) => {
@@ -851,6 +1205,84 @@ export function createAdminHandlerBinder({
               previewWindow.close();
             }
             const message = error?.message || "Unable to build program preview.";
+            if (els.programExportStatus) els.programExportStatus.textContent = message;
+            alertUser(message);
+          }
+        });
+      });
+    }
+
+    if (els.resultsPdfBtn) {
+      els.resultsPdfBtn.addEventListener("click", async () => {
+        const previewWindow = windowObj.open("", "_blank");
+        if (previewWindow) {
+          previewWindow.document.open();
+          previewWindow.document.write("<!doctype html><title>Building event results PDF...</title><p>Building event results PDF...</p>");
+          previewWindow.document.close();
+        }
+        els.resultsPdfBtn.dataset.loadingLabel = "Building...";
+        await withLoading(els.resultsPdfBtn, async () => {
+          try {
+            const event = getActiveEvent();
+            if (!event?.id) {
+              throw new Error("Set the active 2026 event first.");
+            }
+            const { rows, judgeHeaders } = await loadResultsOverviewRows();
+            if (!rows.length) {
+              throw new Error("No scheduled ensembles are available for results export.");
+            }
+            const eventStartDate = event.startAt?.toDate ? event.startAt.toDate() : null;
+            const eventEndDate = event.endAt?.toDate ? event.endAt.toDate() : null;
+            const eventDateLabel = (() => {
+              if (!eventStartDate) return "";
+              if (!eventEndDate) {
+                return eventStartDate.toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" });
+              }
+              const sameDay =
+                eventStartDate.getFullYear() === eventEndDate.getFullYear() &&
+                eventStartDate.getMonth() === eventEndDate.getMonth() &&
+                eventStartDate.getDate() === eventEndDate.getDate();
+              if (sameDay) {
+                return eventStartDate.toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" });
+              }
+              const sameMonth =
+                eventStartDate.getFullYear() === eventEndDate.getFullYear() &&
+                eventStartDate.getMonth() === eventEndDate.getMonth();
+              if (sameMonth) {
+                return `${eventStartDate.toLocaleDateString([], { month: "long" })} ${eventStartDate.getDate()}-${eventEndDate.getDate()}, ${eventEndDate.getFullYear()}`;
+              }
+              return `${eventStartDate.toLocaleDateString([], { month: "long", day: "numeric" })} - ${eventEndDate.toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" })}`;
+            })();
+            const pdf = buildResultsOverviewPdf({
+              eventName: event.name || "Active Event",
+              eventDateLabel,
+              rows,
+              judgeHeaders,
+            });
+            const safeEventName = String(event.name || "Active_Event").replace(/[^a-zA-Z0-9]+/g, "_");
+            const fileName = `${safeEventName}_Results_Overview.pdf`;
+            const result = await publishEventResultsOverviewPdf({
+              eventId: event.id,
+              blob: pdf,
+              fileName,
+            });
+            if (!result?.url) {
+              throw new Error("Results PDF was created, but no file URL was returned.");
+            }
+            if (previewWindow && !previewWindow.closed) {
+              previewWindow.location.replace(result.url);
+            } else {
+              windowObj.open(result.url, "_blank", "noopener");
+            }
+            if (els.programExportStatus) {
+              els.programExportStatus.textContent = `Created event results PDF for ${rows.length} scheduled ensemble${rows.length === 1 ? "" : "s"}.`;
+            }
+          } catch (error) {
+            console.error("Results PDF export failed", error);
+            if (previewWindow && !previewWindow.closed) {
+              previewWindow.close();
+            }
+            const message = error?.message || "Unable to create event results PDF.";
             if (els.programExportStatus) els.programExportStatus.textContent = message;
             alertUser(message);
           }

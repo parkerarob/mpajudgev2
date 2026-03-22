@@ -243,6 +243,15 @@ function schoolPrefixVariants(schoolName) {
   return [...variants].filter(Boolean).sort((a, b) => b.length - a.length);
 }
 
+function buildSchoolVariantPrefixRegex(variant) {
+  const tokens = String(variant || "").split(" ").filter(Boolean);
+  if (!tokens.length) return null;
+  const pattern = tokens
+    .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("[^a-z0-9]*");
+  return new RegExp(`^\\s*${pattern}(?:[^a-z0-9]+|\\s+|$)`, "i");
+}
+
 export function normalizeEnsembleNameForSchool({ schoolName, ensembleName }) {
   const finalizeName = (value) => {
     const text = String(value || "").trim();
@@ -253,42 +262,18 @@ export function normalizeEnsembleNameForSchool({ schoolName, ensembleName }) {
   if (!original) return "";
   const variants = schoolPrefixVariants(schoolName);
   if (!variants.length) return finalizeName(original);
-
-  const compactName = original
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const matched = variants.find((variant) => compactName === variant || compactName.startsWith(`${variant} `));
-  if (!matched) return finalizeName(original);
-
-  const tokens = matched.split(" ").filter(Boolean);
-  const sourceTokens = original.split(/\s+/);
-  let sourceIdx = 0;
-  let matchIdx = 0;
-  while (sourceIdx < sourceTokens.length && matchIdx < tokens.length) {
-    const token = sourceTokens[sourceIdx];
-    const canonical = token.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const target = tokens[matchIdx].replace(/[^a-z0-9]/g, "");
-    if (!canonical) {
-      sourceIdx += 1;
-      continue;
-    }
-    if (canonical === target) {
-      sourceIdx += 1;
-      matchIdx += 1;
-      continue;
-    }
-    return finalizeName(original);
+  let cleaned = original;
+  for (let pass = 0; pass < 3; pass += 1) {
+    const compactName = canonicalizeSchoolText(cleaned);
+    const matched = variants.find((variant) => compactName === variant || compactName.startsWith(`${variant} `));
+    if (!matched) break;
+    const prefixPattern = buildSchoolVariantPrefixRegex(matched);
+    if (!prefixPattern) break;
+    const next = cleaned.replace(prefixPattern, "").replace(/^[\s\-:|/]+/, "").trim();
+    if (!next || next === cleaned) break;
+    cleaned = next;
   }
-  if (matchIdx !== tokens.length) return finalizeName(original);
-
-  const remainder = sourceTokens
-    .slice(sourceIdx)
-    .join(" ")
-    .replace(/^[\s\-:|/]+/, "")
-    .trim();
-  return finalizeName(remainder || original);
+  return finalizeName(cleaned || original);
 }
 
 export function normalizeCaptions(formType, captions = {}) {

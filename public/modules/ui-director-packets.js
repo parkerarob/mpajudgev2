@@ -844,7 +844,7 @@ export function createDirectorPacketRenderers({
       grid.className = "packet-grid";
       Object.values(JUDGE_POSITIONS).forEach((position) => {
         const submission = group.submissions[position];
-        if (submission && submission.status === STATUSES.released) {
+        if (submission) {
           grid.appendChild(renderDirectorSubmissionDisclosure(submission, position));
         }
       });

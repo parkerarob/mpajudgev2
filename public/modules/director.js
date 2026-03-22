@@ -1973,14 +1973,12 @@ async function buildDirectorPacketGroups(merged) {
         }),
         fetchPacketSubmissions(group.eventId, group.ensembleId),
       ]);
-      const releasedCanonicalSubmissions = Object.fromEntries(
-        Object.entries(canonicalSubmissions || {}).filter(([, submission]) =>
-          submission?.status === STATUSES.released
-        )
+      const availableCanonicalSubmissions = Object.fromEntries(
+        Object.entries(canonicalSubmissions || {}).filter(([, submission]) => Boolean(submission))
       );
       const nextSubmissions =
-        Object.keys(releasedCanonicalSubmissions).length > 0 ?
-          releasedCanonicalSubmissions :
+        Object.keys(availableCanonicalSubmissions).length > 0 ?
+          availableCanonicalSubmissions :
           group.submissions;
       const summary = computePacketSummary(grade, nextSubmissions);
       return {

@@ -16,6 +16,19 @@ Phase 1 is now live in production on `main`. The current operating model is:
 - `officialAssessments` is the canonical released-results record. Legacy `submissions` remains as compatibility output where still needed.
 - Directors see released official results packets, audio, and generated files after admin release.
 
+## Project State
+
+- `MPAJudgeV2` remains the live Firebase production/archive system.
+- Unless a new production issue arises, the current Firebase app is now in maintenance freeze.
+- New product development is moving to the `NCBA MPA Event Management` rebuild lane in:
+  - `apps/web/`
+  - `supabase/`
+- The current app should receive only:
+  - production bug fixes
+  - reliability fixes
+  - archival/access preservation work
+- New workflow, UX, and architecture work should target the rebuild, not the legacy Firebase SPA.
+
 ## Architecture
 
 Frontend (`public/`)
@@ -32,6 +45,7 @@ Rebuild lane (`apps/web/`, `supabase/`)
 - `apps/web/` contains the new Next.js App Router frontend scaffold for the Supabase rebuild
 - `supabase/` contains the hosted PostgreSQL migrations, RLS, RPCs, and validation work
 - This lane is intentionally isolated from the frozen Firebase SPA so rebuild work does not destabilize archive access
+- This lane is the active development target for `NCBA MPA Event Management`
 
 Data and security
 - Firestore + Storage rules enforce role boundaries
@@ -147,6 +161,7 @@ firebase deploy --only hosting,functions,firestore:rules,storage
 ## Operational Notes
 
 - Prefer operational clarity over feature breadth.
+- Treat the legacy Firebase app as frozen unless a new issue requires intervention.
 - Do not reintroduce hidden legacy judge/admin paths as primary workflows.
 - Use `Admin > Live Submissions` for review, reassignment, exclusion, and raw-assessment cleanup.
 - Use `Admin > Packets & Results` for official packet review, per-position management, release/unrelease, and result file generation.

@@ -2,7 +2,7 @@
 
 Date: 2026-03-21
 
-Status: Planning — requirements gathering phase
+Status: Active migration path
 
 ---
 
@@ -14,9 +14,9 @@ The current MPAJudgeV2 system (Firebase/vanilla JS) successfully ran a live ~30-
 
 ### Decisions Made
 
-1. **The current codebase is frozen.** It becomes a read-only archive for existing directors to access their released event data. No further development on the Firebase codebase.
+1. **The current codebase is frozen by default.** It becomes the live archive and support system for released event data. Further work on the Firebase codebase should be limited to bug fixes, reliability fixes, and archive/access preservation unless a new issue requires intervention.
 
-2. **The new system will be built from scratch** on a stack designed for the long-term scale target (statewide, multi-tenant, concurrent events).
+2. **The new system will be built from scratch** as the `NCBA MPA Event Management` app on a stack designed for the long-term scale target (statewide, multi-tenant, concurrent events).
 
 3. **Tech stack: Next.js (React) + Supabase (PostgreSQL).** React/Next.js chosen as the industry standard with the largest ecosystem, best tooling, and widest hiring/AI-agent compatibility. Supabase chosen for PostgreSQL-backed auth, storage, realtime, and row-level security without building infrastructure from scratch.
 
@@ -46,16 +46,16 @@ The current MPAJudgeV2 system (Firebase/vanilla JS) successfully ran a live ~30-
 
 ## Current System Archive Plan
 
-The Firebase project (`mpa-judge-v2`) continues to run as a read-only archive:
+The Firebase project (`mpa-judge-v2`) continues to run as a support/archive system:
 
 - Directors can sign in and view their released results
-- No new events, submissions, or administrative operations
-- No further code deployments
+- No new feature development unless a new issue arises
+- Code deployments should be limited to bug fixes, reliability fixes, or archive preservation work
 - Firestore data remains accessible
 - Consider adding an archive banner to the UI
 - Consider exporting released packet data as backup
 
-The archive requires no engineering investment. It stays alive until the new system is ready and historical data is migrated (if desired).
+The archive should receive minimal engineering investment. It stays alive until the new system is ready and historical data is migrated (if desired).
 
 ---
 

@@ -5,6 +5,7 @@ import {
   collection,
   doc,
   fetchEnsembleGrade,
+  fetchPacketSubmissions,
   getDoc,
   getDocs,
   limit,
@@ -1962,7 +1963,7 @@ async function buildDirectorPacketGroups(merged) {
 
   const scheduledGroups = await Promise.all(
     Object.values(grouped).map(async (group) => {
-      const [grade, directorName, labels] = await Promise.all([
+      const [grade, directorName, labels, canonicalSubmissions] = await Promise.all([
         getCachedPacketGrade(group.eventId, group.ensembleId),
         getDirectorNameForSchool(group.schoolId),
         getCachedPacketLabels({
@@ -1970,8 +1971,18 @@ async function buildDirectorPacketGroups(merged) {
           schoolId: group.schoolId,
           ensembleId: group.ensembleId,
         }),
+        fetchPacketSubmissions(group.eventId, group.ensembleId),
       ]);
-      const summary = computePacketSummary(grade, group.submissions);
+      const releasedCanonicalSubmissions = Object.fromEntries(
+        Object.entries(canonicalSubmissions || {}).filter(([, submission]) =>
+          submission?.status === STATUSES.released
+        )
+      );
+      const nextSubmissions =
+        Object.keys(releasedCanonicalSubmissions).length > 0 ?
+          releasedCanonicalSubmissions :
+          group.submissions;
+      const summary = computePacketSummary(grade, nextSubmissions);
       return {
         ...group,
         directorName,
@@ -1979,6 +1990,7 @@ async function buildDirectorPacketGroups(merged) {
         schoolName: labels.schoolName,
         ensembleName: labels.ensembleName,
         grade,
+        submissions: nextSubmissions,
         overall: summary.overall,
       };
     })

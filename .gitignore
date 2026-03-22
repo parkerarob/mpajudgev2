@@ -68,6 +68,7 @@ node_modules/
 
 # dotenv environment variables file
 .env
+apps/web/.env.local
 judge.txt
 mpa-judge-v2-488411-9ecfcfd73dd8.json
 # Graded List PDF moved to references/ncba/ — no longer excluded here
@@ -79,3 +80,10 @@ reports/e2e*_report.md
 
 # dataconnect generated files
 .dataconnect
+
+# Next.js rebuild local artifacts
+apps/web/.next/
+apps/web/*.tsbuildinfo
+
+# Supabase local link/runtime artifacts
+supabase/.temp/

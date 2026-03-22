@@ -28,6 +28,11 @@ Backend (`functions/`)
 - Firebase Functions v2 callables
 - Packet, raw assessment, officialization, release, and export workflows live here
 
+Rebuild lane (`apps/web/`, `supabase/`)
+- `apps/web/` contains the new Next.js App Router frontend scaffold for the Supabase rebuild
+- `supabase/` contains the hosted PostgreSQL migrations, RLS, RPCs, and validation work
+- This lane is intentionally isolated from the frozen Firebase SPA so rebuild work does not destabilize archive access
+
 Data and security
 - Firestore + Storage rules enforce role boundaries
 - One active event model

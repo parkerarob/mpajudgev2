@@ -2,7 +2,29 @@
 
 Status: DRAFT — v1, 2026-03-21
 
-All terminology follows `docs/Domain-Language.md`. Column names use snake_case. UUIDs are used for all primary keys.
+Human-facing terminology follows `docs/Domain-Language.md`. Column names and internal identifiers use technical naming optimized for PostgreSQL clarity and consistency, typically snake_case. When internal identifiers differ from glossary presentation, the mapping must be documented explicitly in this file and in `docs/Supabase-Migration-Plan.md`. UUIDs are used for all primary keys.
+
+## Documentation Boundary
+
+- `docs/Domain-Language.md` defines human-facing language and domain meaning.
+- `docs/Schema-Design.md` defines the relational model and technical identifiers.
+- `docs/Supabase-Migration-Plan.md` defines implementation sequencing and SQL-specific decisions.
+
+If these documents drift, update the schema and migration plan to reference the glossary meaning explicitly rather than forcing technical identifiers to match display formatting.
+
+## Naming Decisions
+
+The glossary controls what concepts mean. The database controls how those concepts are stored.
+
+Current technical naming decisions:
+
+| Concept | Human-facing glossary form | Database/internal form |
+|--------|-----------------------------|------------------------|
+| Judge position | `sightReading` | `sight_reading` |
+| Form type | `stageForm` | `stage_form` |
+| Form type | `sightReadingForm` | `sight_reading_form` |
+
+These are intentional normalization choices for internal consistency, not terminology drift.
 
 ---
 
@@ -161,7 +183,7 @@ Chair role is per-event. Two sub-roles exist (from NCBA practice): the primary M
 | event_id | uuid FK events | |
 | user_id | uuid FK users | |
 | role | text | chair \| site_chair |
-| PRIMARY KEY | (event_id, user_id) | |
+| PRIMARY KEY | (event_id, user_id, role) | Allows one person to hold multiple chair roles for the same event if needed |
 
 ---
 
@@ -188,7 +210,7 @@ Volunteer roles that interact with the system. Full volunteer role design is def
 | event_id | uuid FK events | |
 | user_id | uuid FK users | |
 | role | text | check_in \| stage_crew \| announcer |
-| PRIMARY KEY | (event_id, user_id) | |
+| PRIMARY KEY | (event_id, user_id, role) | Allows one person to hold multiple volunteer roles for the same event if needed |
 
 ---
 

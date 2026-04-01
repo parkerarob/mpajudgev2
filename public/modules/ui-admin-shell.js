@@ -115,28 +115,8 @@ export function createAdminViewController({
     }
   }
 
-  function isAdminHeavyViewLoaded(view) {
-    if (!state.admin.safeMode) return true;
-    if (view === "preEvent") return Boolean(state.admin.preEventHeavyLoaded);
-    if (view === "liveEvent") return Boolean(state.admin.liveEventHeavyLoaded);
+  function isAdminHeavyViewLoaded() {
     return true;
-  }
-
-  function setAdminSafeModePanel(view) {
-    if (!els.adminSafeModePanel || !els.adminSafeModeMessage || !els.adminSafeModeLoadBtn) return;
-    const needsManualLoad =
-      state.admin.safeMode &&
-      (view === "preEvent" || view === "liveEvent") &&
-      !isAdminHeavyViewLoaded(view);
-    els.adminSafeModePanel.classList.toggle("is-hidden", !needsManualLoad);
-    if (!needsManualLoad) return;
-    if (view === "preEvent") {
-      els.adminSafeModeMessage.textContent =
-        "Admin safe mode is on. Registrations data is paused to prevent browser crashes.";
-    } else {
-      els.adminSafeModeMessage.textContent =
-        "Admin safe mode is on. Schedule & Flow data is paused to prevent browser crashes.";
-    }
   }
 
   function isAdminSchoolDetailOpen() {
@@ -161,7 +141,6 @@ export function createAdminViewController({
     const showReadiness = resolvedView === "readiness";
     const showSchoolDetail = showPreEvent && Boolean(state.admin.selectedSchoolId);
     const heavyLoaded = isAdminHeavyViewLoaded(resolvedView);
-    setAdminSafeModePanel(resolvedView);
 
     setSectionVisible(els.adminViewDashboard, showDashboard);
     setSectionVisible(els.adminViewEvents, showPreEvent);
@@ -234,7 +213,6 @@ export function createAdminViewController({
 
   return {
     isAdminHeavyViewLoaded,
-    setAdminSafeModePanel,
     isAdminSchoolDetailOpen,
     closeAdminSchoolDetail,
     applyAdminView,

@@ -106,12 +106,6 @@
           <button type="button" class="admin-subnav-btn" id="adminSubnavReadinessBtn" role="tab" data-admin-view="readiness" aria-selected="false">Readiness</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavDashboardBtn" role="tab" data-admin-view="dashboard" aria-selected="false">Dashboard</button>
         </nav>
-        <div class="panel admin-safe-mode is-hidden" id="adminSafeModePanel">
-          <div class="note" id="adminSafeModeMessage">Admin safe mode is on. Heavy data is paused.</div>
-          <div class="row">
-            <button type="button" class="ghost" id="adminSafeModeLoadBtn">Load This View</button>
-          </div>
-        </div>
         <div class="ios-screen">
         <div class="stack">
           <div id="adminViewDashboard" class="admin-view stack" data-admin-view="dashboard">
@@ -1373,10 +1367,7 @@
                 <div class="note" id="eventScheduleDirectorHint"></div>
                 <div class="schedule-timeline-table-wrap" id="eventScheduleDirectorTableWrap"></div>
               </div>
-              <div class="row" id="eventScheduleLinkRow">
-                <a id="eventScheduleLink" href="#" target="_blank" rel="noopener">Open Schedule PDF</a>
-              </div>
-              <iframe id="eventScheduleFrame" class="event-schedule-frame" title="Event Schedule PDF"></iframe>
+
               <div class="empty stack" id="eventScheduleEmpty">
                 <div>No schedule PDF uploaded yet.</div>
                 <div class="row">

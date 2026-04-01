@@ -2847,16 +2847,6 @@ function resetEventScheduleDetailPanels() {
   if (els.eventScheduleDirectorTableWrap) {
     els.eventScheduleDirectorTableWrap.innerHTML = "";
   }
-  if (els.eventScheduleLinkRow) {
-    els.eventScheduleLinkRow.style.display = "none";
-  }
-  if (els.eventScheduleFrame) {
-    els.eventScheduleFrame.removeAttribute("src");
-    els.eventScheduleFrame.style.display = "none";
-  }
-  if (els.eventScheduleEmpty) {
-    els.eventScheduleEmpty.style.display = "none";
-  }
 }
 
 function renderEventScheduleAdminDetail(event) {
@@ -2869,25 +2859,6 @@ function renderEventScheduleAdminDetail(event) {
   }
   if (els.eventScheduleAdminControls) {
     els.eventScheduleAdminControls.style.display = isAdmin ? "flex" : "none";
-  }
-  if (els.eventScheduleLinkRow) {
-    els.eventScheduleLinkRow.style.display = pdfUrl ? "flex" : "none";
-  }
-  if (els.eventScheduleLink) {
-    els.eventScheduleLink.href = pdfUrl || "#";
-    els.eventScheduleLink.textContent = pdfUrl ? `Open ${pdfName}` : "Open Schedule PDF";
-  }
-  if (els.eventScheduleFrame) {
-    if (pdfUrl) {
-      els.eventScheduleFrame.src = pdfUrl;
-      els.eventScheduleFrame.style.display = "block";
-    } else {
-      els.eventScheduleFrame.removeAttribute("src");
-      els.eventScheduleFrame.style.display = "none";
-    }
-  }
-  if (els.eventScheduleEmpty) {
-    els.eventScheduleEmpty.style.display = pdfUrl ? "none" : "block";
   }
 }
 
@@ -3516,10 +3487,6 @@ export function startWatchers() {
     };
     state.admin.readinessBulkResetSupport = "unknown";
     state.admin.readinessBulkResetCheckedAt = 0;
-    if (state.admin.safeMode) {
-      state.admin.preEventHeavyLoaded = false;
-      state.admin.liveEventHeavyLoaded = false;
-    }
     invalidateDirectorSchoolLunchTotalCache({
       eventId: state.director.selectedEventId || state.event.active?.id || null,
       schoolId: getDirectorSchoolId() || null,

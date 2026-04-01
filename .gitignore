@@ -87,3 +87,4 @@ apps/web/*.tsbuildinfo
 
 # Supabase local link/runtime artifacts
 supabase/.temp/
+.gstack/

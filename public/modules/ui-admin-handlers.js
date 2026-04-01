@@ -791,15 +791,6 @@ export function createAdminHandlerBinder({
       });
     }
 
-    if (els.adminSafeModeLoadBtn) {
-      els.adminSafeModeLoadBtn.addEventListener("click", () => {
-        const view = state.admin.currentView;
-        if (view === "preEvent") state.admin.preEventHeavyLoaded = true;
-        if (view === "liveEvent") state.admin.liveEventHeavyLoaded = true;
-        applyAdminView(view);
-      });
-    }
-
     if (els.adminPacketsSchoolSelect) {
       els.adminPacketsSchoolSelect.addEventListener("change", () => {
         state.admin.packetsSchoolId = els.adminPacketsSchoolSelect?.value || "";

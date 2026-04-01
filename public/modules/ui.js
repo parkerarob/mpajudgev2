@@ -270,11 +270,9 @@ function getEffectiveRole(profile) {
     if (lower === "admin") return "admin";
     if (lower === "judge") return "judge";
     if (lower === "director") return "director";
-    if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") return "teamLead";
     if (lower === "checkin" || lower === "check-in" || lower === "check_in") return "checkin";
   }
   if (profile.roles?.admin) return "admin";
-  if (profile.roles?.teamLead) return "teamLead";
   if (profile.roles?.judge) return "judge";
   if (profile.roles?.director) return "director";
   if (profile.roles?.checkin) return "checkin";
@@ -2022,7 +2020,7 @@ async function runAdminPreflightRefresh() {
     return;
   }
   const role = getEffectiveRole(state.auth.userProfile);
-  if (role !== "admin" && role !== "teamLead") return;
+  if (role !== "admin") return;
   const eventId = state.event.active?.id || "";
   if (!eventId) return;
   adminPreflightRefreshInFlight = true;

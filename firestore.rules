@@ -15,7 +15,7 @@ service cloud.firestore {
         && roles.director == true
         && (roles.admin == false || !("admin" in roles))
         && (roles.judge == false || !("judge" in roles))
-        && (roles.teamLead == false || !("teamLead" in roles));
+        ;
     }
 
     function userData() {
@@ -48,15 +48,6 @@ service cloud.firestore {
         && (userRole() == "judge" || hasUserRoleFlag("judge"));
     }
 
-    function isTeamLead() {
-      return isSignedIn()
-        && (userRole() == "teamLead" || hasUserRoleFlag("teamLead"));
-    }
-
-    function isOpsLead() {
-      return isAdmin() || isTeamLead();
-    }
-
     function isDirector() {
       return isSignedIn()
         && (userRole() == "director" || hasUserRoleFlag("director"));
@@ -85,7 +76,7 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isAdmin()
-        || (isOpsLead()
+        || (isAdmin()
           && (
             resource.data.role == "director"
             || (resource.data.roles is map
@@ -199,9 +190,9 @@ service cloud.firestore {
       allow write: if isAdmin();
 
       match /schedule/{entryId} {
-        allow read: if ((isOpsLead() || isJudge() || isCheckin()) && isActiveEvent(eventId))
+        allow read: if ((isAdmin() || isJudge() || isCheckin()) && isActiveEvent(eventId))
           || isDirectorForSchool(resource.data.schoolId);
-        allow create, update: if isOpsLead()
+        allow create, update: if isAdmin()
           && request.resource.data.performanceAt is timestamp
           && request.resource.data.schoolId is string
           && request.resource.data.ensembleId is string
@@ -214,11 +205,11 @@ service cloud.firestore {
       }
 
       match /entries/{ensembleId} {
-        allow read: if isOpsLead()
+        allow read: if isAdmin()
           || isCheckin()
           || (isDirector() && (resource == null || resource.data.schoolId == userSchoolId()))
           || (isJudge() && isActiveEvent(eventId));
-        allow create, update: if isOpsLead()
+        allow create, update: if isAdmin()
           || isCheckin()
           || (isDirector()
             && request.resource.data.schoolId == userSchoolId()
@@ -228,14 +219,14 @@ service cloud.firestore {
       }
 
       match /assignments/{assignmentId} {
-        allow read: if isOpsLead() || isJudge();
+        allow read: if isAdmin() || isJudge();
         allow write: if isAdmin();
       }
 
       match /schoolRegistrations/{schoolId} {
-        allow read: if isOpsLead()
+        allow read: if isAdmin()
           || (isDirector() && schoolId == userSchoolId());
-        allow create, update: if isOpsLead()
+        allow create, update: if isAdmin()
           || (isDirector() && schoolId == userSchoolId());
         allow delete: if isAdmin();
       }
@@ -247,7 +238,7 @@ service cloud.firestore {
     }
 
     match /submissions/{submissionId} {
-      allow read: if isOpsLead()
+      allow read: if isAdmin()
         || (isJudge()
           && (resource == null || resource.data.judgeUid == request.auth.uid))
         || (resource != null
@@ -275,27 +266,27 @@ service cloud.firestore {
     }
 
     match /rawAssessments/{rawAssessmentId} {
-      allow read: if isOpsLead()
+      allow read: if isAdmin()
         || (isJudge()
           && (resource == null || resource.data.judgeUid == request.auth.uid));
       allow create, update, delete: if false;
     }
 
     match /officialAssessments/{officialAssessmentId} {
-      allow get: if isOpsLead()
+      allow get: if isAdmin()
         || (isDirectorForSchool(resource.data.schoolId)
           && resource.data.status == "released");
-      allow list: if isOpsLead();
+      allow list: if isAdmin();
       allow create, update, delete: if false;
 
       match /history/{historyId} {
-        allow read: if isOpsLead();
+        allow read: if isAdmin();
         allow create, update, delete: if false;
       }
     }
 
     match /packets/{packetId} {
-      allow read: if isOpsLead()
+      allow read: if isAdmin()
         || (isJudge() && (resource == null || resource.data.createdByJudgeUid == request.auth.uid))
         || (resource != null
           && isDirectorForSchool(resource.data.schoolId)
@@ -316,7 +307,7 @@ service cloud.firestore {
       allow delete: if isAdmin();
 
       match /sessions/{sessionId} {
-        allow read: if isOpsLead()
+        allow read: if isAdmin()
           || (isJudge()
             && get(/databases/$(database)/documents/packets/$(packetId)).data.createdByJudgeUid == request.auth.uid)
           || (isDirectorForSchool(get(/databases/$(database)/documents/packets/$(packetId)).data.schoolId)

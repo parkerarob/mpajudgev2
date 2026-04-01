@@ -7,12 +7,10 @@ function getProfileRole(profile) {
   if (!profile) return null;
   const rawRole = String(profile.role || "").trim().toLowerCase();
   if (rawRole === "admin") return "admin";
-  if (rawRole === "teamlead" || rawRole === "team_lead" || rawRole === "team lead") return "teamLead";
   if (rawRole === "judge") return "judge";
   if (rawRole === "director") return "director";
   if (rawRole === "checkin") return "checkin";
   if (profile.roles?.admin) return "admin";
-  if (profile.roles?.teamLead) return "teamLead";
   if (profile.roles?.judge) return "judge";
   if (profile.roles?.director) return "director";
   if (profile.roles?.checkin) return "checkin";
@@ -26,7 +24,6 @@ export function hasUnsavedChanges() {
 export function getDefaultTabForRole(role) {
   const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
   if (role === "admin") return "admin";
-  if (role === "teamLead") return "admin";
   if (role === "judge") return judgeEnabled ? "judge-open" : "admin";
   if (role === "director") return "director";
   if (role === "checkin") return "checkin";
@@ -37,7 +34,6 @@ export function isTabAllowed(tab, role) {
   if (!role) return false;
   const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
   if (role === "admin") return true;
-  if (role === "teamLead") return tab === "admin";
   if (role === "checkin") return tab === "checkin";
   if (role === "judge") {
     if (!judgeEnabled) return tab === "admin";

@@ -1225,7 +1225,6 @@ export async function attachDirectorSchool(schoolId, { persistPrimary } = {}) {
       director: true,
       admin: true,
       judge: existingRoles.judge === true,
-      teamLead: existingRoles.teamLead === true,
     };
     try {
       await setDoc(
@@ -1408,7 +1407,6 @@ export async function saveDirectorProfile({ name, nafmeNumber, expValue, cellPho
           director: true,
           judge: false,
           admin: false,
-          teamLead: false,
         },
       }
     : {};
@@ -1428,7 +1426,6 @@ export async function saveDirectorProfile({ name, nafmeNumber, expValue, cellPho
         director: true,
         judge: false,
         admin: state.auth.userProfile.role === "admin",
-        teamLead: false,
       },
       schoolId: state.auth.userProfile?.schoolId || null,
       email: state.auth.userProfile?.email || state.auth.currentUser?.email || "",
@@ -1484,7 +1481,6 @@ export async function uploadDirectorProfileCard(file) {
           director: true,
           judge: false,
           admin: false,
-          teamLead: false,
         },
       }
     : {};
@@ -1502,7 +1498,6 @@ export async function uploadDirectorProfileCard(file) {
         director: true,
         judge: false,
         admin: state.auth.userProfile.role === "admin",
-        teamLead: false,
       },
       schoolId: state.auth.userProfile?.schoolId || null,
       email: state.auth.userProfile?.email || state.auth.currentUser?.email || "",

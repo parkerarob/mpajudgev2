@@ -375,7 +375,6 @@ onAuthStateChanged(auth, async (user) => {
         if (!rawRole) return "";
         const lower = rawRole.toLowerCase();
         if (lower === "admin") return "admin";
-        if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") return "teamLead";
         if (lower === "director") return "director";
         if (lower === "judge") return "judge";
         if (lower === "checkin" || lower === "check-in" || lower === "check_in") return "checkin";
@@ -385,15 +384,13 @@ onAuthStateChanged(auth, async (user) => {
         normalizedRole ||
         (roles.admin
           ? "admin"
-          : roles.teamLead
-            ? "teamLead"
-            : roles.director
-              ? "director"
-              : roles.judge
-                ? "judge"
-                : roles.checkin
-                  ? "checkin"
-                  : null);
+          : roles.director
+            ? "director"
+            : roles.judge
+              ? "judge"
+              : roles.checkin
+                ? "checkin"
+                : null);
       const judgeEnabled = state.app.features?.enableJudgeOpen !== false;
       const preferJudgeOpen = judgeEnabled && roles.judge === true && role !== "admin";
       const path = window.location.pathname || "";
@@ -411,11 +408,6 @@ onAuthStateChanged(auth, async (user) => {
           window.location.hash = "#judge-open";
         }
       } else if (role === "admin") {
-        setTab("admin");
-        if (window.location.hash !== "#admin") {
-          window.location.hash = "#admin";
-        }
-      } else if (role === "teamLead") {
         setTab("admin");
         if (window.location.hash !== "#admin") {
           window.location.hash = "#admin";

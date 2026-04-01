@@ -1672,21 +1672,6 @@ async function assertAdmin(request) {
   return profile;
 }
 
-async function assertOpsLead(request) {
-  if (!request.auth || !request.auth.uid) {
-    throw new HttpsError("unauthenticated", "Authentication required.");
-  }
-  const userSnap = await admin
-      .firestore()
-      .collection(COLLECTIONS.users)
-      .doc(request.auth.uid)
-      .get();
-  const profile = userSnap.exists ? (userSnap.data() || {}) : null;
-  if (!profile || !isOpsLeadProfile(profile)) {
-    throw new HttpsError("permission-denied", "Operations lead access required.");
-  }
-  return profile;
-}
 
 async function assertRole(request, allowedRoles) {
   if (!request.auth || !request.auth.uid) {
@@ -1712,9 +1697,6 @@ function normalizeRoleValue(value) {
   if (lower === "admin") return "admin";
   if (lower === "judge") return "judge";
   if (lower === "director") return "director";
-  if (lower === "teamlead" || lower === "team_lead" || lower === "team lead") {
-    return "teamLead";
-  }
   if (lower === "checkin" || lower === "check-in" || lower === "check_in") {
     return "checkin";
   }
@@ -1725,14 +1707,6 @@ function isAdminProfile(profile = {}) {
   return normalizeRoleValue(profile.role) === "admin" || profile.roles?.admin === true;
 }
 
-function isTeamLeadProfile(profile = {}) {
-  return normalizeRoleValue(profile.role) === "teamLead" || profile.roles?.teamLead === true;
-}
-
-function isOpsLeadProfile(profile = {}) {
-  return isAdminProfile(profile) || isTeamLeadProfile(profile);
-}
-
 function isJudgeProfile(profile = {}) {
   return normalizeRoleValue(profile.role) === "judge" || profile.roles?.judge === true;
 }
@@ -1741,7 +1715,6 @@ function getEffectiveRole(profile = {}) {
   const normalizedRole = normalizeRoleValue(profile.role);
   if (normalizedRole) return normalizedRole;
   if (profile.roles?.admin === true) return "admin";
-  if (profile.roles?.teamLead === true) return "teamLead";
   if (profile.roles?.director === true) return "director";
   if (profile.roles?.judge === true) return "judge";
   if (profile.roles?.checkin === true) return "checkin";
@@ -3711,7 +3684,7 @@ exports.submitOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
 });
 
 exports.reassignRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const rawAssessmentId = buildRawAssessmentId({rawAssessmentId: data.rawAssessmentId});
   const eventId = String(data.eventId || "").trim();
@@ -3762,7 +3735,7 @@ exports.reassignRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (reques
 });
 
 exports.excludeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  const profile = await assertOpsLead(request);
+  const profile = await assertAdmin(request);
   const data = request.data || {};
   const rawAssessmentId = buildRawAssessmentId({rawAssessmentId: data.rawAssessmentId});
   const reason = String(data.reason || "").trim();
@@ -3802,7 +3775,7 @@ exports.excludeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request
 });
 
 exports.deleteRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const rawAssessmentId = buildRawAssessmentId({rawAssessmentId: data.rawAssessmentId});
   if (!rawAssessmentId) {
@@ -3885,7 +3858,7 @@ exports.deleteRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request)
 });
 
 exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  const profile = await assertOpsLead(request);
+  const profile = await assertAdmin(request);
   const data = request.data || {};
   const rawAssessmentId = buildRawAssessmentId({rawAssessmentId: data.rawAssessmentId});
   const eventId = String(data.eventId || "").trim();
@@ -4086,7 +4059,7 @@ exports.officializeRawAssessment = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
 });
 
 exports.lockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const packetId = data.packetId;
   if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
@@ -4115,7 +4088,7 @@ exports.lockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
 });
 
 exports.unlockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const packetId = data.packetId;
   if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
@@ -4147,7 +4120,7 @@ exports.unlockPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
 });
 
 exports.releaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const packetId = data.packetId;
   if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
@@ -4199,7 +4172,7 @@ exports.releaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =
 });
 
 exports.unreleaseOpenPacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const packetId = data.packetId;
   if (!packetId) throw new HttpsError("invalid-argument", "packetId required.");
@@ -4618,7 +4591,7 @@ exports.setEventAssignments = onCall(async (request) => {
 });
 
 exports.runEventPreflight = onCall(async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = String(data.eventId || "").trim();
   if (!eventId) {
@@ -4868,7 +4841,7 @@ exports.runEventPreflight = onCall(async (request) => {
 });
 
 exports.markReadinessStep = onCall(async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = String(data.eventId || "").trim();
   const stepKey = String(data.stepKey || "").trim();
@@ -4940,7 +4913,7 @@ exports.markReadinessStep = onCall(async (request) => {
 });
 
 exports.setReadinessWalkthrough = onCall(async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = String(data.eventId || "").trim();
   const rawStatus = String(data.status || "").trim().toLowerCase();
@@ -5811,7 +5784,7 @@ exports.transcribeTestAudio = onCall(
 );
 
 exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = data.eventId;
   const ensembleId = data.ensembleId;
@@ -6019,7 +5992,7 @@ exports.releasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
 });
 
 exports.unreleasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = data.eventId;
   const ensembleId = data.ensembleId;
@@ -6138,7 +6111,7 @@ exports.unreleasePacket = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => 
 });
 
 exports.repairPacketReleaseState = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = String(data.eventId || "").trim();
   const ensembleId = String(data.ensembleId || "").trim();
@@ -6264,7 +6237,7 @@ exports.repairPacketReleaseState = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
 });
 
 exports.setPacketCommentsOnly = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = String(data.eventId || "").trim();
   const ensembleId = String(data.ensembleId || "").trim();
@@ -6483,7 +6456,7 @@ function applyAdminCommentEditsToCaptions(existingCaptions = {}, nextComments = 
 }
 
 exports.updateAssessmentComments = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = String(data.eventId || "").trim();
   const ensembleId = String(data.ensembleId || "").trim();
@@ -8565,7 +8538,7 @@ exports.releaseMockPacketForAshleyTesting = onCall(APPCHECK_SENSITIVE_OPTIONS, a
 });
 
 exports.unlockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = data.eventId;
   const ensembleId = data.ensembleId;
@@ -8631,7 +8604,7 @@ exports.unlockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) =>
 });
 
 exports.lockSubmission = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertOpsLead(request);
+  await assertAdmin(request);
   const data = request.data || {};
   const eventId = data.eventId;
   const ensembleId = data.ensembleId;
@@ -8706,10 +8679,10 @@ exports.provisionUser = onCall(async (request) => {
   if (!email) {
     throw new HttpsError("invalid-argument", "Email is required.");
   }
-  if (!["admin", "teamLead", "judge", "director", "checkin"].includes(role)) {
+  if (!["admin", "judge", "director", "checkin"].includes(role)) {
     throw new HttpsError(
         "invalid-argument",
-        "Role must be admin, teamLead, judge, director, or checkin.",
+        "Role must be admin, judge, director, or checkin.",
     );
   }
 
@@ -8763,7 +8736,6 @@ exports.provisionUser = onCall(async (request) => {
           director: role === "director",
           judge: role === "judge",
           admin: role === "admin",
-          teamLead: role === "teamLead",
           checkin: role === "checkin",
         },
         [FIELDS.users.schoolId]: role === "director" ? schoolId : null,
@@ -8939,7 +8911,7 @@ exports.deleteUserAccount = onCall(async (request) => {
 
   const targetProfile = userSnap.exists ? (userSnap.data() || {}) : {};
   const targetRole = getEffectiveRole(targetProfile);
-  if (targetRole === "admin" || targetRole === "teamLead") {
+  if (targetRole === "admin") {
     const usersSnap = await db.collection(COLLECTIONS.users).get();
     const adminCount = usersSnap.docs.reduce((count, docSnap) => {
       return count + (isAdminProfile(docSnap.data() || {}) ? 1 : 0);
@@ -9046,7 +9018,6 @@ exports.assignDirectorSchool = onCall(async (request) => {
       director: true,
       admin: directorData.role === "admin" || existingRoles.admin === true,
       judge: existingRoles.judge === true,
-      teamLead: existingRoles.teamLead === true,
     },
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, {merge: true});

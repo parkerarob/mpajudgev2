@@ -141,7 +141,7 @@ async function main() {
 
   await db.collection("users").doc(adminUser.uid).set({
     role: "admin",
-    roles: {admin: true, judge: false, director: false, teamLead: false},
+    roles: {admin: true, judge: false, director: false},
     email: adminUser.email,
     displayName: adminUser.displayName,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -152,7 +152,7 @@ async function main() {
       judgeDocs.map((judge) =>
         db.collection("users").doc(judge.uid).set({
           role: "judge",
-          roles: {admin: false, judge: true, director: false, teamLead: false},
+          roles: {admin: false, judge: true, director: false},
           email: judge.email,
           displayName: judge.displayName,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -162,7 +162,7 @@ async function main() {
 
   await db.collection("users").doc(director.uid).set({
     role: "director",
-    roles: {admin: false, judge: false, director: true, teamLead: false},
+    roles: {admin: false, judge: false, director: true},
     email: director.email,
     displayName: director.displayName,
     schoolId,

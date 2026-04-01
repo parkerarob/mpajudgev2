@@ -341,10 +341,21 @@ function formatJudgeOpenModeLabel(mode) {
 function formatJudgeOpenStatusLabel(status, mode) {
   const normalized = String(status || "").trim().toLowerCase();
   if (!normalized) return formatJudgeOpenModeLabel(mode);
-  if (normalized === "locked" || normalized === "submitted") return "Submitted for Review";
+  if (normalized === "submitted" || normalized === "locked" || normalized === "review_needed") return "Submitted";
+  if (normalized === "reopened") return "Returned";
+  if (normalized === "officialized") return "Verified";
   if (normalized === "released") return "Released";
-  if (normalized === "reopened") return "Reopened";
   return "Draft";
+}
+
+function scoreSheetStatusClass(rawStatus) {
+  const s = String(rawStatus || "").trim().toLowerCase();
+  if (s === "submitted" || s === "locked" || s === "review_needed") return "status-badge--submitted";
+  if (s === "reopened") return "status-badge--returned";
+  if (s === "officialized") return "status-badge--verified";
+  if (s === "released") return "status-badge--released";
+  if (s === "excluded") return "status-badge--excluded";
+  return "";
 }
 
 function updateJudgeOpenModeUI() {
@@ -4205,12 +4216,15 @@ export function updateOpenEmptyState() {
   if (els.judgeOpenStatusBadge) {
     if (!state.judgeOpen.mode) {
       els.judgeOpenStatusBadge.textContent = "Choose Mode";
+      els.judgeOpenStatusBadge.className = "status-badge";
     } else {
       const packet = state.judgeOpen.currentPacket || {};
       if (packet.status) {
         els.judgeOpenStatusBadge.textContent = formatJudgeOpenStatusLabel(packet.status, state.judgeOpen.mode);
+        els.judgeOpenStatusBadge.className = `status-badge ${scoreSheetStatusClass(packet.status)}`.trim();
       } else {
         els.judgeOpenStatusBadge.textContent = formatJudgeOpenModeLabel(state.judgeOpen.mode);
+        els.judgeOpenStatusBadge.className = "status-badge";
       }
     }
   }

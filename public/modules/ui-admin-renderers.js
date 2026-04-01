@@ -276,10 +276,13 @@ export function createAdminRenderers({
   }
 
   function formatRawAssessmentStatus(value) {
-    const normalized = String(value || "").trim() || "draft";
-    if (normalized === "submitted" || normalized === "locked") return "pending review";
-    if (normalized === "officialized") return "approved to packet";
-    return normalized.replace(/_/g, " ");
+    const s = String(value || "").trim().toLowerCase() || "draft";
+    if (s === "submitted" || s === "locked" || s === "review_needed") return "Submitted";
+    if (s === "reopened") return "Returned";
+    if (s === "officialized") return "Verified";
+    if (s === "released") return "Released";
+    if (s === "excluded") return "Excluded";
+    return "Draft";
   }
 
   function formatJudgeRatingLabel(value) {
@@ -402,7 +405,7 @@ export function createAdminRenderers({
     }
     const ratingLabel = submission.commentsOnly ? "CO" : formatJudgeRatingLabel(submission.computedFinalRatingLabel);
     const detailParts = [
-      `Status: ${submission.status || "missing"}`,
+      `Status: ${formatRawAssessmentStatus(submission.status || "")}`,
       `Locked: ${submission.locked ? "yes" : "no"}`,
       `Stitched Tape: ${hasSubmissionTraceAudio(submission) ? "yes" : "no"}`,
       `Rating: ${ratingLabel}`,
@@ -3429,7 +3432,7 @@ export function createAdminRenderers({
         badges.appendChild(modeBadge);
         const statusBadge = document.createElement("span");
         statusBadge.className = "badge";
-        statusBadge.textContent = `Open: ${packet.status || "draft"}`;
+        statusBadge.textContent = formatRawAssessmentStatus(packet.status || "draft");
         badges.appendChild(statusBadge);
         const formBadge = document.createElement("span");
         formBadge.className = "badge";

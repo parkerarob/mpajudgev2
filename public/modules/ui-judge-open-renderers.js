@@ -20,10 +20,21 @@ export function createJudgeOpenRenderers({
 } = {}) {
   function formatJudgeOpenStatusLabel(status = "") {
     const normalized = String(status || "").trim().toLowerCase();
-    if (normalized === "locked" || normalized === "submitted") return "Submitted for Review";
+    if (normalized === "submitted" || normalized === "locked" || normalized === "review_needed") return "Submitted";
+    if (normalized === "reopened") return "Returned";
+    if (normalized === "officialized") return "Verified";
     if (normalized === "released") return "Released";
-    if (normalized === "reopened") return "Reopened";
     return "Draft";
+  }
+
+  function scoreSheetStatusClass(rawStatus) {
+    const s = String(rawStatus || "").trim().toLowerCase();
+    if (s === "submitted" || s === "locked" || s === "review_needed") return "status-badge--submitted";
+    if (s === "reopened") return "status-badge--returned";
+    if (s === "officialized") return "status-badge--verified";
+    if (s === "released") return "status-badge--released";
+    if (s === "excluded") return "status-badge--excluded";
+    return "";
   }
 
   function formatJudgeOpenModeLabel(mode = "") {
@@ -125,7 +136,9 @@ export function createJudgeOpenRenderers({
       card.className = "packet-card";
       card.dataset.packetId = packet.id;
       const progress = computePacketProgress(packet);
-      const status = formatJudgeOpenStatusLabel(packet.status || "draft");
+      const statusLabel = formatJudgeOpenStatusLabel(packet.status || "draft");
+      const statusCls = scoreSheetStatusClass(packet.status || "draft");
+      const statusBadgeClass = statusCls ? `status-badge ${statusCls}` : "status-badge";
       const mode = formatJudgeOpenModeLabel(packet.mode);
       const creator =
         packet.createdByJudgeName ||
@@ -135,7 +148,7 @@ export function createJudgeOpenRenderers({
       card.innerHTML = `
         <div class="packet-card-header">
           <div class="packet-card-title">${packet.schoolName || "Unknown school"} - ${packet.ensembleName || "Unknown ensemble"}</div>
-          <span class="status-badge">${status}</span>
+          <span class="${statusBadgeClass}">${statusLabel}</span>
         </div>
         <div class="packet-card-meta">${mode} sheet</div>
         <div class="packet-card-meta">Judge: ${creator}</div>

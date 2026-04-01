@@ -1,8 +1,6 @@
 # MPAapp Product Requirements
 
-Last updated: 2026-03-17
-
-This document reflects the current Phase 1 operating model that is live in production.
+Last updated: 2026-04-01
 
 ## Product Goal
 
@@ -19,15 +17,16 @@ MPAapp should let a district run Music Performance Adjudication with:
 
 Admins run the event.
 
-Current Phase 1 workspaces:
-- Dashboard
+Current admin workspaces (tab order):
+- Settings
 - Registrations
 - Schedule & Flow
-- Live Submissions
+- Review Queue
 - Packets & Results
+- Ratings
 - Announcer
 - Readiness
-- Settings
+- Dashboard
 
 Admin responsibilities:
 - create and activate the event
@@ -57,12 +56,13 @@ Important:
 
 Directors maintain event-required ensemble information and access released results.
 
-Current Phase 1 workspaces:
-- Dashboard
+Current director workspaces (tab order):
+- Results Packet
 - Registration
 - My Ensembles
 - Event Info
-- Official Results Packet
+- Site Info
+- Program
 
 Director responsibilities:
 - confirm registration inputs
@@ -117,7 +117,7 @@ Required sight captions:
 
 ## Admin Requirements
 
-### Live Submissions
+### Review Queue
 
 This is the raw-assessment review queue.
 
@@ -162,8 +162,8 @@ The workspace should:
 
 ## Deferred Scope
 
-These are intentionally not required for current completion:
+These are intentionally out of scope for the current system:
 - AI-assisted transcript/caption validation in production
 - offline-first capture
-- broader platform migration off Firebase
-- additional feature expansion outside the Phase 1 admin/judge/director workflow baseline
+- multi-district / multi-site configuration
+- additional feature expansion outside the current admin/judge/director workflow baseline

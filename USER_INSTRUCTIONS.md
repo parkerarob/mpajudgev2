@@ -71,14 +71,17 @@ If you submitted in error, contact admin immediately.
 ## Admins
 
 ### 1. Operational workspaces
-- `Dashboard`: high-level event status and next-step routing
+- `Settings`: event creation and judge assignment
 - `Registrations`: registration and director-input review
 - `Schedule & Flow`: check-in queue and stage flow
-- `Live Submissions`: raw assessment review
+- `Review Queue`: raw assessment review
 - `Packets & Results`: official slot management and release
+- `Ratings`: ratings summary by judge position
+- `Announcer`: announcer display
 - `Readiness`: preflight, walkthrough, and cleanup
+- `Dashboard`: high-level event status and next-step routing
 
-### 2. Live Submissions
+### 2. Review Queue
 Use this workspace to:
 - review raw assessments
 - reassign ensemble / judge position / form type
@@ -94,7 +97,7 @@ Use this workspace to:
 - release and unrelease complete results packets
 
 ### 4. If something is wrong
-- wrong association: use `Live Submissions`
+- wrong association: use `Review Queue`
 - wrong official slot: use `Packets & Results`
 - packet incomplete: check the explicit blocking positions
 

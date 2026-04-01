@@ -1,10 +1,6 @@
 # MPA Domain Language Glossary
 
-Historical note: this file remains in `MPAJudgeV2` as a snapshot copy after the March 22, 2026 repo split. The authoritative active version now lives in `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App/docs/Domain-Language.md`.
-
-Status: DRAFT — Core Q&A complete (rounds 1-3). Ready for schema design.
-
-Last updated: 2026-03-21
+Last updated: 2026-04-01
 
 ---
 

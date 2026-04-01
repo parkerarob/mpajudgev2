@@ -1,29 +1,8 @@
-# MPAapp
+# MPAJudgeV2
 
-`MPAJudgeV2` is the legacy repo name for the NCBA-style adjudication and event operations system.
+Adjudication and event operations system for MPA events.
 
-## Project State
-
-- `MPAJudgeV2` remains the live Firebase production/archive system.
-- Unless a new production issue arises, the current Firebase app is now in maintenance freeze.
-- Active rebuild development has moved to:
-  - `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App`
-- The new active rebuild repo contains:
-  - the Next.js app in `apps/web/`
-  - the Supabase schema and migrations in `supabase/`
-  - rebuild design and migration docs in `docs/`
-- The current repo should receive only:
-  - production bug fixes
-  - reliability fixes
-  - archival/access preservation work
-
-## Split Status
-
-- The rebuild was split into its own git repository on March 22, 2026.
-- If this repo still contains `apps/web/`, `supabase/`, or rebuild-planning docs, treat them as historical snapshot copies unless they explicitly say otherwise.
-- The authoritative rebuild source now lives in `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App`.
-
-## Legacy Architecture
+## Architecture
 
 Frontend (`public/`)
 - Single-page app built from `index.html` and ES modules
@@ -41,7 +20,7 @@ Data and security
 - Protected director/school/event-entry data remains in place
 - Official results now flow through `officialAssessments`
 
-## Legacy Local Development
+## Local Development
 
 Install dependencies as needed:
 
@@ -56,7 +35,7 @@ Start emulators:
 firebase emulators:start
 ```
 
-## Legacy Verification
+## Verification
 
 Unit tests:
 
@@ -76,7 +55,7 @@ Security suite:
 npm run test:security
 ```
 
-## Legacy Deployment
+## Deployment
 
 Hosting only:
 
@@ -101,9 +80,3 @@ Full deploy:
 ```bash
 firebase deploy --only hosting,functions,firestore:rules,storage
 ```
-
-## Operational Notes
-
-- Treat this repo as the legacy support lane by default.
-- Do not add new product architecture to this repo unless the task explicitly requires legacy-system work.
-- Prefer the new rebuild repo for workflow, UX, schema, and platform evolution.

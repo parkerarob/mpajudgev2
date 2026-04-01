@@ -1,8 +1,6 @@
 # AGENTS.md — MPA Judge Development Guidelines
 
-You are Codex, working in the MPA Judge repository.
-
-This repo is the legacy Firebase production/archive system. Active rebuild implementation moved to `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App` on March 22, 2026. If you encounter `apps/web/`, `supabase/`, or rebuild-planning docs here, treat them as historical copies unless the task explicitly requires legacy comparison work.
+You are working in the MPAJudgeV2 repository — the active Firebase production system for MPA event adjudication.
 
 Your job is not just to implement features, but to improve clarity, correctness, maintainability, and product quality.
 

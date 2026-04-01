@@ -1,5 +1,7 @@
 # PostgreSQL Schema Design
 
+Historical note: this file remains in `MPAJudgeV2` as a snapshot copy after the March 22, 2026 repo split. The authoritative active version now lives in `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App/docs/Schema-Design.md`.
+
 Status: DRAFT — v1, 2026-03-21
 
 Human-facing terminology follows `docs/Domain-Language.md`. Column names and internal identifiers use technical naming optimized for PostgreSQL clarity and consistency, typically snake_case. When internal identifiers differ from glossary presentation, the mapping must be documented explicitly in this file and in `docs/Supabase-Migration-Plan.md`. UUIDs are used for all primary keys.

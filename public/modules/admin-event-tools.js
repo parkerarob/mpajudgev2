@@ -1,5 +1,18 @@
 import { normalizeEnsembleNameForSchool, normalizeGradeBand, toDateLike } from "./utils.js";
 
+/**
+ * Resolve the grade for an ensemble entry, preferring performanceGrade over declaredGradeLevel.
+ *
+ * At an MPA event, performanceGrade is the authoritative grade determined by judges' assessments,
+ * while declaredGradeLevel is what the director submitted during registration. If a director
+ * submits an incorrect grade level, the corrected performanceGrade will be assigned by adjudication.
+ * We must use performanceGrade as the source of truth for determining adjudication criteria,
+ * schedule slot time, and all other grade-dependent logic.
+ */
+export function resolveProgramGrade(entry = {}) {
+  return normalizeGradeBand(entry.performanceGrade || entry.declaredGradeLevel || "") || "";
+}
+
 function escapeHtml(value = "") {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -140,7 +153,7 @@ function buildCandidateMap({
       ensembleId,
       ensembleName,
       fullLabel,
-      grade: normalizeGradeBand(entry.declaredGradeLevel || entry.performanceGrade || ""),
+      grade: resolveProgramGrade(entry),
       existingScheduleEntryId: existingSchedule?.id || "",
       existingPerformanceAt: toDateLike(existingSchedule?.performanceAt),
       canonicalFull: canonicalizeName(fullLabel),
@@ -326,7 +339,7 @@ export function buildProgramRows({
         schoolName,
         ensembleName,
         directorName: String(director.displayName || director.email || "").trim(),
-        grade: normalizeGradeBand(entry.declaredGradeLevel || entry.performanceGrade || "") || "",
+        grade: resolveProgramGrade(entry),
         programLines,
       };
     })

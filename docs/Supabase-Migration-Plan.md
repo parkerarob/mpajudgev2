@@ -1,5 +1,7 @@
 # Supabase Migration Plan
 
+Historical note: this file remains in `MPAJudgeV2` as a snapshot copy after the March 22, 2026 repo split. The authoritative active version now lives in `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App/docs/Supabase-Migration-Plan.md`.
+
 Date: 2026-03-21
 
 Purpose: translate `docs/Schema-Design.md` into ordered, reviewable Supabase SQL migrations without losing domain rules, atomic release behavior, or role boundaries.

@@ -196,6 +196,31 @@
             <p class="hint">Registered schools and ensembles for the active event. Click a school to manage scheduling, director readiness, and ensemble workspace data.</p>
             <ul id="adminRegisteredEnsemblesList" class="list"></ul>
           </div>
+          <div class="panel" id="adminParticipationSummarySection">
+            <div class="row row--between row--center">
+              <h3>Participation Summary</h3>
+              <span class="badge">Eventwide</span>
+            </div>
+            <p class="hint">Totals exclude test/demo/sandbox schools and calculate students from the instrumentation saved on each event form.</p>
+            <div class="admin-participation-stats" id="adminParticipationSummaryStats">
+              <div class="note">Set an active event to begin.</div>
+            </div>
+            <div class="schedule-timeline-table-wrap">
+              <table class="schedule-timeline-table" role="grid">
+                <thead>
+                  <tr>
+                    <th scope="col">School</th>
+                    <th scope="col">Ensembles</th>
+                    <th scope="col">Students</th>
+                  </tr>
+                </thead>
+                <tbody id="adminParticipationSummaryBody">
+                  <tr><td colspan="3" class="hint">Set an active event to begin.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="note" id="adminParticipationSummaryHint">Set an active event to begin.</div>
+          </div>
           <div class="panel" id="adminScheduleSection">
             <h3>Step 2: Scheduled Timeline</h3>
             <p class="hint">Start times for Holding, Warm-up, Performance, and Sightreading for scheduled ensembles.</p>

@@ -1,5 +1,7 @@
 # Supabase Workspace
 
+Historical note: this copy remains in `MPAJudgeV2` only as a leftover from before the standalone split. The authoritative rebuild Supabase workspace now lives in `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App/supabase`.
+
 This directory holds the rebuild-lane database artifacts for the Next.js + Supabase system.
 
 ## Layout

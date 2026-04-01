@@ -1,12 +1,14 @@
 # Rebuild Web App
 
+Historical note: this copy remains in `MPAJudgeV2` only as a leftover from before the standalone split. The authoritative rebuild web app now lives in `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App/apps/web`.
+
 This directory contains the new Next.js frontend for the Supabase rebuild lane.
 
-## Why It Lives Here
+## Why This Copy Remains
 
-- `public/` remains the frozen Firebase production/archive SPA.
-- `apps/web/` is the new build surface for the rebuild.
-- The two stacks stay isolated so rebuild work does not destabilize archive access.
+- `public/` remains the frozen Firebase production/archive SPA in this legacy repo.
+- This `apps/web/` copy is retained only as a historical snapshot from before the standalone split.
+- Active rebuild implementation now happens in `NCBA-MPA-Event-Management-App`, not here.
 
 ## Current Scope
 

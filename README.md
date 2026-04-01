@@ -17,6 +17,12 @@
   - reliability fixes
   - archival/access preservation work
 
+## Split Status
+
+- The rebuild was split into its own git repository on March 22, 2026.
+- If this repo still contains `apps/web/`, `supabase/`, or rebuild-planning docs, treat them as historical snapshot copies unless they explicitly say otherwise.
+- The authoritative rebuild source now lives in `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App`.
+
 ## Legacy Architecture
 
 Frontend (`public/`)

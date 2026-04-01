@@ -314,3 +314,59 @@ export function normalizeCaptions(formType, captions = {}) {
   });
   return normalized;
 }
+
+export function isTestArtifactText(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  const patterns = [
+    /\btest\b/,
+    /\bsmoke\b/,
+    /\be2e\b/,
+    /\brelease e2e\b/,
+    /\bdemo\b/,
+    /\bsandbox\b/,
+    /\bqa\b/,
+  ];
+  return patterns.some((pattern) => pattern.test(normalized));
+}
+
+export function hasExplicitTestArtifactFlag(data = {}) {
+  if (!data || typeof data !== "object") return false;
+  if (data.isTestArtifact === true || data.testArtifact === true) return true;
+  const tags = Array.isArray(data.tags) ? data.tags : [];
+  return tags.some((tag) => {
+    const normalized = String(tag || "").trim().toLowerCase();
+    return normalized === "test-artifact" || normalized === "test";
+  });
+}
+
+export function isProductionRegistration(entry = {}, schoolName = "") {
+  if (hasExplicitTestArtifactFlag(entry)) return false;
+  return ![
+    entry.schoolId,
+    schoolName,
+    entry.ensembleId,
+    entry.ensembleName,
+  ].some((value) => isTestArtifactText(value));
+}
+
+function normalizeCount(value) {
+  const parsed = Math.round(Number(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+export function calculateInstrumentationStudentCount(entryData = {}) {
+  const instrumentation = entryData?.instrumentation || {};
+  const standardCounts = instrumentation?.standardCounts && typeof instrumentation.standardCounts === "object"
+    ? instrumentation.standardCounts
+    : {};
+  const standardTotal = Object.values(standardCounts).reduce(
+    (sum, value) => sum + normalizeCount(value),
+    0
+  );
+  const nonStandardTotal = Array.isArray(instrumentation?.nonStandard)
+    ? instrumentation.nonStandard.reduce((sum, row) => sum + normalizeCount(row?.count), 0)
+    : 0;
+  const percussionTotal = normalizeCount(instrumentation?.totalPercussion);
+  return standardTotal + nonStandardTotal + percussionTotal;
+}

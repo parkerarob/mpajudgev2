@@ -15,6 +15,9 @@ export function createAdminPreEventController({
     if (els.adminRegisteredEnsemblesSection) {
       els.adminRegisteredEnsemblesSection.classList.toggle("is-hidden", showSchoolDetail);
     }
+    if (els.adminParticipationSummarySection) {
+      els.adminParticipationSummarySection.classList.toggle("is-hidden", showSchoolDetail);
+    }
     if (els.adminScheduleSection) {
       els.adminScheduleSection.classList.toggle("is-hidden", showSchoolDetail);
     }
@@ -37,6 +40,10 @@ export function createAdminPreEventController({
       return;
     }
     if (!heavyLoaded) {
+      if (els.adminParticipationSummaryHint) {
+        els.adminParticipationSummaryHint.textContent =
+          "Admin safe mode is on. Load this view to refresh participation totals.";
+      }
       if (els.adminPizzaTotalsHint) {
         els.adminPizzaTotalsHint.textContent =
           "Admin safe mode is on. Load this view to refresh pizza totals.";
@@ -56,6 +63,14 @@ export function createAdminPreEventController({
     if (els.adminRegisteredEnsemblesList) {
       els.adminRegisteredEnsemblesList.innerHTML =
         "<li class='hint'>Safe mode: click \"Load This View\" to fetch registrations and schedule data.</li>";
+    }
+    if (els.adminParticipationSummaryStats) {
+      els.adminParticipationSummaryStats.innerHTML =
+        "<div class='note'>Safe mode: click \"Load This View\" to calculate participation totals.</div>";
+    }
+    if (els.adminParticipationSummaryBody) {
+      els.adminParticipationSummaryBody.innerHTML =
+        "<tr><td colspan='3' class='hint'>Safe mode: click \"Load This View\" to calculate participation totals.</td></tr>";
     }
   }
 

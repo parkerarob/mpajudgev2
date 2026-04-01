@@ -1075,6 +1075,32 @@ h3 {
   flex-wrap: wrap;
 }
 
+.admin-participation-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.admin-participation-stat {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid rgba(116, 145, 216, 0.18);
+  border-radius: 16px;
+  background: rgba(8, 12, 22, 0.42);
+}
+
+.admin-participation-stat strong {
+  font-size: 1.9rem;
+  line-height: 1;
+}
+
+.admin-participation-stat span {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
 .admin-school-checkin-list {
   display: flex;
   flex-wrap: wrap;

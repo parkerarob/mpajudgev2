@@ -1,5 +1,7 @@
 # MPAJudge Rebuild Strategy
 
+Historical note: this file remains in `MPAJudgeV2` as a snapshot copy after the March 22, 2026 repo split. The authoritative active version now lives in `/Users/parkerarob/Documents/Workspaces/Desktop-Projects/NCBA-MPA-Event-Management-App/docs/Rebuild-Strategy-2026-03-21.md`.
+
 Date: 2026-03-21
 
 Status: Active migration path

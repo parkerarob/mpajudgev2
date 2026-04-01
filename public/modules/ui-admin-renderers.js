@@ -1,3 +1,5 @@
+import { isTestArtifactText, hasExplicitTestArtifactFlag, isProductionRegistration, calculateInstrumentationStudentCount } from "./utils.js";
+
 export function createAdminRenderers({
   els,
   state,
@@ -99,6 +101,125 @@ export function createAdminRenderers({
   let adminPizzaTotalsRenderTokenDay = 0;
   let adminPizzaTotalsRenderTokenSchool = 0;
   let adminPizzaTotalsRenderToken = 0;
+
+
+  function renderParticipationSummary({
+    registered = [],
+    scheduleEntries = [],
+    entryDataByEnsemble = new Map(),
+    error = null,
+  } = {}) {
+    if (!els.adminParticipationSummaryStats || !els.adminParticipationSummaryBody || !els.adminParticipationSummaryHint) {
+      return;
+    }
+
+    // Handle Firestore fetch errors
+    if (error) {
+      els.adminParticipationSummaryStats.innerHTML = "<div class='note'>Student counts unavailable</div>";
+      els.adminParticipationSummaryBody.innerHTML =
+        "<tr><td colspan='3' class='hint'>Failed to load student count data. Please check your connection and refresh the page.</td></tr>";
+      els.adminParticipationSummaryHint.textContent = "Data temporarily unavailable.";
+      return;
+    }
+
+    const eventId = String(state.event.active?.id || "").trim();
+    if (!eventId) {
+      els.adminParticipationSummaryStats.innerHTML = "<div class='note'>Set an active event to begin.</div>";
+      els.adminParticipationSummaryBody.innerHTML =
+        "<tr><td colspan='3' class='hint'>Set an active event to begin.</td></tr>";
+      els.adminParticipationSummaryHint.textContent = "Set an active event to begin.";
+      return;
+    }
+
+    const scheduledEntries = Array.isArray(scheduleEntries)
+      ? scheduleEntries.filter((entry) => entry && entry.hidden !== true)
+      : [];
+    const useScheduledRoster = scheduledEntries.length > 0;
+    const roster = useScheduledRoster
+      ? scheduledEntries.map((entry) => ({
+          schoolId: entry.schoolId,
+          schoolName: entry.schoolName || "",
+          ensembleId: entry.ensembleId || entry.id,
+          ensembleName: entry.ensembleName || "",
+          id: entry.id,
+        }))
+      : registered;
+
+    const bySchool = new Map();
+    let instrumentedEnsembles = 0;
+    roster.forEach((entry) => {
+      const schoolId = String(entry.schoolId || "").trim();
+      if (!schoolId) return;
+      const schoolName =
+        String(entry.schoolName || "").trim() ||
+        getSchoolNameById(state.admin.schoolsList, schoolId) ||
+        schoolId;
+      if (!isProductionRegistration(entry, schoolName)) return;
+      const ensembleId = String(entry.ensembleId || entry.id || "").trim();
+      const studentCount = calculateInstrumentationStudentCount(entryDataByEnsemble.get(ensembleId) || {});
+      if (studentCount > 0) {
+        instrumentedEnsembles += 1;
+      }
+      const current = bySchool.get(schoolId) || {
+        schoolId,
+        schoolName,
+        ensembles: 0,
+        students: 0,
+      };
+      current.ensembles += 1;
+      current.students += studentCount;
+      bySchool.set(schoolId, current);
+    });
+
+    const rows = Array.from(bySchool.values()).sort((a, b) => a.schoolName.localeCompare(b.schoolName));
+    const schoolTotal = rows.length;
+    const ensembleTotal = rows.reduce((sum, row) => sum + row.ensembles, 0);
+    const studentTotal = rows.reduce((sum, row) => sum + row.students, 0);
+
+    els.adminParticipationSummaryStats.innerHTML = "";
+    [
+      { label: "Schools", value: schoolTotal },
+      { label: "Ensembles", value: ensembleTotal },
+      { label: "Students", value: studentTotal },
+    ].forEach(({ label, value }) => {
+      const card = document.createElement("div");
+      card.className = "admin-participation-stat";
+      const valueEl = document.createElement("strong");
+      valueEl.textContent = String(value);
+      const labelEl = document.createElement("span");
+      labelEl.textContent = label;
+      card.appendChild(valueEl);
+      card.appendChild(labelEl);
+      els.adminParticipationSummaryStats.appendChild(card);
+    });
+
+    els.adminParticipationSummaryBody.innerHTML = "";
+    if (!rows.length) {
+      els.adminParticipationSummaryBody.innerHTML =
+        "<tr><td colspan='3' class='hint'>No production registrations found for the active event.</td></tr>";
+      els.adminParticipationSummaryHint.textContent =
+        "Totals exclude test/demo/sandbox/QA registrations and stale school artifacts.";
+      return;
+    }
+
+    rows.forEach((row) => {
+      const tr = document.createElement("tr");
+      const schoolCell = document.createElement("td");
+      schoolCell.textContent = row.schoolName;
+      const ensemblesCell = document.createElement("td");
+      ensemblesCell.textContent = String(row.ensembles);
+      const studentsCell = document.createElement("td");
+      studentsCell.textContent = String(row.students);
+      tr.appendChild(schoolCell);
+      tr.appendChild(ensemblesCell);
+      tr.appendChild(studentsCell);
+      els.adminParticipationSummaryBody.appendChild(tr);
+    });
+
+    const rosterLabel = useScheduledRoster ? "scheduled ensemble" : "registered ensemble";
+    els.adminParticipationSummaryHint.textContent =
+      `${instrumentedEnsembles}/${ensembleTotal} ${rosterLabel}${ensembleTotal === 1 ? "" : "s"} currently have instrumentation counts saved.`;
+  }
 
   function formatBlockerError(error, fallbackMessage) {
     const blockers = Array.isArray(error?.details?.blockers) ? error.details.blockers : [];
@@ -3640,7 +3761,10 @@ export function createAdminRenderers({
       if (!els.adminRegisteredEnsemblesList) return;
       els.adminRegisteredEnsemblesList.innerHTML = "";
       const eventId = state.event.active?.id;
-      if (!eventId) return;
+      if (!eventId) {
+        renderParticipationSummary();
+        return;
+      }
 
       const [registeredRaw, scheduleEntries, entriesSnap] = await Promise.all([
         fetchRegisteredEnsembles(eventId),
@@ -3650,8 +3774,14 @@ export function createAdminRenderers({
       state.event.rosterEntries = Array.isArray(scheduleEntries) ? [...scheduleEntries] : [];
       await refreshPreEventScheduleTimelineStarts?.(state.event.rosterEntries);
       const { active: registered, stale } = await resolveCurrentRegisteredEnsembles(eventId, registeredRaw);
+      const entryDataByEnsemble = new Map();
+      entriesSnap.forEach((snap) => {
+        if (!snap?.exists()) return;
+        entryDataByEnsemble.set(snap.id, snap.data());
+      });
 
       if (!registered.length) {
+        renderParticipationSummary({ registered, scheduleEntries, entryDataByEnsemble });
         const staleHint = stale.length
           ? `<li class='hint'>No current ensembles are registered. Hidden stale entries: ${stale.length}.</li>`
           : "<li class='hint'>No ensembles have registered yet.</li>";
@@ -3668,11 +3798,6 @@ export function createAdminRenderers({
       }
 
       const scheduleByEnsemble = new Map((scheduleEntries || []).map((row) => [row.ensembleId || row.id, row]));
-      const entryDataByEnsemble = new Map();
-      entriesSnap.forEach((snap) => {
-        if (!snap?.exists()) return;
-        entryDataByEnsemble.set(snap.id, snap.data());
-      });
 
       const bySchool = new Map();
       registered.forEach((entry) => {
@@ -3741,7 +3866,12 @@ export function createAdminRenderers({
         els.adminRegisteredEnsemblesList.appendChild(li);
       });
 
+      renderParticipationSummary({ registered, scheduleEntries, entryDataByEnsemble });
       schedulePreEventGuidedFlowRender();
+    } catch (err) {
+      // If Firestore fetch fails, show error state in participation summary
+      renderParticipationSummary({ error: err });
+      console.error("Failed to load registered ensembles:", err);
     } finally {
       registeredRenderInFlight = false;
       if (registeredRenderQueued) {

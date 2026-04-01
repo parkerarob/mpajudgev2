@@ -524,27 +524,75 @@ What a director sees when they access their released results. Per ensemble:
 
 ## Workflow States
 
-### Score Sheet Status
+> **Two models are documented here.** The Current Firebase Model reflects what is live in production and what is written into existing Firestore data from the pilot event. The Future Target Model is the intended clean design for the Supabase rebuild. Do not conflate them.
+
+---
+
+### Current Firebase Model
+
+The Firebase system uses separate Firestore collections for raw judge work and officialized results. Statuses are split across those collections.
+
+#### Raw Assessment Statuses (`rawAssessments` collection)
+
+These are written by judges and managed by the admin during the event.
+
+| Status | Written By | Meaning |
+|--------|------------|---------|
+| `draft` | Judge | Judge is actively working — not yet submitted |
+| `submitted` | Judge | Judge has submitted; awaiting admin action. Also appears as `locked` or `review_needed` in some documents — these are the same functional state and accumulated across system iterations. Treat all three as "submitted, pending admin review." |
+| `reopened` | Admin | Admin has unlocked a submitted assessment so the judge can correct it. Functionally equivalent to returning a score sheet to the judge. |
+| `excluded` | Admin | Soft-delete. The document remains in Firestore but is not used in any packet. Used to remove stray or duplicate assessments without destroying data. |
+
+#### Official Assessment Statuses (`officialAssessments` collection)
+
+These are created by admin when they officialize a raw assessment into a packet slot.
+
+| Status | Meaning |
+|--------|---------|
+| `officialized` | Admin has promoted a raw assessment into this packet slot. This is the Firebase equivalent of `verified` in the target model. |
+
+#### Packet Release (`packets` collection)
+
+Release is a boolean field on the packet document, not a status string. A packet is either released or not. The admin sets it manually.
+
+| Field | Meaning |
+|-------|---------|
+| `released: false` | Internal only — not visible to directors |
+| `released: true` | Visible to directors. Can only be set when all required judge positions have an officialized assessment. |
+
+**Core concept:**
+- **Officialization controls validity and packet inclusion** — an assessment is part of the packet because admin officialized it
+- **Release controls visibility** — a packet is visible to directors because admin released it
+- A packet can be complete + unreleased (all positions officialized, Chair hasn't released yet)
+- A released packet can be unreleased if corrections are needed
+
+---
+
+### Future Target Model (Supabase Rebuild)
+
+This is the clean 4-state model the rebuild should implement. The Firebase system accumulated extra states from event-day edge cases; the rebuild should enforce this simpler vocabulary from the start.
+
+#### Score Sheet Status
 
 | Status | Meaning |
 |--------|---------|
 | `draft` | Judge is actively working on the score sheet |
-| `submitted` | Judge has completed and sent the score sheet for Chair review |
-| `returned` | Chair has returned the score sheet to the judge with a visible flag (no justification text required; Chair handles explanation in person). Judge can fix ratings/comments and optionally append additional audio, but is not required to re-record. |
-| `verified` | Chair has validated the score sheet; it is now official and **automatically included in the packet** |
+| `submitted` | Judge has completed and submitted. Awaiting Chair review. Single canonical status — no `locked` or `review_needed` variants. |
+| `returned` | Chair has returned the score sheet to the judge with a visible flag. Judge corrects and resubmits. Replaces `reopened` from Firebase. |
+| `verified` | Chair has validated the score sheet. Automatically part of the packet — no separate officialization step. Replaces `officialized` from Firebase. |
 
 **Key rules:**
-- A judge sees a visible flag when their score sheet has been returned
-- `returned` puts the score sheet back in `draft`-like state for the judge to correct and resubmit
-- Once `verified`, the score sheet is automatically part of the packet — there is no separate "add to packet" action
+- `returned` puts the score sheet back into a `draft`-like state for the judge
+- Once `verified`, the score sheet is part of the packet — there is no separate admin "add to packet" action
+- `excluded` becomes unnecessary: a `returned` score sheet that the judge never resubmits simply stays `returned` and does not block the packet if the Chair decides to proceed without it
 
-### Packet Status (Two Independent Dimensions)
+#### Packet Status (Two Independent Dimensions)
 
 **Assembly status** (computed, not manually set):
 
 | Status | Meaning |
 |--------|---------|
-| `incomplete` | Packet is missing required verified score sheets |
+| `incomplete` | Packet is missing one or more required verified score sheets |
 | `complete` | All required score sheets are verified and included |
 
 **Release status** (manually set by Chair):
@@ -554,13 +602,7 @@ What a director sees when they access their released results. Per ensemble:
 | `unreleased` | Internal only — not visible to directors |
 | `released` | Visible to directors and public-facing users |
 
-**Core concept:**
-- **Verification controls validity and inclusion** — a score sheet is part of the packet because it's verified
-- **Release controls visibility** — a packet is visible to directors because it's released
-- A packet can be `complete` + `unreleased` (all score sheets verified, but Chair hasn't released yet)
-- A packet can be `released` then set back to `unreleased` if corrections are needed
-
-**Database representation:**
+**Target database representation:**
 ```
 score_sheets.status = draft | submitted | returned | verified
 packets.assembly_status = incomplete | complete  (computed)

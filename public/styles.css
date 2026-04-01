@@ -1086,12 +1086,13 @@ h3 {
   display: grid;
   gap: 4px;
   padding: 14px;
-  border: 1px solid rgba(116, 145, 216, 0.18);
-  border-radius: 16px;
-  background: rgba(8, 12, 22, 0.42);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
 }
 
 .admin-participation-stat strong {
+  font-family: var(--font-display);
   font-size: 1.9rem;
   line-height: 1;
 }
@@ -1099,6 +1100,12 @@ h3 {
 .admin-participation-stat span {
   color: var(--muted);
   font-size: var(--text-sm);
+}
+
+@media (max-width: 480px) {
+  .admin-participation-stats {
+    grid-template-columns: 1fr;
+  }
 }
 
 .admin-school-checkin-list {

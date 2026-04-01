@@ -108,6 +108,7 @@ export function createAdminRenderers({
     scheduleEntries = [],
     entryDataByEnsemble = new Map(),
     error = null,
+    loading = false,
   } = {}) {
     if (!els.adminParticipationSummaryStats || !els.adminParticipationSummaryBody || !els.adminParticipationSummaryHint) {
       return;
@@ -128,6 +129,15 @@ export function createAdminRenderers({
       els.adminParticipationSummaryBody.innerHTML =
         "<tr><td colspan='3' class='hint'>Set an active event to begin.</td></tr>";
       els.adminParticipationSummaryHint.textContent = "Set an active event to begin.";
+      return;
+    }
+
+    // Show loading state when event is active but data is still fetching
+    if (loading) {
+      els.adminParticipationSummaryStats.innerHTML = "<div class='note'>Loading participation data...</div>";
+      els.adminParticipationSummaryBody.innerHTML =
+        "<tr><td colspan='3' class='hint'>Fetching registration and schedule data from Firestore.</td></tr>";
+      els.adminParticipationSummaryHint.textContent = "Loading...";
       return;
     }
 
@@ -184,6 +194,7 @@ export function createAdminRenderers({
     ].forEach(({ label, value }) => {
       const card = document.createElement("div");
       card.className = "admin-participation-stat";
+      card.setAttribute("aria-label", `${value} ${label}`);
       const valueEl = document.createElement("strong");
       valueEl.textContent = String(value);
       const labelEl = document.createElement("span");
@@ -3765,6 +3776,9 @@ export function createAdminRenderers({
         renderParticipationSummary();
         return;
       }
+
+      // Show loading state while fetching data
+      renderParticipationSummary({ loading: true });
 
       const [registeredRaw, scheduleEntries, entriesSnap] = await Promise.all([
         fetchRegisteredEnsembles(eventId),

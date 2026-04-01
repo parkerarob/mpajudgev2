@@ -96,7 +96,7 @@
           </div>
         </div>
         <nav class="admin-subnav" id="adminSubnav" role="tablist" aria-label="Admin views">
-          <button type="button" class="admin-subnav-btn" id="adminSubnavDashboardBtn" role="tab" data-admin-view="dashboard" aria-selected="true">Dashboard</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavSettingsBtn" role="tab" data-admin-view="settings" aria-selected="true">Settings</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavEventChairBtn" role="tab" data-admin-view="preEvent" aria-selected="false">Registrations</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavChairBtn" role="tab" data-admin-view="liveEvent" aria-selected="false">Schedule &amp; Flow</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavSubmissionsBtn" role="tab" data-admin-view="submissions" aria-selected="false">Review Queue</button>
@@ -104,7 +104,7 @@
           <button type="button" class="admin-subnav-btn" id="adminSubnavRatingsBtn" role="tab" data-admin-view="ratings" aria-selected="false">Ratings</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavAnnouncerBtn" role="tab" data-admin-view="announcer" aria-selected="false">Announcer</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavReadinessBtn" role="tab" data-admin-view="readiness" aria-selected="false">Readiness</button>
-          <button type="button" class="admin-subnav-btn" id="adminSubnavSettingsBtn" role="tab" data-admin-view="settings" aria-selected="false">Settings</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavDashboardBtn" role="tab" data-admin-view="dashboard" aria-selected="false">Dashboard</button>
         </nav>
         <div class="panel admin-safe-mode is-hidden" id="adminSafeModePanel">
           <div class="note" id="adminSafeModeMessage">Admin safe mode is on. Heavy data is paused.</div>
@@ -918,12 +918,12 @@
 
       <section class="card" id="directorCard" role="tabpanel" aria-labelledby="directorTab">
         <nav class="director-workspace-nav is-hidden" id="directorWorkspaceNav" aria-label="Director workspace navigation">
+          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceResultsBtn">Results Packet</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceRegisterBtn">Registration</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceEnsemblesBtn">My Ensembles</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceInfoBtn">Event Info</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceSiteBtn">Site Info</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceProgramBtn">Program</button>
-          <button type="button" class="ghost director-workspace-nav-btn" id="directorWorkspaceResultsBtn">Results Packet</button>
         </nav>
         <div class="ios-screen" id="directorDashboardLayout">
 
@@ -1334,11 +1334,11 @@
 
       <section class="card is-hidden" id="eventDetailPage">
         <nav class="director-workspace-nav is-hidden" id="eventDetailDirectorNav" aria-label="Director event navigation">
+          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorResultsBtn">Results Packet</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorRegisterBtn">Registration</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorEnsemblesBtn">My Ensembles</button>
           <button type="button" class="ghost director-workspace-nav-btn is-active" id="eventDetailDirectorInfoBtn">Event Info</button>
           <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorSiteBtn">Site Info</button>
-          <button type="button" class="ghost director-workspace-nav-btn" id="eventDetailDirectorResultsBtn">Results Packet</button>
         </nav>
         <div class="row event-detail-topbar">
           <p class="director-hero-kicker">Event Info</p>

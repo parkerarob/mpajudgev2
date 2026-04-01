@@ -1,6 +1,7 @@
 export function createAdminLiveEventController({
   els,
   renderLiveEventCheckinQueue,
+  renderAdminLiveSubmissions,
 } = {}) {
   function setVisible(visible) {
     if (!els.adminViewChair) return;
@@ -10,6 +11,7 @@ export function createAdminLiveEventController({
   function render({ visible, heavyLoaded } = {}) {
     if (!visible || !heavyLoaded) return;
     renderLiveEventCheckinQueue();
+    renderAdminLiveSubmissions?.();
   }
 
   return {

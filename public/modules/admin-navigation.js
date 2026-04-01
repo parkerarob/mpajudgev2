@@ -1,25 +1,32 @@
 const ADMIN_VIEWS = new Set([
   "dashboard",
+  "setup",
+  "directory",
   "preEvent",
   "liveEvent",
-  "submissions",
-  "packets",
-  "ratings",
+  "results",
   "announcer",
-  "readiness",
-  "settings",
 ]);
 
 const ADMIN_VIEW_BY_SEGMENT = {
   "": "dashboard",
   dashboard: "dashboard",
+  // Setup — event config, judge assignments, schedule import, program export
+  setup: "setup",
+  settings: "setup",           // legacy alias
+  // Directory — schools, users, director assignments
+  directory: "directory",
+  // Pre-Event — registrations + readiness (merged)
   "pre-event": "preEvent",
-  "preevent": "preEvent",
+  preevent: "preEvent",
   registrations: "preEvent",
   registration: "preEvent",
   "check-in": "preEvent",
   eventchair: "preEvent",
   events: "preEvent",
+  readiness: "preEvent",       // legacy alias
+  checkin: "preEvent",
+  // Live Day — schedule/flow + review queue (merged)
   live: "liveEvent",
   "live-event": "liveEvent",
   liveevent: "liveEvent",
@@ -28,21 +35,20 @@ const ADMIN_VIEW_BY_SEGMENT = {
   "schedule-and-flow": "liveEvent",
   chair: "liveEvent",
   logistics: "liveEvent",
-  checkin: "preEvent",
-  submissions: "submissions",
-  reviews: "submissions",
-  queue: "submissions",
-  directory: "settings",
-  settings: "settings",
-  packets: "packets",
-  packet: "packets",
-  ratings: "ratings",
-  ratingsummary: "ratings",
-  summary: "ratings",
+  submissions: "liveEvent",    // legacy alias
+  reviews: "liveEvent",        // legacy alias
+  queue: "liveEvent",          // legacy alias
+  // Results — packets + ratings + maintenance (merged)
+  results: "results",
+  packets: "results",          // legacy alias
+  packet: "results",           // legacy alias
+  ratings: "results",          // legacy alias
+  ratingsummary: "results",    // legacy alias
+  summary: "results",          // legacy alias
+  // Announcer — presentation display (not in main nav)
   announcer: "announcer",
   announce: "announcer",
   emcee: "announcer",
-  readiness: "readiness",
 };
 
 export function resolveAdminView(view, {
@@ -56,8 +62,10 @@ export function resolveAdminView(view, {
   if (resolved === "liveEvent" && !liveEnabled) {
     resolved = normalizedFallback === "liveEvent" ? "dashboard" : normalizedFallback;
   }
-  if (resolved === "settings" && !settingsEnabled) {
-    resolved = normalizedFallback === "settings" ? "dashboard" : normalizedFallback;
+  if ((resolved === "setup" || resolved === "directory") && !settingsEnabled) {
+    resolved =
+      resolved === normalizedFallback ? "dashboard" : normalizedFallback;
+    if (resolved === "setup" || resolved === "directory") resolved = "dashboard";
   }
   return ADMIN_VIEWS.has(resolved) ? resolved : "dashboard";
 }
@@ -71,7 +79,10 @@ export function resolveAdminViewFromHashSegment(segment, options = {}) {
 export function getAdminHashForView(view) {
   const resolvedView = resolveAdminView(view);
   if (resolvedView === "dashboard") return "#admin";
-  if (resolvedView === "preEvent") return "#admin/registrations";
-  if (resolvedView === "liveEvent") return "#admin/flow";
+  if (resolvedView === "preEvent") return "#admin/pre-event";
+  if (resolvedView === "liveEvent") return "#admin/live";
+  if (resolvedView === "setup") return "#admin/setup";
+  if (resolvedView === "directory") return "#admin/directory";
+  if (resolvedView === "results") return "#admin/results";
   return `#admin/${resolvedView}`;
 }

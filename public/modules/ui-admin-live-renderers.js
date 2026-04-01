@@ -277,18 +277,18 @@ export function createAdminLiveRenderers({
     let step = "Start";
     let nextTitle = "Set an active event to begin.";
     let nextHint = "Then review the running order and stage flow for scheduled ensembles.";
-    let nextActionLabel = "Open Settings";
+    let nextActionLabel = "Open Setup";
     let nextAction = () => {
-      window.location.hash = "#admin/settings";
+      window.location.hash = "#admin/setup";
     };
 
     if (hasActiveEvent && !hasScheduled) {
       step = "Schedule";
       nextTitle = "Schedule ensembles to enable Schedule & Flow operations.";
       nextHint = "Stage flow is driven from scheduled performance entries.";
-      nextActionLabel = "Open Registrations";
+      nextActionLabel = "Open Pre-Event";
       nextAction = () => {
-        window.location.hash = "#admin/registrations";
+        window.location.hash = "#admin/pre-event";
       };
     } else if (hasActiveEvent && hasScheduled) {
       step = "Stage";

@@ -157,8 +157,8 @@ export function createAdminAnnouncerController({
           <div>${escapeHtml(eventName)} has no scheduled ensembles yet.</div>
           <div class="hint">Add scheduled ensembles first, then return here for announcer scripts and stage flow.</div>
           <div class="actions">
-            <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/flow">Open Schedule &amp; Flow</button>
-            <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/registrations">Open Registrations</button>
+            <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/live">Open Live Day</button>
+            <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/pre-event">Open Pre-Event</button>
           </div>
         </div>
       `;
@@ -281,7 +281,7 @@ export function createAdminAnnouncerController({
             <div>Set an active event to load announcer notes.</div>
             <div class="hint">The announcer workspace follows the active event schedule.</div>
             <div class="actions">
-              <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/settings">Open Settings</button>
+              <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/setup">Open Settings</button>
             </div>
           </div>
         `;
@@ -364,7 +364,7 @@ export function createAdminAnnouncerController({
           <div>${escapeHtml(String(message))}</div>
           <div class="actions">
             <button type="button" class="ghost btn--sm" data-announcer-retry="1">Retry Announcer</button>
-            <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/flow">Open Schedule &amp; Flow</button>
+            <button type="button" class="ghost btn--sm" data-announcer-nav="#admin/live">Open Live Day</button>
           </div>
         </div>
       `;

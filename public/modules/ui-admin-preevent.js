@@ -3,6 +3,7 @@ export function createAdminPreEventController({
   renderAdminSchoolDetail,
   renderRegisteredEnsemblesList,
   renderAdminPizzaTotals,
+  renderAdminReadinessView,
 } = {}) {
   function setVisible(visible) {
     if (!els.adminViewEvents) return;
@@ -58,6 +59,7 @@ export function createAdminPreEventController({
     }
     if (heavyLoaded) {
       renderRegisteredEnsemblesList();
+      renderAdminReadinessView?.();
       return;
     }
     if (els.adminRegisteredEnsemblesList) {

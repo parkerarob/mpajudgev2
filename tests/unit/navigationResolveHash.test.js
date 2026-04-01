@@ -39,12 +39,12 @@ afterEach(() => {
 });
 
 describe("resolveHash", () => {
-  it("resolves readiness admin route", () => {
+  it("resolves readiness admin route (legacy alias → preEvent)", () => {
     const resolved = resolveHash("#admin/readiness");
     expect(resolved).toEqual({
       type: "tab",
       tab: "admin",
-      adminView: "readiness",
+      adminView: "preEvent",
     });
   });
 

@@ -952,7 +952,7 @@ export function createAdminRenderers({
       } else {
         primaryBtn.textContent = "Open Settings";
         primaryBtn.addEventListener("click", () => {
-          window.location.hash = "#admin/settings";
+          window.location.hash = "#admin/setup";
         });
       }
       actions.appendChild(primaryBtn);
@@ -962,7 +962,7 @@ export function createAdminRenderers({
         packetsBtn.className = "ghost";
         packetsBtn.textContent = "Open Packets & Results";
         packetsBtn.addEventListener("click", () => {
-          window.location.hash = "#admin/packets";
+          window.location.hash = "#admin/results";
         });
         actions.appendChild(packetsBtn);
       }
@@ -1735,7 +1735,7 @@ export function createAdminRenderers({
     let nextHint = "Then review incoming source sheets and add them into the Results Packet.";
     let nextActionLabel = "Open Settings";
     let nextAction = () => {
-      window.location.hash = "#admin/settings";
+      window.location.hash = "#admin/setup";
     };
 
     if (hasActiveEvent && totalCount === 0) {
@@ -1776,7 +1776,7 @@ export function createAdminRenderers({
       nextHint = "Move to Packets & Results to manage release-ready results packets.";
       nextActionLabel = "Open Packets & Results";
       nextAction = () => {
-        window.location.hash = "#admin/packets";
+        window.location.hash = "#admin/results";
       };
     }
 
@@ -1827,7 +1827,7 @@ export function createAdminRenderers({
     let nextHint = "Then select a school and review official results readiness before release.";
     let nextActionLabel = "Open Settings";
     let nextAction = () => {
-      window.location.hash = "#admin/settings";
+      window.location.hash = "#admin/setup";
     };
 
     if (hasActiveEvent && !hasSchoolSelected) {
@@ -1844,7 +1844,7 @@ export function createAdminRenderers({
       nextHint = "Confirm schedules and approved packet slots, then return to results release.";
       nextActionLabel = "Open Review Queue";
       nextAction = () => {
-        window.location.hash = "#admin/submissions";
+        window.location.hash = "#admin/live";
       };
     } else if (hasActiveEvent && hasSchoolSelected && releaseReadyCount < totalCount) {
       step = "Review";

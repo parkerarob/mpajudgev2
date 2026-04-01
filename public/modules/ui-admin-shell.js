@@ -1,8 +1,8 @@
 import { createAdminPreEventController } from "./ui-admin-preevent.js";
 import { createAdminLiveEventController } from "./ui-admin-live.js";
-import { createAdminPacketsController } from "./ui-admin-packets.js";
-import { createAdminReadinessController } from "./ui-admin-readiness.js";
-import { createAdminSettingsController } from "./ui-admin-settings.js";
+import { createAdminResultsController } from "./ui-admin-results.js";
+import { createAdminSetupController } from "./ui-admin-setup.js";
+import { createAdminDirectoryController } from "./ui-admin-directory.js";
 import { resolveAdminView } from "./admin-navigation.js";
 
 export function createAdminViewController({
@@ -37,27 +37,29 @@ export function createAdminViewController({
     renderAdminSchoolDetail,
     renderRegisteredEnsemblesList,
     renderAdminPizzaTotals,
+    renderAdminReadinessView,
   });
   const liveController = createAdminLiveEventController({
     els,
     renderLiveEventCheckinQueue,
+    renderAdminLiveSubmissions,
   });
-  const packetsController = createAdminPacketsController({
+  const resultsController = createAdminResultsController({
     els,
     state,
     getEffectiveRole,
     renderAdminPacketsBySchedule,
+    renderAdminRatingsView,
   });
-  const settingsController = createAdminSettingsController({
+  const setupController = createAdminSetupController({
     els,
     renderEventList,
+  });
+  const directoryController = createAdminDirectoryController({
+    els,
     renderAdminSchoolsDirectory,
     renderDirectorAssignmentsDirectory,
     renderAdminUsersDirectory,
-  });
-  const readinessController = createAdminReadinessController({
-    els,
-    renderAdminReadinessView,
   });
 
   function renderDashboardView() {
@@ -130,78 +132,63 @@ export function createAdminViewController({
       fallback: "dashboard",
     });
     state.admin.currentView = resolvedView;
-    const showDashboard = resolvedView === "dashboard";
-    const showPreEvent = resolvedView === "preEvent";
-    const showPackets = resolvedView === "packets";
-    const showRatings = resolvedView === "ratings";
-    const showSubmissions = resolvedView === "submissions";
-    const showAnnouncer = resolvedView === "announcer";
-    const showLiveEvent = resolvedView === "liveEvent" && isAdminLiveEventEnabled();
-    const showSettings = resolvedView === "settings" && isAdminSettingsEnabled();
-    const showReadiness = resolvedView === "readiness";
+
+    const showDashboard   = resolvedView === "dashboard";
+    const showSetup       = resolvedView === "setup"      && isAdminSettingsEnabled();
+    const showDirectory   = resolvedView === "directory"  && isAdminSettingsEnabled();
+    const showPreEvent    = resolvedView === "preEvent";
+    const showLiveEvent   = resolvedView === "liveEvent"  && isAdminLiveEventEnabled();
+    const showResults     = resolvedView === "results";
+    const showAnnouncer   = resolvedView === "announcer";
     const showSchoolDetail = showPreEvent && Boolean(state.admin.selectedSchoolId);
     const heavyLoaded = isAdminHeavyViewLoaded(resolvedView);
 
-    setSectionVisible(els.adminViewDashboard, showDashboard);
-    setSectionVisible(els.adminViewEvents, showPreEvent);
-    setSectionVisible(els.adminViewChair, showLiveEvent);
-    setSectionVisible(els.adminViewSubmissions, showSubmissions);
-    setSectionVisible(els.adminViewPackets, showPackets);
-    setSectionVisible(els.adminViewRatings, showRatings);
-    setSectionVisible(els.adminViewAnnouncer, showAnnouncer);
-    setSectionVisible(els.adminViewSettings, showSettings);
-    setSectionVisible(els.adminViewReadiness, showReadiness);
-    liveController.setVisible(showLiveEvent);
+    setSectionVisible(els.adminViewDashboard,      showDashboard);
+    setSectionVisible(els.adminViewSetup,          showSetup);
+    setSectionVisible(els.adminViewDirectory,      showDirectory);
+    setSectionVisible(els.adminViewEvents,         showPreEvent);
+    setSectionVisible(els.adminReadinessPanels,    showPreEvent);
+    setSectionVisible(els.adminViewChair,          showLiveEvent);
+    setSectionVisible(els.adminViewResults,        showResults);
+    setSectionVisible(els.adminViewAnnouncer,      showAnnouncer);
+
     preEventController.setVisible(showPreEvent);
-    packetsController.setVisible(showPackets);
-    settingsController.setVisible(showSettings);
-    readinessController.setVisible(showReadiness);
-    packetsController.syncActions();
+    liveController.setVisible(showLiveEvent);
+    resultsController.setVisible(showResults);
+    setupController.setVisible(showSetup);
+    directoryController.setVisible(showDirectory);
+
+    resultsController.syncActions();
     liveController.render({ visible: showLiveEvent, heavyLoaded });
     preEventController.render({ showSchoolDetail, heavyLoaded });
-    if (showDashboard) {
-      renderDashboardView();
-    }
-    if (showSubmissions) {
-      renderAdminLiveSubmissions();
-    }
-    packetsController.render({ visible: showPackets });
-    if (showRatings) {
-      renderAdminRatingsView();
-    }
-    if (showAnnouncer) {
-      renderAdminAnnouncerView();
-    }
-    settingsController.render({ visible: showSettings });
-    readinessController.render({ visible: showReadiness });
+
+    if (showDashboard) renderDashboardView();
+    resultsController.render({ visible: showResults });
+    if (showAnnouncer) renderAdminAnnouncerView();
+    setupController.render({ visible: showSetup });
+    directoryController.render({ visible: showDirectory });
+
+    // Nav button aria-selected states
     if (els.adminSubnavDashboardBtn) {
       els.adminSubnavDashboardBtn.setAttribute("aria-selected", showDashboard ? "true" : "false");
     }
-    if (els.adminSubnavChairBtn) {
-      els.adminSubnavChairBtn.classList.toggle("is-hidden", !isAdminLiveEventEnabled());
-      els.adminSubnavChairBtn.setAttribute("aria-selected", showLiveEvent ? "true" : "false");
+    if (els.adminSubnavSetupBtn) {
+      els.adminSubnavSetupBtn.classList.toggle("is-hidden", !isAdminSettingsEnabled());
+      els.adminSubnavSetupBtn.setAttribute("aria-selected", showSetup ? "true" : "false");
+    }
+    if (els.adminSubnavDirectoryBtn) {
+      els.adminSubnavDirectoryBtn.classList.toggle("is-hidden", !isAdminSettingsEnabled());
+      els.adminSubnavDirectoryBtn.setAttribute("aria-selected", showDirectory ? "true" : "false");
     }
     if (els.adminSubnavEventChairBtn) {
       els.adminSubnavEventChairBtn.setAttribute("aria-selected", showPreEvent ? "true" : "false");
     }
-    if (els.adminSubnavPacketsBtn) {
-      els.adminSubnavPacketsBtn.setAttribute("aria-selected", showPackets ? "true" : "false");
+    if (els.adminSubnavLiveBtn) {
+      els.adminSubnavLiveBtn.classList.toggle("is-hidden", !isAdminLiveEventEnabled());
+      els.adminSubnavLiveBtn.setAttribute("aria-selected", showLiveEvent ? "true" : "false");
     }
-    if (els.adminSubnavRatingsBtn) {
-      els.adminSubnavRatingsBtn.setAttribute("aria-selected", showRatings ? "true" : "false");
-    }
-    if (els.adminSubnavSubmissionsBtn) {
-      els.adminSubnavSubmissionsBtn.setAttribute("aria-selected", showSubmissions ? "true" : "false");
-    }
-    if (els.adminSubnavAnnouncerBtn) {
-      els.adminSubnavAnnouncerBtn.setAttribute("aria-selected", showAnnouncer ? "true" : "false");
-    }
-    if (els.adminSubnavReadinessBtn) {
-      els.adminSubnavReadinessBtn.setAttribute("aria-selected", showReadiness ? "true" : "false");
-    }
-    if (els.adminSubnavSettingsBtn) {
-      els.adminSubnavSettingsBtn.classList.toggle("is-hidden", !isAdminSettingsEnabled());
-      els.adminSubnavSettingsBtn.setAttribute("aria-selected", showSettings ? "true" : "false");
+    if (els.adminSubnavResultsBtn) {
+      els.adminSubnavResultsBtn.setAttribute("aria-selected", showResults ? "true" : "false");
     }
   }
 

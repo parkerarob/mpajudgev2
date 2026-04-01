@@ -507,7 +507,7 @@ function startActiveAssignmentsWatcher() {
       setStageJudgeSelectValues(assignments || {});
     }
     renderAdminReadiness();
-    if (state.app.currentTab === "admin" && state.admin.currentView === "readiness") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
       renderAdminReadinessView();
     }
     refreshOpenEventDefaultsState();
@@ -2041,7 +2041,7 @@ async function runAdminPreflightRefresh() {
   }
   try {
     await runEventPreflight({ eventId });
-    if (state.app.currentTab === "admin" && state.admin.currentView === "readiness") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
       await renderAdminReadinessView();
     }
   } catch (error) {
@@ -2052,7 +2052,7 @@ async function runAdminPreflightRefresh() {
     if (els.adminRunPreflightBtn && state.event.active?.id) {
       els.adminRunPreflightBtn.disabled = false;
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "readiness") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
       await renderAdminReadinessView();
     }
   }
@@ -3441,7 +3441,7 @@ export function startWatchers() {
     if (liveEnabled && state.admin.currentView === "liveEvent" && isAdminHeavyViewLoaded("liveEvent")) {
       renderLiveEventCheckinQueue();
     }
-    if (state.admin.currentView === "packets") {
+    if (state.admin.currentView === "results") {
       renderAdminPacketsBySchedule();
     }
     if (state.admin.currentView === "announcer") {
@@ -3455,7 +3455,7 @@ export function startWatchers() {
     watchRoster(onRosterUpdate);
   };
   watchEvents(() => {
-    if (settingsEnabled && state.app.currentTab === "admin" && state.admin.currentView === "settings") {
+    if (settingsEnabled && state.app.currentTab === "admin" && state.admin.currentView === "setup") {
       renderEventList();
     }
     if (state.app.currentTab === "admin" && state.admin.currentView === "dashboard") {
@@ -3464,13 +3464,13 @@ export function startWatchers() {
     if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent" && !isAdminSchoolDetailOpen()) {
       if (isAdminHeavyViewLoaded("preEvent")) renderRegisteredEnsemblesList();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "packets") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "results") {
       renderAdminPacketsBySchedule();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "submissions") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "liveEvent") {
       renderAdminLiveSubmissions();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "readiness") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
       renderAdminReadinessView();
     }
     if (state.app.currentTab === "admin" && state.admin.currentView === "announcer") {
@@ -3530,10 +3530,10 @@ export function startWatchers() {
         renderRegisteredEnsemblesList();
       }
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "packets") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "results") {
       renderAdminPacketsBySchedule();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "readiness") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
       renderAdminReadinessView();
     }
     if (state.app.currentTab === "director") renderDirectorRegistrationPanel();
@@ -3542,7 +3542,7 @@ export function startWatchers() {
   startActiveAssignmentsWatcher();
   syncRosterWatcherForActiveEvent();
   watchSchools(() => {
-    if (settingsEnabled && state.app.currentTab === "admin" && state.admin.currentView === "settings") {
+    if (settingsEnabled && state.app.currentTab === "admin" && state.admin.currentView === "directory") {
       renderAdminSchoolsDirectory();
       renderDirectorAssignmentsDirectory();
       renderAdminUsersDirectory();
@@ -3557,7 +3557,7 @@ export function startWatchers() {
     if (liveEnabled && state.app.currentTab === "admin" && state.admin.currentView === "liveEvent") {
       renderLiveEventCheckinQueue();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "packets") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "results") {
       renderAdminPacketsBySchedule();
     }
     if (judgeEnabled && canUseOpenJudge(state.auth.userProfile)) {
@@ -3571,13 +3571,13 @@ export function startWatchers() {
   if (settingsEnabled) {
     watchDirectors((directors) => {
       state.admin.directorsList = directors;
-      if (state.app.currentTab === "admin" && state.admin.currentView === "settings") {
+      if (state.app.currentTab === "admin" && state.admin.currentView === "directory") {
         renderDirectorAssignmentsDirectory();
       }
     });
     watchUsers((users) => {
       state.admin.usersList = users;
-      if (state.app.currentTab === "admin" && state.admin.currentView === "settings") {
+      if (state.app.currentTab === "admin" && state.admin.currentView === "directory") {
         renderAdminUsersDirectory();
       }
     });
@@ -3616,7 +3616,7 @@ export function startWatchers() {
       if (state.app.currentTab === "admin" && state.admin.currentView === "dashboard") {
         renderAdminDashboard();
       }
-      if (state.app.currentTab === "admin" && state.admin.currentView === "submissions") {
+      if (state.app.currentTab === "admin" && state.admin.currentView === "liveEvent") {
         renderAdminLiveSubmissions();
       }
     });
@@ -4804,7 +4804,7 @@ export function renderDirectorChecklist(entry, completionState) {
 }
 
 export function renderAdminReadiness() {
-  if (state.app.currentTab === "admin" && state.admin.currentView === "readiness") {
+  if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
     return renderAdminReadinessView();
   }
   return null;
@@ -4860,9 +4860,9 @@ function renderPreEventWorkflowGuidance({
   let step = "Start";
   let nextTitle = "Set an active event to begin.";
   let nextHint = "Then complete registrations, scheduling, and director input checks.";
-  let nextActionLabel = "Open Settings";
+  let nextActionLabel = "Open Setup";
   let nextAction = () => {
-    window.location.hash = "#admin/settings";
+    window.location.hash = "#admin/setup";
   };
 
   if (hasActiveEvent && !registrationDone) {
@@ -4896,9 +4896,9 @@ function renderPreEventWorkflowGuidance({
     step = "Ready";
     nextTitle = "Registrations setup is complete.";
     nextHint = "You can move to Schedule & Flow operations when check-in begins.";
-    nextActionLabel = "Open Schedule & Flow";
+    nextActionLabel = "Open Live Day";
     nextAction = () => {
-      window.location.hash = "#admin/flow";
+      window.location.hash = "#admin/live";
     };
   }
 

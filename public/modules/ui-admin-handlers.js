@@ -753,7 +753,7 @@ export function createAdminHandlerBinder({
       btn.addEventListener("click", () => {
         if (isReadinessBusy()) return;
         if (view === "liveEvent" && !isAdminLiveEventEnabled()) return;
-        if (view === "settings" && !isAdminSettingsEnabled()) return;
+        if ((view === "setup" || view === "directory") && !isAdminSettingsEnabled()) return;
         if (view === "preEvent") {
           state.admin.selectedSchoolId = null;
           state.admin.selectedSchoolName = "";
@@ -794,7 +794,7 @@ export function createAdminHandlerBinder({
     if (els.adminPacketsSchoolSelect) {
       els.adminPacketsSchoolSelect.addEventListener("change", () => {
         state.admin.packetsSchoolId = els.adminPacketsSchoolSelect?.value || "";
-        if (state.admin.currentView === "packets") {
+        if (state.admin.currentView === "results") {
           renderAdminPacketsBySchedule();
         }
       });
@@ -803,7 +803,7 @@ export function createAdminHandlerBinder({
     if (els.adminSubmissionsFilter) {
       els.adminSubmissionsFilter.addEventListener("change", () => {
         state.admin.rawAssessmentFilter = els.adminSubmissionsFilter?.value || "pending";
-        if (state.admin.currentView === "submissions") {
+        if (state.admin.currentView === "liveEvent") {
           renderAdminLiveSubmissions();
         }
       });
@@ -835,7 +835,7 @@ export function createAdminHandlerBinder({
             alertUser(
               `Mock results packet released for ${result.schoolName || "Ashley High School"} - ${result.ensembleName || result.ensembleId}.`
             );
-            if (state.admin.currentView === "packets") {
+            if (state.admin.currentView === "results") {
               renderAdminPacketsBySchedule();
             }
           } catch (error) {
@@ -940,7 +940,7 @@ export function createAdminHandlerBinder({
       if (!view) return;
       if (isReadinessBusy()) return;
       if (view === "liveEvent" && !isAdminLiveEventEnabled()) return;
-      if (view === "settings" && !isAdminSettingsEnabled()) return;
+      if ((view === "setup" || view === "directory") && !isAdminSettingsEnabled()) return;
       state.admin.currentView = view;
       applyAdminView(view);
       const hash = getAdminHashForView(view);
@@ -991,7 +991,7 @@ export function createAdminHandlerBinder({
           await runEventPreflight({ eventId });
           scheduleAdminPreflightRefresh?.({ immediate: true });
           await renderAdminReadinessView?.();
-          openAdminView("settings");
+          openAdminView("setup");
         } catch (error) {
           console.error("walkthrough start failed", error);
           alertUser(error?.message || "Unable to start walkthrough.");

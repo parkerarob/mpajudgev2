@@ -18,3 +18,19 @@ Key routing rules:
 - Architecture review → invoke plan-eng-review
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
+
+## Deploy Configuration (configured by /setup-deploy)
+- Platform: Firebase Hosting
+- Production URL: https://mpa-judge-v2.web.app
+- Deploy workflow: auto-deploy on push to main (.github/workflows/firebase-hosting-merge.yml)
+- PR preview workflow: .github/workflows/firebase-hosting-pull-request.yml
+- Firebase project: mpa-judge-v2
+- Merge method: squash (solo repo, keep history clean)
+- Project type: web app (SPA, no build step)
+- Post-deploy health check: https://mpa-judge-v2.web.app/version.json
+
+### Custom deploy hooks
+- Pre-merge: npm run test:unit && npm run test:security
+- Deploy trigger: automatic on push to main (GitHub Actions)
+- Deploy status: firebase hosting:channel:list --project mpa-judge-v2
+- Health check: curl -sf https://mpa-judge-v2.web.app/version.json

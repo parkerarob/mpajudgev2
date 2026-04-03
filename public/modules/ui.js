@@ -3161,6 +3161,11 @@ export function handleHashChange() {
         return;
       }
       state.admin.currentView = nextAdminView;
+      const canonicalHash = getAdminHashForView(nextAdminView);
+      if ((window.location.hash || "") !== canonicalHash) {
+        window.location.hash = canonicalHash;
+        return;
+      }
     }
     setTab(action.tab, { force: true });
   }
@@ -4819,7 +4824,7 @@ function renderPreEventWorkflowGuidance({
     nextHint = "You can move to Schedule & Flow operations when check-in begins.";
     nextActionLabel = "Open Live Day";
     nextAction = () => {
-      window.location.hash = "#admin/live";
+      window.location.hash = "#admin/event-day";
     };
   }
 

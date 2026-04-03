@@ -1,7 +1,5 @@
 export function createAdminResultsController({
   els,
-  state,
-  getEffectiveRole,
   renderAdminPacketsBySchedule,
   renderAdminRatingsView,
 } = {}) {
@@ -16,11 +14,7 @@ export function createAdminResultsController({
     renderAdminRatingsView?.();
   }
 
-  function syncActions() {
-    if (!els.adminPacketsMockPreviewBtn) return;
-    const isAdmin = getEffectiveRole(state.auth.userProfile) === "admin";
-    els.adminPacketsMockPreviewBtn.style.display = isAdmin ? "inline-flex" : "none";
-  }
+  function syncActions() {}
 
   return {
     setVisible,

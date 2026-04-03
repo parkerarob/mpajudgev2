@@ -2,7 +2,6 @@ export function createAdminSettingsController({
   els,
   renderEventList,
   renderAdminSchoolsDirectory,
-  renderDirectorAssignmentsDirectory,
   renderAdminUsersDirectory,
 } = {}) {
   function setVisible(visible) {
@@ -14,7 +13,6 @@ export function createAdminSettingsController({
     if (!visible) return;
     renderEventList();
     renderAdminSchoolsDirectory();
-    renderDirectorAssignmentsDirectory();
     renderAdminUsersDirectory();
   }
 

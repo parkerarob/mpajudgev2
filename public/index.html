@@ -186,78 +186,18 @@
               </div>
             </div>
           </div>
+          <div class="pre-event-subtab-bar" id="preEventSubtabBar">
+            <button type="button" class="pre-event-subtab is-active" id="preEventSubtabScheduled" data-subtab="scheduled">Scheduled Ensembles</button>
+            <button type="button" class="pre-event-subtab" id="preEventSubtabBuilder" data-subtab="builder">Schedule Builder</button>
+          </div>
           <div class="panel" id="adminRegisteredEnsemblesSection">
-            <h3>Step 1: Registrations</h3>
-            <p class="hint">Registered schools and ensembles for the active event. Click a school to manage scheduling, director readiness, and ensemble workspace data.</p>
+            <h3>Scheduled Ensembles</h3>
+            <p class="hint">All scheduled ensembles for the active event, sorted by performance time. Click Open to manage scheduling, director readiness, and ensemble workspace data for that school.</p>
             <ul id="adminRegisteredEnsemblesList" class="list"></ul>
           </div>
-          <div class="panel" id="adminParticipationSummarySection">
-            <div class="row row--between row--center">
-              <h3>Participation Summary</h3>
-              <span class="badge">Eventwide</span>
-            </div>
-            <p class="hint">Totals exclude test/demo/sandbox schools and calculate students from the instrumentation saved on each event form.</p>
-            <div class="admin-participation-stats" id="adminParticipationSummaryStats">
-              <div class="note">Set an active event to begin.</div>
-            </div>
-            <div class="schedule-timeline-table-wrap">
-              <table class="schedule-timeline-table" role="grid">
-                <thead>
-                  <tr>
-                    <th scope="col">School</th>
-                    <th scope="col">Ensembles</th>
-                    <th scope="col">Students</th>
-                  </tr>
-                </thead>
-                <tbody id="adminParticipationSummaryBody">
-                  <tr><td colspan="3" class="hint">Set an active event to begin.</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <div class="note" id="adminParticipationSummaryHint">Set an active event to begin.</div>
+          <div class="panel is-hidden" id="adminScheduleBuilderSection">
+            <div id="adminScheduleBuilderContent"></div>
           </div>
-          <div class="panel" id="adminScheduleSection">
-            <h3>Step 2: Scheduled Timeline</h3>
-            <p class="hint">Start times for Holding, Warm-up, Performance, and Sightreading for scheduled ensembles.</p>
-            <div class="panel stack">
-              <h4>Add Break</h4>
-              <p class="hint">All breaks are 30 minutes. Enter a time and the break will snap to the next valid transition.</p>
-              <div class="row">
-                <label class="grow">
-                  Break Time
-                  <input type="datetime-local" id="preEventBreakAtInput" />
-                </label>
-                <button type="button" class="ghost" id="preEventBreakAddBtn">Add 30-min Break</button>
-              </div>
-              <div class="note" id="preEventBreakStatus"></div>
-              <div id="preEventBreakList" class="stack"></div>
-            </div>
-            <div class="stack">
-              <h4>Scheduled Timeline (Start Times)</h4>
-              <p class="hint">Displays start times only for Holding, Warm-up, Performance, and Sightreading.</p>
-              <div class="note" id="preEventScheduleTimelineMessage"></div>
-              <div id="preEventScheduleTimelineContainer"></div>
-            </div>
-          </div>
-          <div class="panel" id="adminPizzaTotalsSection">
-            <div class="row row--between row--center">
-              <h3>Pizza Order Totals</h3>
-              <span class="badge">Eventwide</span>
-            </div>
-            <p class="hint">Cheese and pepperoni lunch quantities grouped by performance day.</p>
-            <div class="admin-pizza-totals-table" id="adminPizzaTotalsTable"></div>
-            <div class="note" id="adminPizzaTotalsHint">Set an active event to begin.</div>
-          </div>
-          <div class="panel" id="adminPizzaBySchoolSection">
-            <div class="row row--between row--center">
-              <h3>Pizza Orders by School</h3>
-              <span class="badge">Eventwide</span>
-            </div>
-            <p class="hint">Aggregated cheese and pepperoni quantities per school (excluding zero-order ensembles).</p>
-            <div class="admin-pizza-totals-table" id="adminPizzaBySchoolTable"></div>
-            <div class="note" id="adminPizzaBySchoolHint">Set an active event to begin.</div>
-          </div>
-
           <div class="panel is-hidden" id="adminSchoolDetailSection">
             <div class="row row--between row--center">
               <h3 id="adminSchoolDetailTitle">School Detail</h3>
@@ -290,11 +230,6 @@
                 <span class="admin-step-chip" id="adminPacketsStepChipRelease">Release</span>
               </div>
             </div>
-            <div class="row">
-              <button type="button" class="ghost" id="adminPacketsMockPreviewBtn">Preview Full Results Packet (Mock)</button>
-              <button type="button" class="ghost" id="adminPacketsReleaseAshleyMockBtn">Release Mock to Ashley HS</button>
-            </div>
-            <div class="panel is-hidden" id="adminPacketsMockPanel"></div>
             <div class="panel stack">
               <h4>Release Audit</h4>
               <p class="hint">All scheduled ensembles for the active event and whether the Results Packet has been released to the director.</p>
@@ -345,13 +280,7 @@
           </div>
           <details class="panel admin-maintenance-panel">
             <summary><strong>Maintenance</strong> <span class="hint">Repair and cleanup tools — use with care.</span></summary>
-            <div class="stack admin-maintenance-body">
-              <div class="row">
-                <button type="button" class="ghost" id="adminPacketsMockPreviewBtn">Preview Full Results Packet (Mock)</button>
-                <button type="button" class="ghost" id="adminPacketsReleaseAshleyMockBtn">Release Mock to Ashley HS</button>
-              </div>
-              <div class="panel is-hidden" id="adminPacketsMockPanel"></div>
-            </div>
+            <div class="stack admin-maintenance-body"></div>
           </details>
           </div>
 
@@ -527,12 +456,24 @@
             <h3>Directory: Schools</h3>
             <div class="stack admin-settings-sections">
               <div class="admin-settings-block">
-                <h4>Schools Directory</h4>
-                <p class="hint">Seed schools for director selection.</p>
+                <label>
+                  District
+                  <select id="districtSelect" required>
+                    <option value="">Select a district</option>
+                    <option value="Eastern">Eastern</option>
+                    <option value="Southeastern">Southeastern</option>
+                    <option value="East Central">East Central</option>
+                    <option value="Central">Central</option>
+                    <option value="South Central">South Central</option>
+                    <option value="Western">Western</option>
+                    <option value="Northwest">Northwest</option>
+                  </select>
+                </label>
+                <h4>Add School</h4>
                 <form id="schoolForm" class="stack admin-settings-form">
                   <label>
-                    School ID (slug)
-                    <input type="text" id="schoolIdCreateInput" placeholder="school_001" required />
+                    School ID
+                    <input type="text" id="schoolIdCreateInput" placeholder="central_hs" required />
                   </label>
                   <label>
                     School Name
@@ -558,18 +499,7 @@
                     <select id="adminSchoolManageSelect"></select>
                   </label>
                   <div class="row">
-                    <button type="button" id="adminSchoolManageEditBtn" class="ghost">Edit</button>
-                    <button type="button" id="adminSchoolManageDeleteBtn" class="ghost">Delete</button>
-                  </div>
-                  <h4>Manage School Ensembles</h4>
-                  <label>
-                    Select Ensemble
-                    <select id="adminSchoolEnsembleManageSelect"></select>
-                  </label>
-                  <div class="row">
-                    <button type="button" id="adminSchoolEnsembleDeleteBtn" class="ghost danger" disabled>
-                      Delete Ensemble (Full Cleanup)
-                    </button>
+                    <button type="button" id="adminSchoolManageDeleteBtn" class="ghost danger" disabled>Delete School</button>
                   </div>
                 </div>
               </div>
@@ -592,7 +522,7 @@
                   </label>
                   <label>
                     Name
-                    <input type="text" id="provisionNameInput" placeholder="Optional for directors" />
+                    <input type="text" id="provisionNameInput" />
                   </label>
                   <label>
                     Role
@@ -602,10 +532,6 @@
                       <option value="director">director</option>
                       <option value="checkin">checkin</option>
                     </select>
-                  </label>
-                  <label>
-                    School (optional, director only)
-                    <select id="provisionSchoolSelect"></select>
                   </label>
                   <label>
                     Temporary Password (optional)
@@ -619,131 +545,51 @@
                 <h4>Users Directory</h4>
                 <p class="hint">Delete removes Auth + user profile only when no linked assignments or records exist.</p>
                 <div class="note" id="adminUsersResult"></div>
+                <h5>Admins</h5>
                 <div class="schedule-timeline-table-wrap">
-                  <table class="schedule-timeline-table" id="adminUsersTable">
+                  <table class="schedule-timeline-table">
                     <thead>
                       <tr>
                         <th>Name</th>
                         <th>Email</th>
-                        <th>Role</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="adminAdminsList"></tbody>
+                  </table>
+                </div>
+                <h5>Judges</h5>
+                <div class="schedule-timeline-table-wrap">
+                  <table class="schedule-timeline-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="adminJudgesList"></tbody>
+                  </table>
+                </div>
+                <h5>Directors</h5>
+                <div class="schedule-timeline-table-wrap">
+                  <table class="schedule-timeline-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Email</th>
                         <th>School</th>
                         <th>Action</th>
                       </tr>
                     </thead>
-                    <tbody id="adminUsersList"></tbody>
+                    <tbody id="adminDirectorsList"></tbody>
                   </table>
-                </div>
-              </div>
-              <div class="admin-settings-block">
-                <h4>Director School Assignments</h4>
-                <p class="hint">Assign or remove directors from schools. Removing unassigns the school but keeps the account.</p>
-                <div class="stack admin-settings-form">
-                  <label>
-                    Director
-                    <select id="directorAssignDirectorSelect"></select>
-                  </label>
-                  <label>
-                    School
-                    <select id="directorAssignSchoolSelect"></select>
-                  </label>
-                  <div class="row">
-                    <button type="button" id="directorAssignBtn">Assign to School</button>
-                    <button type="button" class="ghost" id="directorUnassignBtn">Remove from School</button>
-                  </div>
-                  <div class="note" id="directorManageResult"></div>
-                  <div class="schedule-timeline-table-wrap">
-                    <table class="schedule-timeline-table" id="directorManageTable">
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Email</th>
-                          <th>School</th>
-                        </tr>
-                      </thead>
-                      <tbody id="directorManageList"></tbody>
-                    </table>
-                  </div>
                 </div>
               </div>
             </div>
           </div>
           </div>
 
-          <!-- Readiness panels moved into adminViewEvents (Pre-Event view) -->
-          <div id="adminReadinessPanels" class="is-hidden">
-          <div class="panel">
-            <h3>Event Readiness</h3>
-            <p class="hint">Run a go/no-go preflight and keep live operations checklist steps in one place.</p>
-            <div class="row">
-              <button type="button" id="adminRunPreflightBtn">Run Preflight</button>
-              <button type="button" class="ghost" id="adminCleanupRehearsalBtn">Cleanup Unreleased Rehearsal Data</button>
-            </div>
-            <div class="note" id="adminReadinessPreflightSummary">Run preflight to evaluate event readiness.</div>
-            <ul id="adminReadinessChecklist" class="list"></ul>
-          </div>
-          <div class="panel">
-            <h3>Full Rehearsal Walkthrough</h3>
-            <p class="hint">Run through the exact live-day workflow, then mark each checkpoint complete.</p>
-            <div class="row">
-              <button type="button" id="adminWalkthroughStartBtn">Start Walkthrough</button>
-              <button type="button" class="ghost" id="adminWalkthroughResetBtn">Reset Walkthrough</button>
-            </div>
-            <div class="note" id="adminReadinessWalkthroughSummary">Walkthrough steps completed: 0/4.</div>
-            <div class="readiness-walkthrough-list" id="adminReadinessWalkthroughList">
-              <div class="readiness-walkthrough-item" data-readiness-step-row="rehearsalComplete">
-                <div>
-                  <strong>1. Rehearsal Dry Run</strong>
-                  <div class="note">Confirm event mode, active event, and complete one full mock cycle.</div>
-                </div>
-                <div class="row">
-                  <span class="badge" data-readiness-step-state>Pending</span>
-                  <button type="button" class="ghost" data-readiness-open-view="setup">Open Setup</button>
-                  <button type="button" class="ghost" data-readiness-step="rehearsalComplete">Mark Complete</button>
-                </div>
-              </div>
-              <div class="readiness-walkthrough-item" data-readiness-step-row="judgeAudioCheck">
-                <div>
-                  <strong>2. Judge Audio & Capture Check</strong>
-                  <div class="note">Verify judge sign-in, recording, transcript parse, and assessment lock behavior.</div>
-                </div>
-                <div class="row">
-                  <span class="badge" data-readiness-step-state>Pending</span>
-                  <button type="button" class="ghost" data-readiness-open-view="liveEvent">Open Schedule &amp; Flow</button>
-                  <button type="button" class="ghost" data-readiness-step="judgeAudioCheck">Mark Complete</button>
-                </div>
-              </div>
-              <div class="readiness-walkthrough-item" data-readiness-step-row="directorVisibilityCheck">
-                <div>
-                  <strong>3. Director Visibility Check</strong>
-                  <div class="note">Confirm directors can only view released results packets and blocked results remain hidden.</div>
-                </div>
-                <div class="row">
-                  <span class="badge" data-readiness-step-state>Pending</span>
-                  <button type="button" class="ghost" data-readiness-open-view="results">Open Packets &amp; Results</button>
-                  <button type="button" class="ghost" data-readiness-step="directorVisibilityCheck">Mark Complete</button>
-                </div>
-              </div>
-              <div class="readiness-walkthrough-item" data-readiness-step-row="releaseGateCheck">
-                <div>
-                  <strong>4. Release Gate Validation</strong>
-                  <div class="note">Attempt blocked release, resolve blockers, then verify release and unrelease behavior.</div>
-                </div>
-                <div class="row">
-                  <span class="badge" data-readiness-step-state>Pending</span>
-                  <button type="button" class="ghost" data-readiness-open-view="results">Open Packets &amp; Results</button>
-                  <button type="button" class="ghost" data-readiness-step="releaseGateCheck">Mark Complete</button>
-                </div>
-              </div>
-            </div>
-            <div class="note" id="adminReadinessStepSummary"></div>
-          </div>
-          <div class="panel">
-            <h3>Readiness History</h3>
-            <p class="hint">Latest preflight and checklist audit entries for the active event.</p>
-            <div class="note" id="adminReadinessHistorySummary">No readiness history yet.</div>
-            <ul id="adminReadinessHistoryList" class="list"></ul>
-          </div>
-          </div>
 
         </div>
         </div>
@@ -1795,6 +1641,27 @@
             <button type="button" class="ghost" id="liveEventCheckinClose">Close</button>
           </div>
           <div id="liveEventCheckinBody" class="stack"></div>
+        </div>
+      </div>
+
+      <div class="modal" id="judgeBioModal" aria-hidden="true">
+        <div class="modal-backdrop" id="judgeBioModalBackdrop"></div>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Judge Biography">
+          <div class="modal-header">
+            <h2 id="judgeBioModalTitle">Judge Bio</h2>
+            <button type="button" class="ghost" id="judgeBioCloseBtn">Close</button>
+          </div>
+          <form id="judgeBioForm" class="stack">
+            <label>
+              Biography
+              <textarea id="judgeBioTextarea" rows="6"></textarea>
+            </label>
+            <div class="row">
+              <button type="submit" id="judgeBioSaveBtn">Save</button>
+              <button type="button" class="ghost" id="judgeBioCancelBtn">Cancel</button>
+            </div>
+          </form>
+          <div class="note" id="judgeBioResult"></div>
         </div>
       </div>
 

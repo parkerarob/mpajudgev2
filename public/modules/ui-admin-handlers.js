@@ -16,9 +16,7 @@ export function createAdminHandlerBinder({
   closeAdminSchoolDetail,
   renderAdminPacketsBySchedule,
   renderAdminLiveSubmissions,
-  renderMockAdminPacketPreview,
   confirmUser,
-  releaseMockPacketForAshleyTesting,
   alertUser,
   createEvent,
   saveAssignments,
@@ -33,7 +31,6 @@ export function createAdminHandlerBinder({
   saveSchool,
   resetAdminSchoolForm,
   getSelectedAdminSchool,
-  startAdminSchoolEdit,
   deleteSchool,
   deleteEnsemble,
   bulkImportSchools,
@@ -41,13 +38,13 @@ export function createAdminHandlerBinder({
   provisionUser,
   updateUserDisplayName,
   deleteUserAccount,
+  saveJudgeBio,
+  openJudgeBioModal,
+  closeJudgeBioModal,
   renderAdminUsersDirectory,
-  renderDirectorAssignmentsDirectory,
-  getSelectedDirectorForAdmin,
   assignDirectorSchool,
   getSchoolNameById,
   unassignDirectorSchool,
-  renderAdminSchoolEnsembleManage,
   fetchRegisteredEnsembles,
   fetchScheduleEntries,
   parseConfirmedScheduleCsv,
@@ -809,43 +806,6 @@ export function createAdminHandlerBinder({
       });
     }
 
-    if (els.adminPacketsMockPreviewBtn) {
-      els.adminPacketsMockPreviewBtn.addEventListener("click", () => {
-        if (!els.adminPacketsMockPanel) return;
-        const isHidden = els.adminPacketsMockPanel.classList.contains("is-hidden");
-        if (isHidden) {
-          renderMockAdminPacketPreview();
-          els.adminPacketsMockPanel.classList.remove("is-hidden");
-          els.adminPacketsMockPreviewBtn.textContent = "Hide Mock Preview";
-        } else {
-          els.adminPacketsMockPanel.classList.add("is-hidden");
-          els.adminPacketsMockPanel.innerHTML = "";
-          els.adminPacketsMockPreviewBtn.textContent = "Preview Full Results Packet (Mock)";
-        }
-      });
-    }
-    if (els.adminPacketsReleaseAshleyMockBtn) {
-      els.adminPacketsReleaseAshleyMockBtn.addEventListener("click", async () => {
-        const ok = confirmUser("Release a mock 4-judge results packet to Ashley High School for testing?");
-        if (!ok) return;
-        els.adminPacketsReleaseAshleyMockBtn.dataset.loadingLabel = "Releasing...";
-        await withLoading(els.adminPacketsReleaseAshleyMockBtn, async () => {
-          try {
-            const result = await releaseMockPacketForAshleyTesting();
-            alertUser(
-              `Mock results packet released for ${result.schoolName || "Ashley High School"} - ${result.ensembleName || result.ensembleId}.`
-            );
-            if (state.admin.currentView === "results") {
-              renderAdminPacketsBySchedule();
-            }
-          } catch (error) {
-            console.error("releaseMockPacketForAshleyTesting failed", error);
-            alertUser(error?.message || "Unable to release mock results packet.");
-          }
-        });
-      });
-    }
-
     if (els.createEventBtn) {
       els.createEventBtn.addEventListener("click", async () => {
         const name = els.eventNameInput?.value.trim() || "";
@@ -1348,11 +1308,12 @@ export function createAdminHandlerBinder({
         event.preventDefault();
         const schoolId = state.admin.schoolEditId || (els.schoolIdCreateInput?.value.trim() || "");
         const name = els.schoolNameCreateInput?.value.trim() || "";
+        const district = els.districtSelect?.value.trim() || "";
         if (!schoolId || !name) {
           alertUser("Enter a school ID and name.");
           return;
         }
-        await saveSchool({ schoolId, name });
+        await saveSchool({ schoolId, name, district });
         scheduleAdminPreflightRefresh?.();
         if (els.schoolResult) {
           els.schoolResult.textContent = state.admin.schoolEditId
@@ -1371,31 +1332,11 @@ export function createAdminHandlerBinder({
     }
 
     if (els.adminSchoolManageSelect) {
-      els.adminSchoolManageSelect.addEventListener("change", async () => {
+      els.adminSchoolManageSelect.addEventListener("change", () => {
         const hasSelection = Boolean(els.adminSchoolManageSelect?.value);
-        if (els.adminSchoolManageEditBtn) {
-          els.adminSchoolManageEditBtn.disabled = !hasSelection;
-        }
         if (els.adminSchoolManageDeleteBtn) {
           els.adminSchoolManageDeleteBtn.disabled = !hasSelection;
         }
-        await renderAdminSchoolEnsembleManage?.();
-      });
-    }
-
-    if (els.adminSchoolEnsembleManageSelect) {
-      els.adminSchoolEnsembleManageSelect.addEventListener("change", () => {
-        if (els.adminSchoolEnsembleDeleteBtn) {
-          els.adminSchoolEnsembleDeleteBtn.disabled = !els.adminSchoolEnsembleManageSelect?.value;
-        }
-      });
-    }
-
-    if (els.adminSchoolManageEditBtn) {
-      els.adminSchoolManageEditBtn.addEventListener("click", () => {
-        const school = getSelectedAdminSchool();
-        if (!school) return;
-        startAdminSchoolEdit(school);
       });
     }
 
@@ -1405,7 +1346,7 @@ export function createAdminHandlerBinder({
         if (!school) return;
         const label = school.name || school.id;
         const ok = confirmUser(
-          `Delete school ${label}? This only works if no ensembles, users, entries, schedule items, or open packets reference it.`
+          `WARNING: Permanently delete "${label}"? This cannot be undone. All ensembles, entries, and data linked to this school will be removed.`
         );
         if (!ok) return;
         try {
@@ -1422,39 +1363,6 @@ export function createAdminHandlerBinder({
           const message = error?.message || "Unable to delete school.";
           alertUser(message);
         }
-      });
-    }
-
-    if (els.adminSchoolEnsembleDeleteBtn) {
-      els.adminSchoolEnsembleDeleteBtn.addEventListener("click", async () => {
-        const school = getSelectedAdminSchool();
-        const ensembleId = els.adminSchoolEnsembleManageSelect?.value || "";
-        if (!school || !ensembleId) return;
-        const ensembleName =
-          state.admin.schoolManageEnsembles?.find((item) => item.id === ensembleId)?.name || ensembleId;
-        const schoolLabel = school.name || school.id;
-        const ok = confirmUser(
-          `Delete ensemble ${ensembleName} from ${schoolLabel}? This will fully remove linked schedule, entries, official assessments, supporting release records, and packets.`
-        );
-        if (!ok) return;
-        els.adminSchoolEnsembleDeleteBtn.dataset.loadingLabel = "Deleting...";
-        await withLoading(els.adminSchoolEnsembleDeleteBtn, async () => {
-          try {
-            await deleteEnsemble({ schoolId: school.id, ensembleId, force: true });
-            scheduleAdminPreflightRefresh?.({ immediate: true });
-            if (els.schoolResult) {
-              els.schoolResult.textContent = `Deleted ensemble ${ensembleName} from ${schoolLabel}.`;
-            }
-            await renderAdminSchoolEnsembleManage?.();
-            if (state.admin.currentView === "preEvent") {
-              applyAdminView("preEvent");
-            }
-          } catch (error) {
-            console.error("Delete ensemble failed", error);
-            const message = error?.message || "Unable to delete ensemble.";
-            alertUser(message);
-          }
-        });
       });
     }
 
@@ -1525,7 +1433,6 @@ export function createAdminHandlerBinder({
             if (els.provisionForm) els.provisionForm.reset();
             syncProvisionSchoolField();
             renderAdminUsersDirectory?.();
-            renderDirectorAssignmentsDirectory();
             scheduleAdminPreflightRefresh?.();
           } catch (error) {
             console.error("provisionUser failed", error);
@@ -1539,8 +1446,105 @@ export function createAdminHandlerBinder({
       });
     }
 
-    if (els.adminUsersList) {
-      els.adminUsersList.addEventListener("click", async (event) => {
+    const userListHandler = async (event) => {
+        const manageSchoolButton = event.target.closest("button[data-manage-director-school-uid]");
+        if (manageSchoolButton) {
+          const targetUid = manageSchoolButton.getAttribute("data-manage-director-school-uid") || "";
+          if (!targetUid) return;
+          const isOpen = state.admin.directorSchoolManageUid === targetUid;
+          state.admin.directorSchoolManageUid = isOpen ? "" : targetUid;
+          state.admin.directorSchoolManageSchoolId = isOpen
+            ? ""
+            : (((state.admin.directorsList || []).find((item) => item.uid === targetUid)?.schoolId) || "");
+          state.admin.directorSchoolManageResultUid = "";
+          state.admin.directorSchoolManageResultMessage = "";
+          renderAdminUsersDirectory?.();
+          return;
+        }
+        const cancelSchoolButton = event.target.closest("button[data-cancel-director-school-uid]");
+        if (cancelSchoolButton) {
+          state.admin.directorSchoolManageUid = "";
+          state.admin.directorSchoolManageSchoolId = "";
+          state.admin.directorSchoolManageResultUid = "";
+          state.admin.directorSchoolManageResultMessage = "";
+          renderAdminUsersDirectory?.();
+          return;
+        }
+        const saveSchoolButton = event.target.closest("button[data-save-director-school-uid]");
+        if (saveSchoolButton) {
+          const targetUid = saveSchoolButton.getAttribute("data-save-director-school-uid") || "";
+          const director = (state.admin.directorsList || []).find((item) => item.uid === targetUid);
+          const schoolId = String(state.admin.directorSchoolManageSchoolId || "");
+          if (!director || !schoolId) return;
+          saveSchoolButton.dataset.loadingLabel = "Saving...";
+          await withLoading(saveSchoolButton, async () => {
+            try {
+              await assignDirectorSchool({ directorUid: director.uid, schoolId });
+              const directorEntry = (state.admin.directorsList || []).find((item) => item.uid === director.uid);
+              if (directorEntry) directorEntry.schoolId = schoolId;
+              const userEntry = (state.admin.usersList || []).find((item) => item.uid === director.uid);
+              if (userEntry) userEntry.schoolId = schoolId;
+              state.admin.directorSchoolManageUid = director.uid;
+              state.admin.directorSchoolManageSchoolId = schoolId;
+              state.admin.directorSchoolManageResultUid = director.uid;
+              const schoolName = getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
+              state.admin.directorSchoolManageResultMessage =
+                `Assigned ${director.displayName || director.email || director.uid} to ${schoolName}.`;
+              scheduleAdminPreflightRefresh?.();
+              renderAdminUsersDirectory?.();
+            } catch (error) {
+              console.error("assignDirectorSchool failed", error);
+              state.admin.directorSchoolManageUid = director.uid;
+              state.admin.directorSchoolManageResultUid = director.uid;
+              state.admin.directorSchoolManageResultMessage =
+                error?.message || "Unable to assign director.";
+              renderAdminUsersDirectory?.();
+            }
+          });
+          return;
+        }
+        const removeSchoolButton = event.target.closest("button[data-remove-director-school-uid]");
+        if (removeSchoolButton) {
+          const targetUid = removeSchoolButton.getAttribute("data-remove-director-school-uid") || "";
+          const director = (state.admin.directorsList || []).find((item) => item.uid === targetUid);
+          if (!director || !director.schoolId) return;
+          const label = director.displayName || director.email || director.uid;
+          if (!confirmUser(`Remove ${label} from their school assignment?`)) return;
+          removeSchoolButton.dataset.loadingLabel = "Removing...";
+          await withLoading(removeSchoolButton, async () => {
+            try {
+              await unassignDirectorSchool({ directorUid: director.uid });
+              const directorEntry = (state.admin.directorsList || []).find((item) => item.uid === director.uid);
+              if (directorEntry) directorEntry.schoolId = "";
+              const userEntry = (state.admin.usersList || []).find((item) => item.uid === director.uid);
+              if (userEntry) userEntry.schoolId = "";
+              state.admin.directorSchoolManageUid = director.uid;
+              state.admin.directorSchoolManageSchoolId = "";
+              state.admin.directorSchoolManageResultUid = director.uid;
+              state.admin.directorSchoolManageResultMessage =
+                `Removed ${label} from school assignment.`;
+              scheduleAdminPreflightRefresh?.();
+              renderAdminUsersDirectory?.();
+            } catch (error) {
+              console.error("unassignDirectorSchool failed", error);
+              state.admin.directorSchoolManageUid = director.uid;
+              state.admin.directorSchoolManageResultUid = director.uid;
+              state.admin.directorSchoolManageResultMessage =
+                error?.message || "Unable to remove director.";
+              renderAdminUsersDirectory?.();
+            }
+          });
+          return;
+        }
+        const bioButton = event.target.closest("button[data-bio-user-uid]");
+        if (bioButton) {
+          const targetUid = bioButton.getAttribute("data-bio-user-uid") || "";
+          if (!targetUid) return;
+          const user = (state.admin.usersList || []).find((item) => item.uid === targetUid);
+          if (!user) return;
+          openJudgeBioModal?.({ uid: targetUid, name: user.displayName || user.email || "", bio: user.bio || "" });
+          return;
+        }
         const editButton = event.target.closest("button[data-edit-user-uid]");
         if (editButton) {
           const targetUid = editButton.getAttribute("data-edit-user-uid") || "";
@@ -1568,7 +1572,6 @@ export function createAdminHandlerBinder({
                 els.adminUsersResult.textContent = `Updated name for ${user.email || user.uid}.`;
               }
               renderAdminUsersDirectory?.();
-              renderDirectorAssignmentsDirectory?.();
             } catch (error) {
               console.error("updateUserDisplayName failed", error);
               const message = error?.message || "Unable to update user name.";
@@ -1601,7 +1604,6 @@ export function createAdminHandlerBinder({
               els.adminUsersResult.textContent = `Deleted ${label}.`;
             }
             renderAdminUsersDirectory?.();
-            renderDirectorAssignmentsDirectory?.();
           } catch (error) {
             console.error("deleteUserAccount failed", error);
             if (els.adminUsersResult) {
@@ -1610,64 +1612,50 @@ export function createAdminHandlerBinder({
             alertUser(extractDeleteUserErrorMessage(error));
           }
         });
+    };
+    [els.adminAdminsList, els.adminJudgesList, els.adminDirectorsList].forEach((list) => {
+      if (list) list.addEventListener("click", userListHandler);
+    });
+    if (els.adminDirectorsList) {
+      els.adminDirectorsList.addEventListener("change", (event) => {
+        const schoolSelect = event.target.closest("select[data-director-school-select]");
+        if (!schoolSelect) return;
+        state.admin.directorSchoolManageUid = schoolSelect.getAttribute("data-director-school-select") || "";
+        state.admin.directorSchoolManageSchoolId = schoolSelect.value || "";
+        state.admin.directorSchoolManageResultUid = "";
+        state.admin.directorSchoolManageResultMessage = "";
+        renderAdminUsersDirectory?.();
+      });
+    }
+    if (els.judgeBioCloseBtn) {
+      els.judgeBioCloseBtn.addEventListener("click", () => closeJudgeBioModal?.());
+    }
+    if (els.judgeBioCancelBtn) {
+      els.judgeBioCancelBtn.addEventListener("click", () => closeJudgeBioModal?.());
+    }
+    if (els.judgeBioForm) {
+      els.judgeBioForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const targetUid = els.judgeBioModal?.dataset.targetUid || "";
+        if (!targetUid) return;
+        const bio = els.judgeBioTextarea?.value.trim() || "";
+        els.judgeBioSaveBtn.dataset.loadingLabel = "Saving...";
+        await withLoading(els.judgeBioSaveBtn, async () => {
+          try {
+            await saveJudgeBio({ targetUid, bio });
+            const user = (state.admin.usersList || []).find((u) => u.uid === targetUid);
+            if (user) user.bio = bio;
+            closeJudgeBioModal?.();
+            renderAdminUsersDirectory?.();
+          } catch (error) {
+            console.error("saveJudgeBio failed", error);
+            if (els.judgeBioResult) {
+              els.judgeBioResult.textContent = error?.message || "Unable to save bio.";
+            }
+          }
+        });
       });
     }
 
-    if (els.directorAssignDirectorSelect) {
-      els.directorAssignDirectorSelect.addEventListener("change", () => {
-        renderDirectorAssignmentsDirectory();
-      });
-    }
-    if (els.directorAssignSchoolSelect) {
-      els.directorAssignSchoolSelect.addEventListener("change", () => {
-        renderDirectorAssignmentsDirectory();
-      });
-    }
-    if (els.directorAssignBtn) {
-      els.directorAssignBtn.addEventListener("click", async () => {
-        const director = getSelectedDirectorForAdmin();
-        const schoolId = els.directorAssignSchoolSelect?.value || "";
-        if (!director || !schoolId) return;
-        els.directorAssignBtn.dataset.loadingLabel = "Assigning...";
-        await withLoading(els.directorAssignBtn, async () => {
-          try {
-            await assignDirectorSchool({ directorUid: director.uid, schoolId });
-            scheduleAdminPreflightRefresh?.();
-            if (els.directorManageResult) {
-              const schoolName = getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
-              els.directorManageResult.textContent = `Assigned ${director.displayName || director.email || director.uid} to ${schoolName}.`;
-            }
-          } catch (error) {
-            console.error("assignDirectorSchool failed", error);
-            if (els.directorManageResult) {
-              els.directorManageResult.textContent = error?.message || "Unable to assign director.";
-            }
-          }
-        });
-      });
-    }
-    if (els.directorUnassignBtn) {
-      els.directorUnassignBtn.addEventListener("click", async () => {
-        const director = getSelectedDirectorForAdmin();
-        if (!director || !director.schoolId) return;
-        const label = director.displayName || director.email || director.uid;
-        if (!confirmUser(`Remove ${label} from their school assignment?`)) return;
-        els.directorUnassignBtn.dataset.loadingLabel = "Removing...";
-        await withLoading(els.directorUnassignBtn, async () => {
-          try {
-            await unassignDirectorSchool({ directorUid: director.uid });
-            scheduleAdminPreflightRefresh?.();
-            if (els.directorManageResult) {
-              els.directorManageResult.textContent = `Removed ${label} from school assignment.`;
-            }
-          } catch (error) {
-            console.error("unassignDirectorSchool failed", error);
-            if (els.directorManageResult) {
-              els.directorManageResult.textContent = error?.message || "Unable to remove director.";
-            }
-          }
-        });
-      });
-    }
   };
 }

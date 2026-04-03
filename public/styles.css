@@ -2578,6 +2578,164 @@ button.ghost.is-done {
   max-width: 180px;
 }
 
+/* Schedule Builder sub-tab bar */
+.pre-event-subtab-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.pre-event-subtab {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: none;
+}
+
+.pre-event-subtab.is-active {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* Schedule Builder table */
+.schedule-builder-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.schedule-builder-day {
+  margin-bottom: 28px;
+}
+
+.schedule-builder-day-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.schedule-builder-day-title {
+  font-weight: 600;
+  font-size: var(--text-base);
+}
+
+.schedule-builder-day-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.schedule-builder-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.schedule-builder-table th,
+.schedule-builder-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  line-height: var(--lh-normal);
+}
+
+.schedule-builder-table th {
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.schedule-builder-table .col-num {
+  width: 36px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.schedule-builder-table .col-time {
+  width: 88px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-builder-table .col-slot {
+  width: 60px;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.schedule-builder-table .col-grade {
+  width: 56px;
+}
+
+.schedule-builder-table .col-ensemble {
+  min-width: 240px;
+}
+
+.schedule-builder-table .col-remove {
+  width: 36px;
+  text-align: center;
+}
+
+.schedule-builder-break-row td {
+  background: rgba(255, 200, 60, 0.06);
+  color: var(--muted);
+  font-style: italic;
+}
+
+.schedule-builder-ensemble-select {
+  width: 100%;
+  font: inherit;
+  font-size: var(--text-sm);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.schedule-builder-slot-count {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.schedule-builder-slot-count.is-full {
+  color: #e8a042;
+  font-weight: 600;
+}
+
+.schedule-builder-unscheduled {
+  margin-top: 12px;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.schedule-builder-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+.schedule-builder-errors {
+  margin-top: 8px;
+}
+
+.schedule-builder-errors li {
+  color: #e05050;
+  font-size: var(--text-sm);
+  list-style: disc;
+  margin-left: 16px;
+}
+
 /* Event Chair drag-and-drop list */
 .event-chair-drag-list {
   display: flex;
@@ -3233,15 +3391,6 @@ select:focus-visible {
     rgba(12, 16, 28, 0.74);
 }
 
-#adminCard #adminScheduleSection > .panel,
-#adminCard #adminPacketsMockPanel {
-  border: 0;
-  border-top: 1px solid rgba(116, 145, 216, 0.24);
-  border-radius: 0;
-  background: transparent;
-  padding: 12px 0 0;
-}
-
 #adminCard .admin-workflow-card,
 #adminCard .pre-event-workflow-card {
   border: 1px solid rgba(116, 145, 216, 0.2);
@@ -3429,7 +3578,7 @@ select:focus-visible {
 #adminCard #assignmentsForm button[type="submit"],
 #adminCard #schoolForm button[type="submit"],
 #adminCard #provisionForm button[type="submit"],
-#adminCard #directorAssignBtn {
+#adminCard button[data-save-director-school-uid] {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
     rgba(17, 24, 44, 0.92);
@@ -3439,34 +3588,8 @@ select:focus-visible {
 #adminCard #assignmentsForm button[type="submit"]:hover:not(:disabled),
 #adminCard #schoolForm button[type="submit"]:hover:not(:disabled),
 #adminCard #provisionForm button[type="submit"]:hover:not(:disabled),
-#adminCard #directorAssignBtn:hover:not(:disabled) {
+#adminCard button[data-save-director-school-uid]:hover:not(:disabled) {
   border-color: rgba(225, 232, 255, 0.28);
-}
-
-#adminCard #adminUsersTable,
-#adminCard #directorManageTable {
-  margin-top: 0;
-}
-
-#adminCard #adminUsersTable th,
-#adminCard #adminUsersTable td,
-#adminCard #directorManageTable th,
-#adminCard #directorManageTable td {
-  padding-top: 7px;
-  padding-bottom: 7px;
-}
-
-#adminCard #adminUsersTable th,
-#adminCard #directorManageTable th {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.62);
-}
-
-#adminCard #adminUsersTable td,
-#adminCard #directorManageTable td {
-  vertical-align: middle;
 }
 
 #judgeOpenCard {

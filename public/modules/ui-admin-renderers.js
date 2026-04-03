@@ -1,4 +1,14 @@
 import { isTestArtifactText, hasExplicitTestArtifactFlag, isProductionRegistration, calculateInstrumentationStudentCount } from "./utils.js";
+import {
+  buildSlotModelFromFirestore,
+  computeDaySlotTimes,
+  serializeSlotModel,
+  getScheduledEnsembleIds,
+  countEnsembleSlots,
+  validateSlotModel,
+  dateToTimeStr,
+  applyTimeToDate,
+} from "./admin-scheduler-tools.js";
 
 export function createAdminRenderers({
   els,
@@ -33,6 +43,7 @@ export function createAdminRenderers({
   releasePacket,
   unreleasePacket,
   repairPacketReleaseState,
+  repairReleasedPacketMetadata,
   setPacketCommentsOnly,
   deleteScheduledAssessment,
   deleteScheduledPacket,
@@ -52,6 +63,9 @@ export function createAdminRenderers({
   restoreCanonicalFromOpenPacket,
   recreateOpenPacketFromCanonical,
   deleteAllUnreleasedPackets,
+  getPostEventCleanupCandidates,
+  purgePostEventCleanupCandidate,
+  purgePostEventCleanupCategory,
   cleanupTestArtifacts,
   renderAssessmentCard,
   loadAdminPacketView,
@@ -70,6 +84,8 @@ export function createAdminRenderers({
   scheduleAdminPreflightRefresh,
   refreshPreEventScheduleTimelineStarts,
   formatStartTime,
+  saveSchedulerModel,
+  deleteEntry,
 } = {}) {
   const JUDGE_POSITION_LABELS = {
     stage1: "Stage 1",
@@ -102,135 +118,6 @@ export function createAdminRenderers({
   let adminPizzaTotalsRenderTokenSchool = 0;
   let adminPizzaTotalsRenderToken = 0;
 
-
-  function renderParticipationSummary({
-    registered = [],
-    scheduleEntries = [],
-    entryDataByEnsemble = new Map(),
-    error = null,
-    loading = false,
-  } = {}) {
-    if (!els.adminParticipationSummaryStats || !els.adminParticipationSummaryBody || !els.adminParticipationSummaryHint) {
-      return;
-    }
-
-    // Handle Firestore fetch errors
-    if (error) {
-      els.adminParticipationSummaryStats.innerHTML = "<div class='note'>Student counts unavailable</div>";
-      els.adminParticipationSummaryBody.innerHTML =
-        "<tr><td colspan='3' class='hint'>Failed to load student count data. Please check your connection and refresh the page.</td></tr>";
-      els.adminParticipationSummaryHint.textContent = "Data temporarily unavailable.";
-      return;
-    }
-
-    const eventId = String(state.event.active?.id || "").trim();
-    if (!eventId) {
-      els.adminParticipationSummaryStats.innerHTML = "<div class='note'>Set an active event to begin.</div>";
-      els.adminParticipationSummaryBody.innerHTML =
-        "<tr><td colspan='3' class='hint'>Set an active event to begin.</td></tr>";
-      els.adminParticipationSummaryHint.textContent = "Set an active event to begin.";
-      return;
-    }
-
-    // Show loading state when event is active but data is still fetching
-    if (loading) {
-      els.adminParticipationSummaryStats.innerHTML = "<div class='note'>Loading participation data...</div>";
-      els.adminParticipationSummaryBody.innerHTML =
-        "<tr><td colspan='3' class='hint'>Fetching registration and schedule data from Firestore.</td></tr>";
-      els.adminParticipationSummaryHint.textContent = "Loading...";
-      return;
-    }
-
-    const scheduledEntries = Array.isArray(scheduleEntries)
-      ? scheduleEntries.filter((entry) => entry && entry.hidden !== true)
-      : [];
-    const useScheduledRoster = scheduledEntries.length > 0;
-    const roster = useScheduledRoster
-      ? scheduledEntries.map((entry) => ({
-          schoolId: entry.schoolId,
-          schoolName: entry.schoolName || "",
-          ensembleId: entry.ensembleId || entry.id,
-          ensembleName: entry.ensembleName || "",
-          id: entry.id,
-        }))
-      : registered;
-
-    const bySchool = new Map();
-    let instrumentedEnsembles = 0;
-    roster.forEach((entry) => {
-      const schoolId = String(entry.schoolId || "").trim();
-      if (!schoolId) return;
-      const schoolName =
-        String(entry.schoolName || "").trim() ||
-        getSchoolNameById(state.admin.schoolsList, schoolId) ||
-        schoolId;
-      if (!isProductionRegistration(entry, schoolName)) return;
-      const ensembleId = String(entry.ensembleId || entry.id || "").trim();
-      const studentCount = calculateInstrumentationStudentCount(entryDataByEnsemble.get(ensembleId) || {});
-      if (studentCount > 0) {
-        instrumentedEnsembles += 1;
-      }
-      const current = bySchool.get(schoolId) || {
-        schoolId,
-        schoolName,
-        ensembles: 0,
-        students: 0,
-      };
-      current.ensembles += 1;
-      current.students += studentCount;
-      bySchool.set(schoolId, current);
-    });
-
-    const rows = Array.from(bySchool.values()).sort((a, b) => a.schoolName.localeCompare(b.schoolName));
-    const schoolTotal = rows.length;
-    const ensembleTotal = rows.reduce((sum, row) => sum + row.ensembles, 0);
-    const studentTotal = rows.reduce((sum, row) => sum + row.students, 0);
-
-    els.adminParticipationSummaryStats.innerHTML = "";
-    [
-      { label: "Schools", value: schoolTotal },
-      { label: "Ensembles", value: ensembleTotal },
-      { label: "Students", value: studentTotal },
-    ].forEach(({ label, value }) => {
-      const card = document.createElement("div");
-      card.className = "admin-participation-stat";
-      card.setAttribute("aria-label", `${value} ${label}`);
-      const valueEl = document.createElement("strong");
-      valueEl.textContent = String(value);
-      const labelEl = document.createElement("span");
-      labelEl.textContent = label;
-      card.appendChild(valueEl);
-      card.appendChild(labelEl);
-      els.adminParticipationSummaryStats.appendChild(card);
-    });
-
-    els.adminParticipationSummaryBody.innerHTML = "";
-    if (!rows.length) {
-      els.adminParticipationSummaryBody.innerHTML =
-        "<tr><td colspan='3' class='hint'>No production registrations found for the active event.</td></tr>";
-      els.adminParticipationSummaryHint.textContent =
-        "Totals exclude test/demo/sandbox/QA registrations and stale school artifacts.";
-      return;
-    }
-
-    rows.forEach((row) => {
-      const tr = document.createElement("tr");
-      const schoolCell = document.createElement("td");
-      schoolCell.textContent = row.schoolName;
-      const ensemblesCell = document.createElement("td");
-      ensemblesCell.textContent = String(row.ensembles);
-      const studentsCell = document.createElement("td");
-      studentsCell.textContent = String(row.students);
-      tr.appendChild(schoolCell);
-      tr.appendChild(ensemblesCell);
-      tr.appendChild(studentsCell);
-      els.adminParticipationSummaryBody.appendChild(tr);
-    });
-
-    const rosterLabel = useScheduledRoster ? "scheduled ensemble" : "registered ensemble";
-    els.adminParticipationSummaryHint.textContent =
-      `${instrumentedEnsembles}/${ensembleTotal} ${rosterLabel}${ensembleTotal === 1 ? "" : "s"} currently have instrumentation counts saved.`;
-  }
 
   function formatBlockerError(error, fallbackMessage) {
     const blockers = Array.isArray(error?.details?.blockers) ? error.details.blockers : [];
@@ -1905,6 +1792,197 @@ export function createAdminRenderers({
     });
   }
 
+  function formatCleanupDispositionLabel(disposition = "") {
+    const normalized = String(disposition || "").trim().toLowerCase();
+    if (normalized === "reviewable") return "Reviewable";
+    if (normalized === "protected") return "Protected";
+    return "Blocked";
+  }
+
+  function formatCleanupCountLabel(count = 0, noun = "item") {
+    const value = Number(count || 0);
+    return `${value} ${noun}${value === 1 ? "" : "s"}`;
+  }
+
+  async function appendPostEventCleanupPanel({ eventId = "" } = {}) {
+    if (!els.adminPacketsList || !eventId) return;
+    const cleanupRow = document.createElement("li");
+    cleanupRow.className = "panel";
+    const title = document.createElement("h4");
+    title.textContent = "Post-Event Cleanup";
+    cleanupRow.appendChild(title);
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent =
+      "Review stale unreleased event data. Anything with released director-visible history is protected and cannot be purged here.";
+    cleanupRow.appendChild(hint);
+    const status = document.createElement("div");
+    status.className = "note";
+    status.textContent = "Loading cleanup candidates...";
+    cleanupRow.appendChild(status);
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.className = "ghost";
+    refreshBtn.textContent = "Refresh Cleanup";
+    actions.appendChild(refreshBtn);
+    cleanupRow.appendChild(actions);
+    const categoriesWrap = document.createElement("div");
+    categoriesWrap.className = "stack";
+    cleanupRow.appendChild(categoriesWrap);
+    els.adminPacketsList.appendChild(cleanupRow);
+
+    const loadCandidates = async () => {
+      refreshBtn.disabled = true;
+      categoriesWrap.innerHTML = "";
+      status.textContent = "Loading cleanup candidates...";
+      try {
+        const result = await getPostEventCleanupCandidates({ eventId });
+        const categories = Array.isArray(result.categories) ? result.categories : [];
+        const counts = result.counts || {};
+        status.textContent = categories.length
+          ? [
+            formatCleanupCountLabel(counts.reviewable || 0, "reviewable item"),
+            formatCleanupCountLabel(counts.blocked || 0, "blocked item"),
+            formatCleanupCountLabel(counts.protected || 0, "protected item"),
+          ].join(" • ")
+          : "No stale cleanup candidates were found for the active event.";
+        if (!categories.length) return;
+        for (const category of categories) {
+          const details = document.createElement("details");
+          details.className = "panel";
+          if ((category.counts?.reviewable || 0) > 0) details.open = true;
+          const summary = document.createElement("summary");
+          summary.className = "row row--between row--center";
+          const summaryTitle = document.createElement("strong");
+          summaryTitle.textContent = category.label || category.category || "Cleanup";
+          const summaryMeta = document.createElement("span");
+          summaryMeta.className = "note";
+          summaryMeta.textContent = [
+            formatCleanupCountLabel(category.counts?.reviewable || 0, "reviewable"),
+            formatCleanupCountLabel(category.counts?.blocked || 0, "blocked"),
+            formatCleanupCountLabel(category.counts?.protected || 0, "protected"),
+          ].join(" • ");
+          summary.appendChild(summaryTitle);
+          summary.appendChild(summaryMeta);
+          details.appendChild(summary);
+
+          const categoryActions = document.createElement("div");
+          categoryActions.className = "row";
+          if ((category.counts?.reviewable || 0) > 0) {
+            const bulkBtn = document.createElement("button");
+            bulkBtn.type = "button";
+            bulkBtn.className = "ghost";
+            bulkBtn.textContent = `Purge Reviewable ${category.label || "Items"}`;
+            bulkBtn.addEventListener("click", async () => {
+              const ok = confirmUser(
+                `Purge all reviewable items in ${category.label || "this category"}?\n\nReleased history stays protected. Blocked items will be skipped.`
+              );
+              if (!ok) return;
+              bulkBtn.disabled = true;
+              status.textContent = `Purging ${category.label || "cleanup category"}...`;
+              try {
+                const bulkResult = await purgePostEventCleanupCategory({
+                  eventId,
+                  category: category.category,
+                });
+                scheduleAdminPreflightRefresh?.({ immediate: true });
+                await renderAdminPacketsBySchedule();
+                alertUser(
+                  `${category.label || "Cleanup"} purge complete.\n` +
+                  `Purged: ${bulkResult.purgedCount || 0}`
+                );
+              } catch (error) {
+                console.error("purgePostEventCleanupCategory failed", error);
+                status.textContent = error?.message || "Unable to purge cleanup category.";
+              } finally {
+                bulkBtn.disabled = false;
+              }
+            });
+            categoryActions.appendChild(bulkBtn);
+          }
+          details.appendChild(categoryActions);
+
+          const list = document.createElement("div");
+          list.className = "stack";
+          const items = Array.isArray(category.items) ? category.items : [];
+          items.forEach((item) => {
+            const card = document.createElement("div");
+            card.className = "panel stack";
+            const header = document.createElement("div");
+            header.className = "row row--between row--center";
+            const label = document.createElement("strong");
+            label.textContent = item.label || item.id || "Cleanup item";
+            const disposition = document.createElement("span");
+            disposition.className = "badge";
+            disposition.textContent = formatCleanupDispositionLabel(item.disposition);
+            header.appendChild(label);
+            header.appendChild(disposition);
+            card.appendChild(header);
+            const detail = document.createElement("div");
+            detail.className = "note";
+            detail.textContent = [
+              item.reason || "",
+              item.detail || "",
+            ].filter(Boolean).join(" • ");
+            card.appendChild(detail);
+            if (item.disposition !== "reviewable") {
+              const locked = document.createElement("div");
+              locked.className = "note";
+              locked.textContent =
+                item.disposition === "protected" ?
+                  "Protected items are shown for review only." :
+                  "Blocked items require repair or a different cleanup path first.";
+              card.appendChild(locked);
+            } else {
+              const purgeBtn = document.createElement("button");
+              purgeBtn.type = "button";
+              purgeBtn.className = "ghost danger";
+              purgeBtn.textContent = "Purge Item";
+              purgeBtn.addEventListener("click", async () => {
+                const ok = confirmUser(
+                  `Purge ${item.label || item.id}?\n\nThis only removes stale unreleased data for this item and cannot be undone.`
+                );
+                if (!ok) return;
+                purgeBtn.disabled = true;
+                status.textContent = `Purging ${item.label || item.id}...`;
+                try {
+                  await purgePostEventCleanupCandidate({
+                    eventId,
+                    candidateType: item.candidateType,
+                    candidateId: item.id,
+                  });
+                  scheduleAdminPreflightRefresh?.({ immediate: true });
+                  await renderAdminPacketsBySchedule();
+                } catch (error) {
+                  console.error("purgePostEventCleanupCandidate failed", error);
+                  status.textContent = error?.message || "Unable to purge cleanup item.";
+                } finally {
+                  purgeBtn.disabled = false;
+                }
+              });
+              card.appendChild(purgeBtn);
+            }
+            list.appendChild(card);
+          });
+          details.appendChild(list);
+          categoriesWrap.appendChild(details);
+        }
+      } catch (error) {
+        console.error("getPostEventCleanupCandidates failed", error);
+        status.textContent = error?.message || "Unable to load post-event cleanup candidates.";
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    };
+
+    refreshBtn.addEventListener("click", () => {
+      void loadCandidates();
+    });
+    await loadCandidates();
+  }
+
   function toOpenSubmission(packet) {
     const status = normalizeOpenPacketStatus(packet.status);
     return {
@@ -2528,6 +2606,7 @@ export function createAdminRenderers({
       }
       els.adminPacketsHint.textContent = "Loading scheduled ensembles...";
       els.adminPacketsList.innerHTML = "";
+      await appendPostEventCleanupPanel({ eventId });
       const appendBulkCleanupPanel = () => {
         const cleanupRow = document.createElement("li");
         cleanupRow.className = "panel";
@@ -2669,7 +2748,7 @@ export function createAdminRenderers({
       });
 
       const scheduleEntries = await fetchScheduleEntries(eventId);
-      if (state.admin.currentView !== "packets" || (state.event.active?.id || "") !== eventId) return;
+      if (state.admin.currentView !== "results" || (state.event.active?.id || "") !== eventId) return;
 
       const ordered = [...(scheduleEntries || [])].sort((a, b) => {
         const aMs = toDateOrNull(a.performanceAt)?.getTime() || 0;
@@ -2753,7 +2832,7 @@ export function createAdminRenderers({
             return { entryId: entry.id, packetData };
           })
         );
-        if (state.admin.currentView !== "packets" || (state.event.active?.id || "") !== eventId) return;
+        if (state.admin.currentView !== "results" || (state.event.active?.id || "") !== eventId) return;
         packetPayloads.forEach(({ entryId, packetData }) => {
           if (!entryId) return;
           packetDataByEntryId.set(entryId, packetData);
@@ -2949,6 +3028,36 @@ export function createAdminRenderers({
           });
           actions.appendChild(repairReleaseBtn);
         }
+
+        const repairMetadataBtn = document.createElement("button");
+        repairMetadataBtn.type = "button";
+        repairMetadataBtn.className = "ghost";
+        repairMetadataBtn.textContent = "Repair Packet Metadata";
+        repairMetadataBtn.addEventListener("click", async () => {
+          const ok = confirmUser(
+            `Repair metadata for ${schoolName} - ${ensembleName} from the released packet export?\n\n` +
+            `This syncs the released packet grade back into the event entry, schedule rows, school registration, and school ensemble record.`
+          );
+          if (!ok) return;
+          repairMetadataBtn.disabled = true;
+          try {
+            const result = await repairReleasedPacketMetadata({ eventId, ensembleId });
+            scheduleAdminPreflightRefresh?.({ immediate: true });
+            await renderAdminPacketsBySchedule();
+            alertUser(
+              `Packet metadata repaired.\n` +
+              `Grade: ${result.grade || "Unknown"}\n` +
+              `Schedule rows updated: ${result.updatedScheduleRows || 0}\n` +
+              `Duplicate schedule rows detected: ${result.duplicateScheduleRowsDetected || 0}`
+            );
+          } catch (error) {
+            console.error("repairReleasedPacketMetadata failed", error);
+            alertUser(error?.message || "Unable to repair packet metadata.");
+          } finally {
+            repairMetadataBtn.disabled = false;
+          }
+        });
+        actions.appendChild(repairMetadataBtn);
 
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
@@ -3325,7 +3434,7 @@ export function createAdminRenderers({
           where("schoolId", "==", selectedSchoolId)
         )
       );
-      if (state.admin.currentView !== "packets" || (state.event.active?.id || "") !== eventId) return;
+      if (state.admin.currentView !== "results" || (state.event.active?.id || "") !== eventId) return;
       const openPackets = openPacketsSnap.docs
         .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
         .filter((packet) => {
@@ -3765,6 +3874,19 @@ export function createAdminRenderers({
     }
   }
 
+  const SLOT_MINUTES_BY_GRADE = { I: 25, II: 25, III: 30, IV: 30, V: 35, VI: 40 };
+
+  function getSlotMinutesForGrade(grade) {
+    const raw = String(grade || "").trim().toUpperCase();
+    if (SLOT_MINUTES_BY_GRADE[raw]) return SLOT_MINUTES_BY_GRADE[raw];
+    if (raw.includes("/")) {
+      const parts = raw.split("/");
+      if (SLOT_MINUTES_BY_GRADE[parts[1]]) return SLOT_MINUTES_BY_GRADE[parts[1]];
+      if (SLOT_MINUTES_BY_GRADE[parts[0]]) return SLOT_MINUTES_BY_GRADE[parts[0]];
+    }
+    return 30;
+  }
+
   async function renderRegisteredEnsemblesList() {
     if (registeredRenderInFlight) {
       registeredRenderQueued = true;
@@ -3775,120 +3897,166 @@ export function createAdminRenderers({
       if (!els.adminRegisteredEnsemblesList) return;
       els.adminRegisteredEnsemblesList.innerHTML = "";
       const eventId = state.event.active?.id;
+      const eventName = state.event.active?.name || "Active Event";
       if (!eventId) {
-        renderParticipationSummary();
+        const li = document.createElement("li");
+        li.className = "hint";
+        li.textContent = "No active event set.";
+        els.adminRegisteredEnsemblesList.appendChild(li);
+        schedulePreEventGuidedFlowRender();
         return;
       }
 
-      // Show loading state while fetching data
-      renderParticipationSummary({ loading: true });
+      const loadingLi = document.createElement("li");
+      loadingLi.className = "hint";
+      loadingLi.textContent = "Loading\u2026";
+      els.adminRegisteredEnsemblesList.appendChild(loadingLi);
 
-      const [registeredRaw, scheduleEntries, entriesSnap] = await Promise.all([
-        fetchRegisteredEnsembles(eventId),
+      const [scheduleEntries, entriesSnap] = await Promise.all([
         fetchScheduleEntries(eventId),
         getDocs(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries)),
       ]);
+
       state.event.rosterEntries = Array.isArray(scheduleEntries) ? [...scheduleEntries] : [];
-      await refreshPreEventScheduleTimelineStarts?.(state.event.rosterEntries);
-      const { active: registered, stale } = await resolveCurrentRegisteredEnsembles(eventId, registeredRaw);
+
       const entryDataByEnsemble = new Map();
       entriesSnap.forEach((snap) => {
         if (!snap?.exists()) return;
         entryDataByEnsemble.set(snap.id, snap.data());
       });
 
-      if (!registered.length) {
-        renderParticipationSummary({ registered, scheduleEntries, entryDataByEnsemble });
-        const staleHint = stale.length
-          ? `<li class='hint'>No current ensembles are registered. Hidden stale entries: ${stale.length}.</li>`
-          : "<li class='hint'>No ensembles have registered yet.</li>";
-        els.adminRegisteredEnsemblesList.innerHTML = staleHint;
+      const schoolIdSet = new Set();
+      (state.admin.schoolsList || []).forEach((school) => school?.id && schoolIdSet.add(school.id));
+      (scheduleEntries || []).forEach((row) => row?.schoolId && schoolIdSet.add(row.schoolId));
+      entriesSnap.forEach((snap) => {
+        const schoolId = String(snap.data()?.schoolId || "").trim();
+        if (schoolId) schoolIdSet.add(schoolId);
+      });
+
+      const schoolEnsembleSnaps = await Promise.all(
+        [...schoolIdSet].map((schoolId) =>
+          getDocs(collection(db, COLLECTIONS.schools, schoolId, COLLECTIONS.ensembles))
+            .then((snap) => ({ schoolId, docs: snap.docs }))
+            .catch(() => ({ schoolId, docs: [] }))
+        )
+      );
+      const schoolEnsembleById = new Map();
+      const schoolEnsembleByNameKey = new Map();
+      schoolEnsembleSnaps.forEach(({ schoolId, docs }) => {
+        docs.forEach((docSnap) => {
+          const data = docSnap.data() || {};
+          const ensembleId = String(docSnap.id || "").trim();
+          if (ensembleId) {
+            schoolEnsembleById.set(`${schoolId}__${ensembleId}`, data);
+          }
+          const nameKey = `${schoolId}|${String(data.name || "").toLowerCase().trim()}`;
+          if (nameKey !== `${schoolId}|`) {
+            schoolEnsembleByNameKey.set(nameKey, data);
+          }
+        });
+      });
+
+      els.adminRegisteredEnsemblesList.innerHTML = "";
+
+      const visible = (scheduleEntries || []).filter((e) => e.hidden !== true);
+      if (!visible.length) {
+        const li = document.createElement("li");
+        li.className = "hint";
+        li.textContent = `${eventName} has no scheduled ensembles yet.`;
+        els.adminRegisteredEnsemblesList.appendChild(li);
         schedulePreEventGuidedFlowRender();
         return;
       }
 
-      if (stale.length) {
-        const staleLi = document.createElement("li");
-        staleLi.className = "hint";
-        staleLi.textContent = `Hidden stale registrations: ${stale.length} (ensembles no longer in school list).`;
-        els.adminRegisteredEnsemblesList.appendChild(staleLi);
-      }
-
-      const scheduleByEnsemble = new Map((scheduleEntries || []).map((row) => [row.ensembleId || row.id, row]));
-
-      const bySchool = new Map();
-      registered.forEach((entry) => {
-        const schoolId = entry.schoolId || "";
-        if (!schoolId) return;
-        if (!bySchool.has(schoolId)) bySchool.set(schoolId, []);
-        bySchool.get(schoolId).push(entry);
+      const sorted = [...visible].sort((a, b) => {
+        const aMs = toDateOrNull(a.performanceAt)?.getTime() ?? Infinity;
+        const bMs = toDateOrNull(b.performanceAt)?.getTime() ?? Infinity;
+        return aMs - bMs;
       });
 
-      const schoolIds = [...bySchool.keys()].sort((a, b) => {
-        const aName = getSchoolNameById(state.admin.schoolsList, a) || a;
-        const bName = getSchoolNameById(state.admin.schoolsList, b) || b;
-        return aName.localeCompare(bName);
-      });
+      const tableWrap = document.createElement("div");
+      tableWrap.className = "schedule-timeline-table-wrap";
+      const table = document.createElement("table");
+      table.className = "schedule-timeline-table";
+      table.innerHTML = "<thead><tr><th>Holding</th><th>Warm-up</th><th>Performance</th><th>School</th><th>Ensemble</th><th>Grade</th><th>Status</th><th></th></tr></thead>";
+      const tbody = document.createElement("tbody");
 
-      schoolIds.forEach((schoolId) => {
-        const schoolName = getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
-        const schoolEnsembles = bySchool.get(schoolId) || [];
-        const scheduledCount = schoolEnsembles.filter((entry) =>
-          scheduleByEnsemble.has(entry.ensembleId || entry.id)
-        ).length;
-        const readyCount = schoolEnsembles.filter((entry) => {
-          const key = entry.ensembleId || entry.id;
-          if (!scheduleByEnsemble.has(key)) return false;
-          return entryDataByEnsemble.get(key)?.status === "ready";
-        }).length;
-        const li = document.createElement("li");
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "admin-school-row-btn";
-        button.setAttribute("aria-label", `Open registrations for ${schoolName}`);
-        const row = document.createElement("div");
-        row.className = "row";
-        const title = document.createElement("strong");
-        title.textContent = schoolName;
-        const meta = document.createElement("span");
-        meta.className = "admin-school-summary-meta";
-        const ensBadge = document.createElement("span");
-        ensBadge.className = "badge";
-        ensBadge.textContent = `${schoolEnsembles.length} ensemble${schoolEnsembles.length === 1 ? "" : "s"}`;
-        const schedBadge = document.createElement("span");
-        schedBadge.className = "badge";
-        schedBadge.textContent = `Scheduled ${scheduledCount}/${schoolEnsembles.length}`;
-        const readyBadge = document.createElement("span");
-        readyBadge.className = "badge";
-        readyBadge.textContent = `Ready ${readyCount}/${scheduledCount || 0}`;
-        meta.appendChild(ensBadge);
-        meta.appendChild(schedBadge);
-        meta.appendChild(readyBadge);
-        row.appendChild(title);
-        row.appendChild(meta);
-        button.appendChild(row);
-        const summary = document.createElement("div");
-        summary.className = "note";
-        summary.textContent =
-          scheduledCount === 0
-            ? "No scheduled ensembles yet. Open to assign times and review director data."
-            : `${scheduledCount} scheduled ensemble${scheduledCount === 1 ? "" : "s"} • ${readyCount} director-ready • open to manage registrations and check-in readiness.`;
-        button.appendChild(summary);
-        button.addEventListener("click", () => {
+      sorted.forEach((sched) => {
+        const ensembleId = sched.ensembleId || sched.id;
+        const schoolId = sched.schoolId || "";
+        const schoolName = sched.schoolName || getSchoolNameById(state.admin.schoolsList, schoolId) || "\u2014";
+        const entryData = entryDataByEnsemble.get(ensembleId) || {};
+        const fallbackSchoolEnsemble =
+          schoolEnsembleById.get(`${schoolId}__${ensembleId}`) ||
+          schoolEnsembleByNameKey.get(`${schoolId}|${String(sched.ensembleName || "").toLowerCase().trim()}`) ||
+          {};
+        const grade =
+          entryData.declaredGradeLevel ||
+          entryData.performanceGrade ||
+          fallbackSchoolEnsemble.declaredGradeLevel ||
+          fallbackSchoolEnsemble.performanceGrade ||
+          sched.grade ||
+          "\u2014";
+        const ensembleName = normalizeEnsembleDisplayName({
+          schoolName,
+          ensembleName: sched.ensembleName || entryData.ensembleName || "",
+          ensembleId,
+        }) || "\u2014";
+
+        const perfAt = toDateOrNull(sched.performanceAt);
+        const slotMin = getSlotMinutesForGrade(grade);
+        const warmUpStart = perfAt ? new Date(perfAt.getTime() - slotMin * 60000) : null;
+        const holdingStart = warmUpStart ? new Date(warmUpStart.getTime() - slotMin * 60000) : null;
+
+        const isRegistered = entryDataByEnsemble.has(ensembleId);
+        const statusStr = String(entryData.status || "").trim().toLowerCase();
+        const statusLabel = statusStr === "ready" ? "Director Ready" : isRegistered ? "In Progress" : "Not Registered";
+
+        const tr = document.createElement("tr");
+        if (!isRegistered) tr.classList.add("is-unregistered");
+
+        const td = (text) => {
+          const cell = document.createElement("td");
+          cell.textContent = text;
+          return cell;
+        };
+        tr.appendChild(td(formatStartTime(holdingStart)));
+        tr.appendChild(td(formatStartTime(warmUpStart)));
+        tr.appendChild(td(formatStartTime(perfAt)));
+        tr.appendChild(td(schoolName));
+        tr.appendChild(td(ensembleName));
+        tr.appendChild(td(grade));
+        tr.appendChild(td(statusLabel));
+
+        const actionTd = document.createElement("td");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn--secondary";
+        btn.textContent = "Open";
+        btn.addEventListener("click", () => {
           state.admin.selectedSchoolId = schoolId;
           state.admin.selectedSchoolName = schoolName;
           applyAdminView("preEvent");
         });
-        li.appendChild(button);
-        els.adminRegisteredEnsemblesList.appendChild(li);
+        actionTd.appendChild(btn);
+        tr.appendChild(actionTd);
+        tbody.appendChild(tr);
       });
 
-      renderParticipationSummary({ registered, scheduleEntries, entryDataByEnsemble });
+      table.appendChild(tbody);
+      tableWrap.appendChild(table);
+      const li = document.createElement("li");
+      li.appendChild(tableWrap);
+      els.adminRegisteredEnsemblesList.appendChild(li);
+
       schedulePreEventGuidedFlowRender();
     } catch (err) {
-      // If Firestore fetch fails, show error state in participation summary
-      renderParticipationSummary({ error: err });
-      console.error("Failed to load registered ensembles:", err);
+      console.error("Failed to load scheduled ensembles:", err);
+      els.adminRegisteredEnsemblesList.innerHTML = "";
+      const li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = "Failed to load data. Please check your connection and refresh.";
+      els.adminRegisteredEnsemblesList.appendChild(li);
     } finally {
       registeredRenderInFlight = false;
       if (registeredRenderQueued) {
@@ -3900,12 +4068,479 @@ export function createAdminRenderers({
     }
   }
 
+  // ── Schedule Builder ──────────────────────────────────────────────────────
+
+  // In-memory model lives here so it survives re-renders without re-fetching
+  let schedulerModel = null;
+  let schedulerRegisteredEntries = [];
+
+  function buildEntryMeta(registeredEntries) {
+    const meta = new Map();
+    for (const entry of registeredEntries) {
+      const ensembleId = entry.ensembleId || entry.id;
+      const schoolId = entry.schoolId || "";
+      const schoolName = entry.schoolName || getSchoolNameById(state.admin.schoolsList, schoolId) || schoolId;
+      const ensembleName = normalizeEnsembleDisplayName({
+        schoolName,
+        ensembleName: entry.ensembleName || "",
+        ensembleId,
+      }) || ensembleId;
+      meta.set(ensembleId, {
+        schoolId,
+        schoolName,
+        ensembleName,
+        grade: entry.performanceGrade || entry.declaredGradeLevel || "",
+        _unregistered: Boolean(entry._unregistered),
+      });
+    }
+    return meta;
+  }
+
+  async function renderScheduleBuilder() {
+    const container = els.adminScheduleBuilderContent;
+    if (!container) return;
+
+    const eventId = state.event.active?.id;
+    if (!eventId) {
+      container.innerHTML = "<p class='hint'>No active event set.</p>";
+      return;
+    }
+
+    container.innerHTML = "<p class='hint'>Loading\u2026</p>";
+
+    try {
+      const [scheduleEntries, registeredEntries] = await Promise.all([
+        fetchScheduleEntries(eventId),
+        fetchRegisteredEnsembles(eventId),
+      ]);
+
+      // Collect all school IDs from every available source so we don't miss any school
+      // (e.g. schools not yet in state.admin.schoolsList due to snapshot timing).
+      const schoolIdSet = new Set();
+      (state.admin.schoolsList || []).forEach((s) => s.id && schoolIdSet.add(s.id));
+      registeredEntries.forEach((e) => e.schoolId && schoolIdSet.add(e.schoolId));
+      scheduleEntries.forEach((e) => e.schoolId && schoolIdSet.add(e.schoolId));
+
+      // Fetch each school's ensembles sub-collection in parallel.
+      const subSnaps = await Promise.all(
+        [...schoolIdSet].map((schoolId) =>
+          getDocs(collection(db, COLLECTIONS.schools, schoolId, COLLECTIONS.ensembles))
+            .then((snap) => snap.docs.map((d) => ({ id: d.id, schoolId, ...d.data() })))
+            .catch(() => [])
+        )
+      );
+      const allSubEnsembles = subSnaps.flat();
+
+      // Merge: registered entries take precedence (keyed by ensembleId);
+      // sub-collection docs not already covered by a registered entry become stubs.
+      const registeredByEnsembleId = new Map(registeredEntries.map((e) => [e.ensembleId || e.id, e]));
+
+      // Secondary dedup key: schoolId + lowercased ensembleName, to handle data inconsistencies
+      // where the sub-collection doc ID differs from the ensembleId stored in the entry.
+      const registeredNameKeys = new Set(
+        registeredEntries.map((e) => `${e.schoolId}|${String(e.ensembleName || "").toLowerCase().trim()}`)
+      );
+
+      const merged = [...registeredEntries];
+      allSubEnsembles.forEach((data) => {
+        const nameKey = `${data.schoolId}|${String(data.name || "").toLowerCase().trim()}`;
+        if (registeredByEnsembleId.has(data.id)) return;        // same ensembleId → already covered
+        if (registeredNameKeys.has(nameKey) && nameKey !== `${data.schoolId}|`) return; // same ensemble, different ID
+        merged.push({
+          id: data.id,
+          ensembleId: data.id,
+          schoolId: data.schoolId || "",
+          ensembleName: data.name || "",
+          performanceGrade: String(data.performanceGrade || "").trim(),
+          declaredGradeLevel: String(data.declaredGradeLevel || "").trim(),
+          performanceGradeFlex: Boolean(data.performanceGradeFlex),
+          declaredGradeFlex: Boolean(data.declaredGradeFlex),
+          _unregistered: true,
+        });
+      });
+
+      schedulerRegisteredEntries = merged;
+      const event = state.event.active || {};
+      const eventStartAt = toDateOrNull(event.startAt);
+
+      schedulerModel = buildSlotModelFromFirestore(
+        scheduleEntries,
+        event.scheduleBreaks || [],
+        event.scheduleDayBreaks || {},
+        eventStartAt,
+      );
+    } catch (err) {
+      console.error("Schedule Builder: failed to load data", err);
+      container.innerHTML = "<p class='hint'>Failed to load data. Check your connection and try again.</p>";
+      return;
+    }
+
+    renderScheduleBuilderUI();
+  }
+
+  function renderScheduleBuilderUI() {
+    const container = els.adminScheduleBuilderContent;
+    if (!container || !schedulerModel) return;
+
+    const entryMeta = buildEntryMeta(schedulerRegisteredEntries);
+    const scheduledIds = getScheduledEnsembleIds(schedulerModel);
+    const totalEnsembleSlots = countEnsembleSlots(schedulerModel);
+    const errors = validateSlotModel(schedulerModel);
+    const MAX_PER_DAY = 18;
+
+    container.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "schedule-builder-wrap";
+
+    const days = schedulerModel.days;
+
+    days.forEach((day, dayIndex) => {
+      const dayDiv = document.createElement("div");
+      dayDiv.className = "schedule-builder-day";
+
+      // Day header
+      const header = document.createElement("div");
+      header.className = "schedule-builder-day-header";
+
+      const title = document.createElement("span");
+      title.className = "schedule-builder-day-title";
+      title.textContent = `Day ${dayIndex + 1}${day.dateLabel ? ` — ${day.dateLabel}` : ""}`;
+      header.appendChild(title);
+
+      // Start time input
+      const timeLabel = document.createElement("label");
+      timeLabel.style.cssText = "display:flex;align-items:center;gap:6px;font-size:var(--text-sm);";
+      timeLabel.textContent = "First Performance: ";
+      const timeInput = document.createElement("input");
+      timeInput.type = "time";
+      timeInput.value = day.startTime || "08:00";
+      timeInput.style.cssText = "font:inherit;font-size:var(--text-sm);padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);";
+      timeInput.addEventListener("change", () => {
+        schedulerModel.days[dayIndex].startTime = timeInput.value;
+        renderScheduleBuilderUI();
+      });
+      timeLabel.appendChild(timeInput);
+      header.appendChild(timeLabel);
+
+      // Slot count badge
+      const dayEnsembleCount = day.slots.filter((s) => s.type === "ensemble").length;
+      const slotCount = document.createElement("span");
+      slotCount.className = `schedule-builder-slot-count${dayEnsembleCount >= MAX_PER_DAY ? " is-full" : ""}`;
+      slotCount.textContent = `${dayEnsembleCount} / ${MAX_PER_DAY} bands`;
+      header.appendChild(slotCount);
+
+      // Remove day button (only if not the last day)
+      const dayActions = document.createElement("div");
+      dayActions.className = "schedule-builder-day-actions";
+      if (days.length > 1) {
+        const removeDayBtn = document.createElement("button");
+        removeDayBtn.type = "button";
+        removeDayBtn.className = "ghost btn--sm";
+        removeDayBtn.textContent = "Remove Day";
+        removeDayBtn.addEventListener("click", () => {
+          schedulerModel.days.splice(dayIndex, 1);
+          renderScheduleBuilderUI();
+        });
+        dayActions.appendChild(removeDayBtn);
+      }
+      header.appendChild(dayActions);
+      dayDiv.appendChild(header);
+
+      // Table
+      const tableWrap = document.createElement("div");
+      tableWrap.style.overflowX = "auto";
+      const table = document.createElement("table");
+      table.className = "schedule-builder-table";
+      table.innerHTML = `<thead><tr>
+        <th class="col-num">#</th>
+        <th class="col-time">Time</th>
+        <th class="col-ensemble">Ensemble</th>
+        <th class="col-grade">Grade</th>
+        <th class="col-slot">Slot</th>
+        <th class="col-remove"></th>
+      </tr></thead>`;
+      const tbody = document.createElement("tbody");
+
+      const getGrade = (ensembleId) => entryMeta.get(ensembleId)?.grade || "";
+      const times = computeDaySlotTimes(day, getGrade);
+
+      let ensembleCounter = 0;
+
+      day.slots.forEach((slot, slotIndex) => {
+        const tr = document.createElement("tr");
+        const { performStart, slotMins } = times[slotIndex] || {};
+
+        const timeStr = performStart
+          ? performStart.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+          : "—";
+
+        if (slot.type === "break") {
+          tr.className = "schedule-builder-break-row";
+          tr.innerHTML = `
+            <td class="col-num">—</td>
+            <td class="col-time">${timeStr}</td>
+            <td class="col-ensemble" colspan="3">30-minute Break</td>
+          `;
+          const removeTd = document.createElement("td");
+          removeTd.className = "col-remove";
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.className = "ghost btn--sm";
+          removeBtn.textContent = "✕";
+          removeBtn.title = "Remove break";
+          removeBtn.addEventListener("click", () => {
+            schedulerModel.days[dayIndex].slots.splice(slotIndex, 1);
+            renderScheduleBuilderUI();
+          });
+          removeTd.appendChild(removeBtn);
+          tr.appendChild(removeTd);
+        } else {
+          ensembleCounter++;
+          const numTd = document.createElement("td");
+          numTd.className = "col-num";
+          numTd.textContent = String(ensembleCounter);
+
+          const timeTd = document.createElement("td");
+          timeTd.className = "col-time";
+          timeTd.textContent = timeStr;
+
+          const ensembleTd = document.createElement("td");
+          ensembleTd.className = "col-ensemble";
+          const select = document.createElement("select");
+          select.className = "schedule-builder-ensemble-select";
+
+          // Build options: blank + all ensembles (unscheduled or currently selected here)
+          const blankOpt = document.createElement("option");
+          blankOpt.value = "";
+          blankOpt.textContent = "— Select ensemble —";
+          select.appendChild(blankOpt);
+
+          for (const [ensembleId, meta] of entryMeta) {
+            const isScheduledElsewhere = scheduledIds.has(ensembleId) && ensembleId !== slot.ensembleId;
+            const opt = document.createElement("option");
+            opt.value = ensembleId;
+            opt.textContent = `${meta.schoolName} – ${meta.ensembleName}${isScheduledElsewhere ? " (Already Scheduled)" : ""}`;
+            opt.disabled = isScheduledElsewhere;
+            if (ensembleId === slot.ensembleId) opt.selected = true;
+            select.appendChild(opt);
+          }
+
+          select.addEventListener("change", () => {
+            schedulerModel.days[dayIndex].slots[slotIndex].ensembleId = select.value || null;
+            renderScheduleBuilderUI();
+          });
+          ensembleTd.appendChild(select);
+
+          const grade = slot.ensembleId ? getGrade(slot.ensembleId) : "";
+          const gradeTd = document.createElement("td");
+          gradeTd.className = "col-grade";
+          gradeTd.textContent = grade || "—";
+
+          const slotTd = document.createElement("td");
+          slotTd.className = "col-slot";
+          slotTd.textContent = slot.ensembleId ? `${slotMins} min` : "—";
+
+          const removeTd = document.createElement("td");
+          removeTd.className = "col-remove";
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.className = "ghost btn--sm";
+          removeBtn.textContent = "✕";
+          removeBtn.title = "Remove slot";
+          removeBtn.addEventListener("click", () => {
+            schedulerModel.days[dayIndex].slots.splice(slotIndex, 1);
+            renderScheduleBuilderUI();
+          });
+          removeTd.appendChild(removeBtn);
+
+          tr.appendChild(numTd);
+          tr.appendChild(timeTd);
+          tr.appendChild(ensembleTd);
+          tr.appendChild(gradeTd);
+          tr.appendChild(slotTd);
+          tr.appendChild(removeTd);
+        }
+
+        tbody.appendChild(tr);
+      });
+
+      table.appendChild(tbody);
+      tableWrap.appendChild(table);
+      dayDiv.appendChild(tableWrap);
+
+      // Add Slot / Add Break buttons
+      const addRow = document.createElement("div");
+      addRow.className = "row";
+      addRow.style.marginTop = "8px";
+      addRow.style.gap = "6px";
+
+      const addSlotBtn = document.createElement("button");
+      addSlotBtn.type = "button";
+      addSlotBtn.className = "ghost btn--sm";
+      addSlotBtn.textContent = "+ Add Slot";
+      addSlotBtn.disabled = dayEnsembleCount >= MAX_PER_DAY;
+      addSlotBtn.addEventListener("click", () => {
+        schedulerModel.days[dayIndex].slots.push({ type: "ensemble", ensembleId: null });
+        renderScheduleBuilderUI();
+      });
+
+      const addBreakBtn = document.createElement("button");
+      addBreakBtn.type = "button";
+      addBreakBtn.className = "ghost btn--sm";
+      addBreakBtn.textContent = "+ Add Break";
+      addBreakBtn.addEventListener("click", () => {
+        schedulerModel.days[dayIndex].slots.push({ type: "break" });
+        renderScheduleBuilderUI();
+      });
+
+      addRow.appendChild(addSlotBtn);
+      addRow.appendChild(addBreakBtn);
+      dayDiv.appendChild(addRow);
+
+      wrap.appendChild(dayDiv);
+    });
+
+    // Add Day button
+    const addDayBtn = document.createElement("button");
+    addDayBtn.type = "button";
+    addDayBtn.className = "ghost btn--sm";
+    addDayBtn.textContent = "+ Add Day";
+    addDayBtn.addEventListener("click", () => {
+      const lastDay = schedulerModel.days[schedulerModel.days.length - 1];
+      const lastDate = lastDay?.startDate || new Date();
+      const nextDate = new Date(lastDate.getTime() + 86400000);
+      schedulerModel.days.push({
+        dateLabel: nextDate.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" }),
+        startDate: new Date(nextDate.getFullYear(), nextDate.getMonth(), nextDate.getDate()),
+        startTime: "08:00",
+        slots: [],
+      });
+      renderScheduleBuilderUI();
+    });
+    wrap.appendChild(addDayBtn);
+
+    // Unscheduled list — registered entries not yet placed, plus known ensembles without entries
+    const unscheduled = [...entryMeta.entries()].filter(([id]) => !scheduledIds.has(id));
+    if (unscheduled.length) {
+      const unschedDiv = document.createElement("div");
+      unschedDiv.className = "schedule-builder-unscheduled";
+
+      const unschedTitle = document.createElement("div");
+      unschedTitle.style.cssText = "font-weight:600;margin-bottom:4px;";
+      unschedTitle.textContent = `Unscheduled (${unscheduled.filter(([, m]) => !m._unregistered).length} registered, ${unscheduled.filter(([, m]) => m._unregistered).length} without entry):`;
+      unschedDiv.appendChild(unschedTitle);
+
+      for (const [ensembleId, meta] of unscheduled) {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;gap:8px;padding:2px 0;";
+
+        const label = document.createElement("span");
+        label.textContent = `${meta.schoolName} – ${meta.ensembleName}`;
+        if (meta._unregistered) {
+          label.style.color = "var(--muted)";
+          label.title = "No registration entry for this event";
+        }
+        row.appendChild(label);
+
+        // Only show Remove for ensembles that have a real entries doc (not bare ensemble stubs)
+        if (!meta._unregistered) {
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.className = "ghost btn--sm";
+          removeBtn.textContent = "Remove";
+          removeBtn.title = "Delete this registration entry (abandoned draft)";
+          removeBtn.addEventListener("click", async () => {
+            const eventId = state.event.active?.id;
+            if (!eventId) return;
+            if (!window.confirm(`Remove "${meta.schoolName} – ${meta.ensembleName}" from this event? This deletes their registration entry and cannot be undone.`)) return;
+            removeBtn.disabled = true;
+            removeBtn.textContent = "Removing…";
+            try {
+              await deleteEntry({ eventId, ensembleId });
+              schedulerRegisteredEntries = schedulerRegisteredEntries.filter(
+                (e) => (e.ensembleId || e.id) !== ensembleId
+              );
+              renderScheduleBuilderUI();
+            } catch (err) {
+              console.error("Failed to remove entry:", err);
+              removeBtn.disabled = false;
+              removeBtn.textContent = "Remove";
+            }
+          });
+          row.appendChild(removeBtn);
+        }
+
+        unschedDiv.appendChild(row);
+      }
+
+      wrap.appendChild(unschedDiv);
+    }
+
+    // Error list
+    if (errors.length) {
+      const errList = document.createElement("ul");
+      errList.className = "schedule-builder-errors";
+      errors.forEach((msg) => {
+        const li = document.createElement("li");
+        li.textContent = msg;
+        errList.appendChild(li);
+      });
+      wrap.appendChild(errList);
+    }
+
+    // Footer: Save + Reset
+    const footer = document.createElement("div");
+    footer.className = "schedule-builder-footer";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "btn--primary";
+    saveBtn.textContent = "Save Schedule";
+    saveBtn.disabled = errors.length > 0;
+    saveBtn.addEventListener("click", async () => {
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving…";
+      try {
+        const { rows, firstPerformanceAt, scheduleBreaks, scheduleDayBreaks } =
+          serializeSlotModel(schedulerModel, entryMeta);
+        await saveSchedulerModel({ eventId: state.event.active?.id, rows, firstPerformanceAt, scheduleBreaks, scheduleDayBreaks });
+        saveBtn.textContent = "Saved";
+        scheduleAdminPreflightRefresh?.({ immediate: true });
+        setTimeout(() => {
+          saveBtn.textContent = "Save Schedule";
+          saveBtn.disabled = false;
+        }, 2000);
+      } catch (err) {
+        console.error("Schedule Builder: save failed", err);
+        saveBtn.textContent = "Save Failed";
+        saveBtn.disabled = false;
+      }
+    });
+
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "ghost btn--sm";
+    resetBtn.textContent = "Reset";
+    resetBtn.addEventListener("click", async () => {
+      if (!window.confirm("Reload the schedule from Firestore? Unsaved changes will be lost.")) return;
+      schedulerModel = null;
+      await renderScheduleBuilder();
+    });
+
+    footer.appendChild(saveBtn);
+    footer.appendChild(resetBtn);
+    wrap.appendChild(footer);
+
+    container.appendChild(wrap);
+  }
+
   return {
     renderAdminSchoolDetail,
     renderAdminLiveSubmissions,
     renderAdminRatingsView,
     renderAdminPacketsBySchedule,
     renderRegisteredEnsemblesList,
+    renderScheduleBuilder,
     renderAdminPizzaTotals,
     renderAdminPizzaTotalsByDay,
     renderAdminPizzaTotalsBySchool,

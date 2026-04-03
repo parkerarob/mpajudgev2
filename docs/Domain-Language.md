@@ -61,7 +61,7 @@ The system does not model or track rooms. Room flow is managed by humans. The sy
 
 ### District
 
-A regional grouping within NCBA. There are 7 districts: Northwest, Western, South Central, Central, East Central, Southeast, Eastern. Each district runs its own MPA events independently.
+A regional grouping within NCBA. There are 7 districts: Northwest, Western, South Central, Central, East Central, Southeastern, Eastern. Each district runs its own MPA events independently.
 
 ### Organizational Hierarchy
 
@@ -74,7 +74,7 @@ NAfME (National Association for Music Education)
               ├── South Central District
               ├── Central District
               ├── East Central District
-              ├── Southeast District
+              ├── Southeastern District
               └── Eastern District
 ```
 

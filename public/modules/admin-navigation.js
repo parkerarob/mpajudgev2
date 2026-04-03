@@ -14,7 +14,7 @@ const ADMIN_VIEW_BY_SEGMENT = {
   // Setup — event config, judge assignments, schedule import, program export
   setup: "setup",
   settings: "setup",           // legacy alias
-  // Directory — schools, users, director assignments
+  // Directory — schools and users
   directory: "directory",
   // Pre-Event — registrations + readiness (merged)
   "pre-event": "preEvent",

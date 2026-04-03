@@ -1,7 +1,5 @@
 export function createAdminPacketsController({
   els,
-  state,
-  getEffectiveRole,
   renderAdminPacketsBySchedule,
 } = {}) {
   function setVisible(visible) {
@@ -14,11 +12,7 @@ export function createAdminPacketsController({
     renderAdminPacketsBySchedule();
   }
 
-  function syncActions() {
-    if (!els.adminPacketsMockPreviewBtn) return;
-    const isAdmin = getEffectiveRole(state.auth.userProfile) === "admin";
-    els.adminPacketsMockPreviewBtn.style.display = isAdmin ? "inline-flex" : "none";
-  }
+  function syncActions() {}
 
   return {
     setVisible,

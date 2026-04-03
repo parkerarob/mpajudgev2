@@ -178,11 +178,12 @@ export async function cleanupRehearsalArtifacts({ eventId }) {
   return response.data || {};
 }
 
-export async function saveSchool({ schoolId, name }) {
+export async function saveSchool({ schoolId, name, district = "" }) {
   const schoolRef = doc(db, COLLECTIONS.schools, schoolId);
   const existing = await getDoc(schoolRef);
   const payload = {
     name,
+    district,
     updatedAt: serverTimestamp(),
   };
   if (!existing.exists()) {
@@ -224,6 +225,12 @@ export async function deleteUserAccount({ targetUid }) {
   const fn = httpsCallable(functions, "deleteUserAccount");
   const response = await fn({ targetUid });
   return response.data || {};
+}
+
+export async function saveJudgeBio({ targetUid, bio }) {
+  if (!targetUid) throw new Error("targetUid required");
+  const userRef = doc(db, COLLECTIONS.users, targetUid);
+  return setDoc(userRef, { bio: String(bio || "").trim(), updatedAt: serverTimestamp() }, { merge: true });
 }
 
 export async function updateUserDisplayName({ targetUid, displayName }) {
@@ -709,6 +716,95 @@ export async function importConfirmedScheduleRows({ eventId, rows = [] } = {}) {
 }
 
 /**
+ * Delete an entry doc (abandoned draft registration) from an event.
+ * Does not touch any schedule doc — caller should confirm ensemble is unscheduled.
+ */
+export async function deleteEntry({ eventId, ensembleId }) {
+  if (!eventId || !ensembleId) throw new Error("eventId and ensembleId required");
+  return deleteDoc(doc(db, COLLECTIONS.events, eventId, COLLECTIONS.entries, ensembleId));
+}
+
+/**
+ * Save the schedule builder slot model to Firestore in one batch.
+ * Clears all existing schedule docs and writes new ones from the serialized model.
+ * Also updates the event's firstPerformanceAt, scheduleBreaks, scheduleDayBreaks.
+ *
+ * @param {{
+ *   eventId: string,
+ *   rows: Array<{tempId:string, ensembleId:string, schoolId:string, schoolName:string, ensembleName:string, performanceAtDate:Date, orderIndex:number}>,
+ *   firstPerformanceAt: Date|null,
+ *   scheduleBreaks: string[],
+ *   scheduleDayBreaks: Object<string, Date>,
+ * }}
+ */
+export async function saveSchedulerModel({ eventId, rows, firstPerformanceAt, scheduleBreaks, scheduleDayBreaks }) {
+  if (!eventId) throw new Error("eventId required");
+
+  // Map tempId → real Firestore doc ref, so scheduleBreaks / scheduleDayBreaks can reference real IDs
+  const tempToRef = new Map();
+  const scheduleColRef = collection(db, COLLECTIONS.events, eventId, COLLECTIONS.schedule);
+
+  for (const row of rows) {
+    const ref = doc(scheduleColRef);
+    tempToRef.set(row.tempId, ref);
+  }
+
+  const realBreaks = scheduleBreaks.map((tempId) => tempToRef.get(tempId)?.id).filter(Boolean);
+  const realDayBreaks = {};
+  for (const [tempId, date] of Object.entries(scheduleDayBreaks)) {
+    const ref = tempToRef.get(tempId);
+    if (ref) realDayBreaks[ref.id] = date;
+  }
+
+  const batch = writeBatch(db);
+
+  // Hide all existing schedule docs
+  const existingSnap = await getDocs(scheduleColRef);
+  existingSnap.docs.forEach((docSnap) => {
+    batch.set(docSnap.ref, { hidden: true, updatedAt: serverTimestamp() }, { merge: true });
+  });
+
+  // Write new docs using pre-assigned refs
+  rows.forEach((row) => {
+    const ref = tempToRef.get(row.tempId);
+    if (!ref) return;
+    batch.set(ref, {
+      eventId,
+      schoolId: row.schoolId,
+      schoolName: row.schoolName,
+      ensembleId: row.ensembleId,
+      ensembleName: row.ensembleName,
+      performanceAt: Timestamp.fromDate(row.performanceAtDate),
+      orderIndex: row.orderIndex,
+      hidden: false,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  });
+
+  // Update event scheduler fields
+  const eventRef = doc(db, COLLECTIONS.events, eventId);
+  const eventUpdates = {
+    [FIELDS.events.scheduleBreaks]: realBreaks,
+    [FIELDS.events.scheduleDayBreaks]: (() => {
+      const converted = {};
+      for (const [k, v] of Object.entries(realDayBreaks)) {
+        converted[k] = v instanceof Date ? Timestamp.fromDate(v) : v;
+      }
+      return converted;
+    })(),
+    updatedAt: serverTimestamp(),
+  };
+  if (firstPerformanceAt instanceof Date) {
+    eventUpdates[FIELDS.events.firstPerformanceAt] = Timestamp.fromDate(firstPerformanceAt);
+  }
+  batch.update(eventRef, eventUpdates);
+
+  await batch.commit();
+  return { count: rows.length };
+}
+
+/**
  * Aggregate lunch totals by school for the event (from director entries).
  * @param {string} eventId
  * @returns {Promise<Array<{ schoolId: string, schoolName: string, cheese: number, pepperoni: number, total: number }>>}
@@ -832,6 +928,12 @@ export async function repairPacketReleaseState({ eventId, ensembleId }) {
   return response.data || {};
 }
 
+export async function repairReleasedPacketMetadata({ eventId, ensembleId }) {
+  const fn = httpsCallable(functions, "repairReleasedPacketMetadata");
+  const response = await fn({ eventId, ensembleId });
+  return response.data || {};
+}
+
 export async function setPacketCommentsOnly({ eventId, ensembleId, commentsOnly, reason = "" }) {
   const fn = httpsCallable(functions, "setPacketCommentsOnly");
   const response = await fn({
@@ -841,12 +943,6 @@ export async function setPacketCommentsOnly({ eventId, ensembleId, commentsOnly,
     reason,
   });
   return response.data || {};
-}
-
-export async function releaseMockPacketForAshleyTesting({ schoolId = "", ensembleId = "", grade = "IV" } = {}) {
-  const fn = httpsCallable(functions, "releaseMockPacketForAshleyTesting");
-  const response = await fn({ schoolId, ensembleId, grade });
-  return response?.data || {};
 }
 
 export async function unlockSubmission({ eventId, ensembleId, judgePosition }) {
@@ -909,6 +1005,31 @@ export async function deleteScheduledAssessment({ eventId, ensembleId, judgePosi
 export async function deleteAllUnreleasedPackets() {
   const deleteFn = httpsCallable(functions, "deleteAllUnreleasedPackets");
   const response = await deleteFn({});
+  return response.data || {};
+}
+
+export async function getPostEventCleanupCandidates({ eventId } = {}) {
+  const fn = httpsCallable(functions, "getPostEventCleanupCandidates");
+  const response = await fn({ eventId: String(eventId || "").trim() });
+  return response.data || {};
+}
+
+export async function purgePostEventCleanupCandidate({ eventId, candidateType, candidateId } = {}) {
+  const fn = httpsCallable(functions, "purgePostEventCleanupCandidate");
+  const response = await fn({
+    eventId: String(eventId || "").trim(),
+    candidateType: String(candidateType || "").trim(),
+    candidateId: String(candidateId || "").trim(),
+  });
+  return response.data || {};
+}
+
+export async function purgePostEventCleanupCategory({ eventId, category } = {}) {
+  const fn = httpsCallable(functions, "purgePostEventCleanupCategory");
+  const response = await fn({
+    eventId: String(eventId || "").trim(),
+    category: String(category || "").trim(),
+  });
   return response.data || {};
 }
 

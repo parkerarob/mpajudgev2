@@ -14,15 +14,13 @@ export function createAdminViewController({
   renderLiveEventCheckinQueue,
   renderAdminSchoolDetail,
   renderRegisteredEnsemblesList,
-  renderAdminPizzaTotals,
+  renderScheduleBuilder,
   renderAdminLiveSubmissions,
   renderAdminPacketsBySchedule,
   renderAdminRatingsView,
   renderAdminAnnouncerView,
-  renderAdminReadinessView,
   renderEventList,
   renderAdminSchoolsDirectory,
-  renderDirectorAssignmentsDirectory,
   renderAdminUsersDirectory,
 } = {}) {
   function setSectionVisible(element, visible) {
@@ -36,8 +34,7 @@ export function createAdminViewController({
     els,
     renderAdminSchoolDetail,
     renderRegisteredEnsemblesList,
-    renderAdminPizzaTotals,
-    renderAdminReadinessView,
+    renderScheduleBuilder,
   });
   const liveController = createAdminLiveEventController({
     els,
@@ -58,7 +55,6 @@ export function createAdminViewController({
   const directoryController = createAdminDirectoryController({
     els,
     renderAdminSchoolsDirectory,
-    renderDirectorAssignmentsDirectory,
     renderAdminUsersDirectory,
   });
 
@@ -147,7 +143,6 @@ export function createAdminViewController({
     setSectionVisible(els.adminViewSetup,          showSetup);
     setSectionVisible(els.adminViewDirectory,      showDirectory);
     setSectionVisible(els.adminViewEvents,         showPreEvent);
-    setSectionVisible(els.adminReadinessPanels,    showPreEvent);
     setSectionVisible(els.adminViewChair,          showLiveEvent);
     setSectionVisible(els.adminViewResults,        showResults);
     setSectionVisible(els.adminViewAnnouncer,      showAnnouncer);

@@ -23,9 +23,13 @@ import {
   cleanupRehearsalArtifacts,
   deleteUserAccount,
   updateUserDisplayName,
+  saveJudgeBio,
   deleteEvent,
   deleteEnsemble,
   deleteAllUnreleasedPackets,
+  getPostEventCleanupCandidates,
+  purgePostEventCleanupCandidate,
+  purgePostEventCleanupCategory,
   cleanupTestArtifacts,
   deleteOpenPacket,
   deleteScheduledAssessment,
@@ -39,6 +43,7 @@ import {
   repairOpenSubmissionAudioMetadata,
   repairPacketSubmissionLinkage,
   repairPacketReleaseState,
+  repairReleasedPacketMetadata,
   setPacketCommentsOnly,
   recreateOpenPacketFromCanonical,
   restoreCanonicalFromOpenPacket,
@@ -58,7 +63,6 @@ import {
   linkOpenPacketToEnsemble,
   provisionUser,
   releasePacket,
-  releaseMockPacketForAshleyTesting,
   runEventPreflight,
   saveAssignments,
   saveSchool,
@@ -73,6 +77,8 @@ import {
   unlockSubmission,
   updateEventSchedulerFields,
   updateScheduleEntryTime,
+  saveSchedulerModel,
+  deleteEntry,
   watchAssignmentsForActiveEvent,
   watchActiveEvent,
   watchDirectors,
@@ -229,7 +235,6 @@ import { createAuthHandlerBinder } from "./ui-auth-handlers.js";
 import { createAdminHandlerBinder } from "./ui-admin-handlers.js";
 import { getAdminHashForView, resolveAdminView } from "./admin-navigation.js";
 import { resolveAdminDirectorReturnView } from "./director-attach-policy.js";
-import { createAdminMockPacketPreviewRenderer } from "./ui-admin-mock-packet.js";
 import { createDirectorEntryFormRenderers } from "./ui-director-entry-form.js";
 import { createCheckinView } from "./ui-checkin.js";
 import {
@@ -507,9 +512,6 @@ function startActiveAssignmentsWatcher() {
       setStageJudgeSelectValues(assignments || {});
     }
     renderAdminReadiness();
-    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
-      renderAdminReadinessView();
-    }
     refreshOpenEventDefaultsState();
   });
 }
@@ -1217,16 +1219,6 @@ function resetAdminSchoolForm() {
   setAdminSchoolFormMode(null);
 }
 
-function startAdminSchoolEdit(school) {
-  if (!school) return;
-  if (els.schoolIdCreateInput) els.schoolIdCreateInput.value = school.id || "";
-  if (els.schoolNameCreateInput) els.schoolNameCreateInput.value = school.name || "";
-  if (els.adminSchoolManageSelect && school.id) {
-    els.adminSchoolManageSelect.value = school.id;
-  }
-  setAdminSchoolFormMode(school.id);
-  els.schoolNameCreateInput?.focus();
-}
 
 function getSelectedAdminSchool() {
   const schoolId = els.adminSchoolManageSelect?.value || "";
@@ -1234,50 +1226,61 @@ function getSelectedAdminSchool() {
   return state.admin.schoolsList.find((school) => school.id === schoolId) || null;
 }
 
-export async function renderAdminSchoolEnsembleManage() {
-  if (!els.adminSchoolEnsembleManageSelect) return;
-  const schoolId = els.adminSchoolManageSelect?.value || "";
-  const previousValue = els.adminSchoolEnsembleManageSelect.value || "";
-  els.adminSchoolEnsembleManageSelect.innerHTML = "";
-  if (!schoolId) {
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Select a school first";
-    els.adminSchoolEnsembleManageSelect.appendChild(placeholder);
-    els.adminSchoolEnsembleManageSelect.disabled = true;
-    if (els.adminSchoolEnsembleDeleteBtn) {
-      els.adminSchoolEnsembleDeleteBtn.disabled = true;
-    }
-    state.admin.schoolManageEnsembles = [];
-    return;
-  }
-  const snap = await getDocs(
-    query(collection(db, COLLECTIONS.schools, schoolId, COLLECTIONS.ensembles), orderBy("name"))
-  );
-  const ensembles = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
-  state.admin.schoolManageEnsembles = ensembles;
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = ensembles.length ? "Select an ensemble" : "No ensembles in this school";
-  els.adminSchoolEnsembleManageSelect.appendChild(placeholder);
-  ensembles.forEach((ensemble) => {
-    const option = document.createElement("option");
-    option.value = ensemble.id;
-    option.textContent = ensemble.name || ensemble.id;
-    els.adminSchoolEnsembleManageSelect.appendChild(option);
-  });
-  const nextValue = ensembles.some((ensemble) => ensemble.id === previousValue) ? previousValue : "";
-  els.adminSchoolEnsembleManageSelect.value = nextValue;
-  els.adminSchoolEnsembleManageSelect.disabled = ensembles.length === 0;
-  if (els.adminSchoolEnsembleDeleteBtn) {
-    els.adminSchoolEnsembleDeleteBtn.disabled = !nextValue;
-  }
+function resetAdminDirectorSchoolManageState() {
+  state.admin.directorSchoolManageUid = "";
+  state.admin.directorSchoolManageSchoolId = "";
+  state.admin.directorSchoolManageResultUid = "";
+  state.admin.directorSchoolManageResultMessage = "";
 }
 
-function getSelectedDirectorForAdmin() {
-  const uid = els.directorAssignDirectorSelect?.value || "";
+function getManagedDirectorForAdmin() {
+  const uid = String(state.admin.directorSchoolManageUid || "").trim();
   if (!uid) return null;
   return (state.admin.directorsList || []).find((director) => director.uid === uid) || null;
+}
+
+function getAdminSchoolOptionsMarkup(selectedSchoolId = "") {
+  const normalizedSelectedSchoolId = String(selectedSchoolId || "");
+  const schools = Array.isArray(state.admin.schoolsList) ? state.admin.schoolsList : [];
+  const options = [
+    `<option value="">${escapeHtml(schools.length ? "Select a school" : "No schools added yet")}</option>`,
+  ];
+  schools.forEach((school) => {
+    const schoolId = String(school?.id || "");
+    if (!schoolId) return;
+    const label = school.name || schoolId;
+    const selected = schoolId === normalizedSelectedSchoolId ? " selected" : "";
+    options.push(
+      `<option value="${escapeHtml(schoolId)}"${selected}>${escapeHtml(label)}</option>`
+    );
+  });
+  return options.join("");
+}
+
+function normalizeAdminDirectorSchoolManageState() {
+  const director = getManagedDirectorForAdmin();
+  if (!director) {
+    resetAdminDirectorSchoolManageState();
+    return null;
+  }
+  const schools = Array.isArray(state.admin.schoolsList) ? state.admin.schoolsList : [];
+  const currentSchoolId = String(director.schoolId || "");
+  const draftSchoolId = String(state.admin.directorSchoolManageSchoolId || "");
+  const nextDraftSchoolId = schools.some((school) => school.id === draftSchoolId)
+    ? draftSchoolId
+    : (schools.some((school) => school.id === currentSchoolId) ? currentSchoolId : "");
+  state.admin.directorSchoolManageSchoolId = nextDraftSchoolId;
+  if (state.admin.directorSchoolManageResultUid && state.admin.directorSchoolManageResultUid !== director.uid) {
+    state.admin.directorSchoolManageResultUid = "";
+    state.admin.directorSchoolManageResultMessage = "";
+  }
+  return {
+    director,
+    draftSchoolId: nextDraftSchoolId,
+    resultMessage: state.admin.directorSchoolManageResultUid === director.uid
+      ? state.admin.directorSchoolManageResultMessage || ""
+      : "",
+  };
 }
 
 export function renderAdminSchoolsDirectory() {
@@ -1304,124 +1307,134 @@ export function renderAdminSchoolsDirectory() {
   els.adminSchoolManageSelect.disabled = schools.length === 0;
 
   const hasSelection = Boolean(els.adminSchoolManageSelect.value);
-  if (els.adminSchoolManageEditBtn) {
-    els.adminSchoolManageEditBtn.disabled = !hasSelection;
-  }
   if (els.adminSchoolManageDeleteBtn) {
     els.adminSchoolManageDeleteBtn.disabled = !hasSelection;
-  }
-  void renderAdminSchoolEnsembleManage();
-}
-
-export function renderDirectorAssignmentsDirectory() {
-  const directors = state.admin.directorsList || [];
-  if (els.directorAssignDirectorSelect) {
-    const previousValue = els.directorAssignDirectorSelect.value || "";
-    els.directorAssignDirectorSelect.innerHTML = "";
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = directors.length ? "Select a director" : "No directors found";
-    els.directorAssignDirectorSelect.appendChild(placeholder);
-    directors.forEach((director) => {
-      const option = document.createElement("option");
-      option.value = director.uid;
-      const label = director.displayName || director.email || director.uid;
-      option.textContent = director.schoolId
-        ? `${label} (${getSchoolNameById(state.admin.schoolsList, director.schoolId) || director.schoolId})`
-        : `${label} (Unassigned)`;
-      els.directorAssignDirectorSelect.appendChild(option);
-    });
-    if (directors.some((director) => director.uid === previousValue)) {
-      els.directorAssignDirectorSelect.value = previousValue;
-    }
-  }
-
-  renderSchoolOptions(els.directorAssignSchoolSelect, "Select a school");
-
-  if (els.directorManageList) {
-    els.directorManageList.innerHTML = "";
-    directors.forEach((director) => {
-      const tr = document.createElement("tr");
-      const label = director.displayName || "—";
-      const email = director.email || "—";
-      const schoolName = director.schoolId
-        ? (getSchoolNameById(state.admin.schoolsList, director.schoolId) || director.schoolId)
-        : "Unassigned";
-      tr.innerHTML = `
-        <td>${escapeHtml(label)}</td>
-        <td>${escapeHtml(email)}</td>
-        <td>${escapeHtml(schoolName)}</td>
-      `;
-      els.directorManageList.appendChild(tr);
-    });
-  }
-
-  const selectedDirector = getSelectedDirectorForAdmin();
-  if (els.directorUnassignBtn) {
-    els.directorUnassignBtn.disabled = !selectedDirector || !selectedDirector.schoolId;
-  }
-  if (els.directorAssignBtn) {
-    const selectedSchoolId = els.directorAssignSchoolSelect?.value || "";
-    els.directorAssignBtn.disabled = !selectedDirector || !selectedSchoolId;
   }
 }
 
 export function renderAdminUsersDirectory() {
-  if (!els.adminUsersList) return;
   const users = state.admin.usersList || [];
   const currentUid = state.auth.currentUser?.uid || "";
-  els.adminUsersList.innerHTML = "";
-  if (!users.length) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = "<td colspan='5'>No users found.</td>";
-    els.adminUsersList.appendChild(tr);
-    return;
+  const directorManageState = normalizeAdminDirectorSchoolManageState();
+
+  function renderList(tbody, filteredUsers, includeSchool, includeBio = false) {
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    if (!filteredUsers.length) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td colspan='${includeSchool ? 4 : 3}'>None.</td>`;
+      tbody.appendChild(tr);
+      return;
+    }
+    filteredUsers.forEach((user) => {
+      const label = user.displayName || "—";
+      const email = user.email || "—";
+      const tr = document.createElement("tr");
+      if (includeSchool) {
+        const schoolName = user.schoolId
+          ? (getSchoolNameById(state.admin.schoolsList, user.schoolId) || user.schoolId)
+          : "Unassigned";
+        tr.innerHTML = `
+          <td>${escapeHtml(label)}</td>
+          <td>${escapeHtml(email)}</td>
+          <td>${escapeHtml(schoolName)}</td>
+          <td></td>
+        `;
+      } else {
+        tr.innerHTML = `
+          <td>${escapeHtml(label)}</td>
+          <td>${escapeHtml(email)}</td>
+          <td></td>
+        `;
+      }
+      const actionCell = tr.querySelector("td:last-child");
+      if (includeBio) {
+        const bioButton = document.createElement("button");
+        bioButton.type = "button";
+        bioButton.className = "ghost";
+        bioButton.textContent = user.bio ? "Bio ✓" : "Bio";
+        bioButton.setAttribute("data-bio-user-uid", user.uid || "");
+        if (!user.uid) bioButton.disabled = true;
+        actionCell?.appendChild(bioButton);
+      }
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "ghost";
+      editButton.textContent = "Edit Name";
+      editButton.setAttribute("data-edit-user-uid", user.uid || "");
+      if (!user.uid) editButton.disabled = true;
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "ghost danger";
+      deleteButton.textContent = "Delete User";
+      deleteButton.setAttribute("data-delete-user-uid", user.uid || "");
+      if (!user.uid || user.uid === currentUid) {
+        deleteButton.disabled = true;
+        deleteButton.title = "You cannot delete your own account.";
+      }
+      actionCell?.appendChild(editButton);
+      actionCell?.appendChild(deleteButton);
+      tbody.appendChild(tr);
+      if (includeSchool) {
+        const manageButton = document.createElement("button");
+        manageButton.type = "button";
+        manageButton.className = "ghost";
+        manageButton.textContent =
+          directorManageState?.director?.uid === user.uid ? "Close" : "Manage School";
+        manageButton.setAttribute("data-manage-director-school-uid", user.uid || "");
+        if (!user.uid) manageButton.disabled = true;
+        actionCell?.appendChild(manageButton);
+      }
+      if (includeSchool && directorManageState?.director?.uid === user.uid) {
+        const detailTr = document.createElement("tr");
+        detailTr.className = "admin-director-school-manage-row";
+        const label = user.displayName || user.email || user.uid;
+        const selectedSchoolId = directorManageState.draftSchoolId || "";
+        const hasSchoolSelection = Boolean(selectedSchoolId);
+        const hasCurrentSchool = Boolean(user.schoolId);
+        detailTr.innerHTML = `
+          <td colspan="4">
+            <div class="stack admin-settings-form">
+              <div><strong>Manage school for ${escapeHtml(label)}</strong></div>
+              <label>
+                School
+                <select data-director-school-select="${escapeHtml(user.uid || "")}">
+                  ${getAdminSchoolOptionsMarkup(selectedSchoolId)}
+                </select>
+              </label>
+              <div class="row">
+                <button type="button" data-save-director-school-uid="${escapeHtml(user.uid || "")}"${hasSchoolSelection ? "" : " disabled"}>
+                  ${hasCurrentSchool ? "Save School" : "Assign to School"}
+                </button>
+                <button type="button" class="ghost" data-remove-director-school-uid="${escapeHtml(user.uid || "")}"${hasCurrentSchool ? "" : " disabled"}>
+                  Remove from School
+                </button>
+                <button type="button" class="ghost" data-cancel-director-school-uid="${escapeHtml(user.uid || "")}">
+                  Cancel
+                </button>
+              </div>
+              <div class="note">${escapeHtml(directorManageState.resultMessage || "")}</div>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(detailTr);
+      }
+    });
   }
 
-  users.forEach((user) => {
-    const role = getEffectiveRole(user) || user.role || "unknown";
-    const schoolName = user.schoolId
-      ? (getSchoolNameById(state.admin.schoolsList, user.schoolId) || user.schoolId)
-      : "—";
-    const tr = document.createElement("tr");
-    const label = user.displayName || "—";
-    const email = user.email || "—";
-    tr.innerHTML = `
-      <td>${escapeHtml(label)}</td>
-      <td>${escapeHtml(email)}</td>
-      <td>${escapeHtml(role)}</td>
-      <td>${escapeHtml(schoolName)}</td>
-      <td></td>
-    `;
-    const actionCell = tr.querySelector("td:last-child");
-    const editButton = document.createElement("button");
-    editButton.type = "button";
-    editButton.className = "ghost";
-    editButton.textContent = "Edit Name";
-    editButton.setAttribute("data-edit-user-uid", user.uid || "");
-    if (!user.uid) {
-      editButton.disabled = true;
-    }
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "ghost danger";
-    button.textContent = "Delete User";
-    button.setAttribute("data-delete-user-uid", user.uid || "");
-    if (!user.uid || user.uid === currentUid) {
-      button.disabled = true;
-      button.title = "You cannot delete your own account.";
-    }
-    actionCell?.appendChild(editButton);
-    actionCell?.appendChild(button);
-    els.adminUsersList.appendChild(tr);
-  });
+  const admins = users.filter((u) => (getEffectiveRole(u) || u.role) === "admin");
+  const judges = users.filter((u) => (getEffectiveRole(u) || u.role) === "judge");
+  const directors = users.filter((u) => (getEffectiveRole(u) || u.role) === "director");
+
+  renderList(els.adminAdminsList, admins, false);
+  renderList(els.adminJudgesList, judges, false, true);
+  renderList(els.adminDirectorsList, directors, true);
 }
 
 export function refreshSchoolDropdowns() {
   renderSchoolOptions(els.directorSchoolSelect, "Select a school");
   renderSchoolOptions(els.directorAttachSelect, "Select a school");
   renderSchoolOptions(els.provisionSchoolSelect, "Select a school (optional)");
-  renderSchoolOptions(els.directorAssignSchoolSelect, "Select a school");
 }
 
 const modalReturnFocusMap = new WeakMap();
@@ -1467,6 +1480,8 @@ function applyBodyModalLock() {
             closeUserProfileModal();
           } else if (topModal === els.liveEventCheckinModal) {
             closeLiveEventCheckinModal();
+          } else if (topModal === els.judgeBioModal) {
+            closeJudgeBioModal();
           }
           return;
         }
@@ -1729,6 +1744,20 @@ export function closeUserProfileModal() {
   closeManagedModal(els.userProfileModal, { restoreFocus: true });
 }
 
+export function openJudgeBioModal({ uid, name, bio } = {}) {
+  if (!els.judgeBioModal) return;
+  els.judgeBioModal.dataset.targetUid = uid || "";
+  if (els.judgeBioModalTitle) els.judgeBioModalTitle.textContent = name ? `Bio — ${name}` : "Judge Bio";
+  if (els.judgeBioTextarea) els.judgeBioTextarea.value = bio || "";
+  if (els.judgeBioResult) els.judgeBioResult.textContent = "";
+  openManagedModal(els.judgeBioModal, { dismissible: true, initialFocus: els.judgeBioTextarea });
+}
+
+export function closeJudgeBioModal() {
+  if (!els.judgeBioModal) return;
+  closeManagedModal(els.judgeBioModal, { restoreFocus: true });
+}
+
 export function updateAuthUI() {
   if (state.auth.currentUser) {
     const label = state.auth.currentUser.email ? state.auth.currentUser.email : "Signed in";
@@ -1986,7 +2015,6 @@ let adminLiveRenderers = null;
 let adminAnnouncerController = null;
 let authHandlerBinder = null;
 let adminHandlerBinder = null;
-let adminMockPacketPreviewRenderer = null;
 let directorEntryFormRenderers = null;
 let checkinView = null;
 let directorDashboardRenderer = null;
@@ -2041,20 +2069,11 @@ async function runAdminPreflightRefresh() {
   }
   try {
     await runEventPreflight({ eventId });
-    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
-      await renderAdminReadinessView();
-    }
   } catch (error) {
     console.warn("Auto preflight refresh skipped", error);
   } finally {
     state.admin.readinessInFlight = false;
     adminPreflightRefreshInFlight = false;
-    if (els.adminRunPreflightBtn && state.event.active?.id) {
-      els.adminRunPreflightBtn.disabled = false;
-    }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
-      await renderAdminReadinessView();
-    }
   }
 }
 
@@ -2081,15 +2100,13 @@ function getAdminViewController() {
     renderLiveEventCheckinQueue,
     renderAdminSchoolDetail,
     renderRegisteredEnsemblesList,
-    renderAdminPizzaTotals,
+    renderScheduleBuilder,
     renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
     renderAdminRatingsView,
     renderAdminAnnouncerView,
-    renderAdminReadinessView,
     renderEventList,
     renderAdminSchoolsDirectory,
-    renderDirectorAssignmentsDirectory,
     renderAdminUsersDirectory,
   });
   return adminViewController;
@@ -2149,9 +2166,7 @@ function getAdminHandlerBinder() {
     closeAdminSchoolDetail,
     renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
-    renderMockAdminPacketPreview,
     confirmUser,
-    releaseMockPacketForAshleyTesting,
     alertUser,
     createEvent,
     saveAssignments,
@@ -2165,7 +2180,6 @@ function getAdminHandlerBinder() {
     saveSchool,
     resetAdminSchoolForm,
     getSelectedAdminSchool,
-    startAdminSchoolEdit,
     deleteSchool,
     deleteEnsemble,
     bulkImportSchools,
@@ -2173,13 +2187,13 @@ function getAdminHandlerBinder() {
     provisionUser,
     updateUserDisplayName,
     deleteUserAccount,
+    saveJudgeBio,
+    openJudgeBioModal,
+    closeJudgeBioModal,
     renderAdminUsersDirectory,
-    renderDirectorAssignmentsDirectory,
-    getSelectedDirectorForAdmin,
     assignDirectorSchool,
     getSchoolNameById,
     unassignDirectorSchool,
-    renderAdminSchoolEnsembleManage,
     fetchRegisteredEnsembles,
     fetchScheduleEntries,
     parseConfirmedScheduleCsv,
@@ -2251,10 +2265,14 @@ function getAdminRenderers() {
     repairOpenSubmissionAudioMetadata,
     repairPacketSubmissionLinkage,
     repairPacketReleaseState,
+    repairReleasedPacketMetadata,
     setPacketCommentsOnly,
     recreateOpenPacketFromCanonical,
     restoreCanonicalFromOpenPacket,
     deleteAllUnreleasedPackets,
+    getPostEventCleanupCandidates,
+    purgePostEventCleanupCandidate,
+    purgePostEventCleanupCategory,
     cleanupTestArtifacts,
     renderAssessmentCard,
     loadAdminPacketView,
@@ -2274,25 +2292,10 @@ function getAdminRenderers() {
     schedulePreEventGuidedFlowRender,
     scheduleAdminPreflightRefresh,
     refreshPreEventScheduleTimelineStarts,
+    saveSchedulerModel,
+    deleteEntry,
   });
   return adminRenderers;
-}
-
-function getAdminMockPacketPreviewRenderer() {
-  if (adminMockPacketPreviewRenderer) return adminMockPacketPreviewRenderer;
-  adminMockPacketPreviewRenderer = createAdminMockPacketPreviewRenderer({
-    els,
-    JUDGE_POSITIONS,
-    JUDGE_POSITION_LABELS,
-    FORM_TYPES,
-    CAPTION_TEMPLATES,
-    STATUSES,
-    calculateCaptionTotal,
-    computeFinalRating,
-    levelToRoman,
-    renderSubmissionCard,
-  });
-  return adminMockPacketPreviewRenderer;
 }
 
 function getAdminLiveRenderers() {
@@ -3544,7 +3547,6 @@ export function startWatchers() {
   watchSchools(() => {
     if (settingsEnabled && state.app.currentTab === "admin" && state.admin.currentView === "directory") {
       renderAdminSchoolsDirectory();
-      renderDirectorAssignmentsDirectory();
       renderAdminUsersDirectory();
       if (
         state.admin.schoolEditId &&
@@ -3572,7 +3574,7 @@ export function startWatchers() {
     watchDirectors((directors) => {
       state.admin.directorsList = directors;
       if (state.app.currentTab === "admin" && state.admin.currentView === "directory") {
-        renderDirectorAssignmentsDirectory();
+        renderAdminUsersDirectory();
       }
     });
     watchUsers((users) => {
@@ -4873,14 +4875,6 @@ function renderPreEventWorkflowGuidance({
     nextAction = () => {
       els.adminRegisteredEnsemblesSection?.scrollIntoView({ behavior: "smooth", block: "start" });
     };
-  } else if (hasActiveEvent && registrationDone && !scheduleDone) {
-    step = "Schedule";
-    nextTitle = "Complete the full event schedule.";
-    nextHint = "Assign performance times and recalculate so all registered ensembles are scheduled.";
-    nextActionLabel = "Open Schedule";
-    nextAction = () => {
-      els.adminScheduleSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-    };
   } else if (hasActiveEvent && registrationDone && scheduleDone && !directorInputDone) {
     step = "Director Input";
     nextTitle = "Verify ensemble workspace readiness for scheduled ensembles.";
@@ -5775,8 +5769,8 @@ export async function renderRegisteredEnsemblesList() {
   return getAdminRenderers().renderRegisteredEnsemblesList();
 }
 
-function renderMockAdminPacketPreview() {
-  return getAdminMockPacketPreviewRenderer().renderMockAdminPacketPreview();
+async function renderScheduleBuilder() {
+  return getAdminRenderers().renderScheduleBuilder();
 }
 
 function resolveSubmissionCanonicalAudio(submission, {canonicalAudioOnly = false} = {}) {

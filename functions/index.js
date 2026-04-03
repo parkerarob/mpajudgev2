@@ -452,31 +452,6 @@ async function ensurePacketCanonicalAudio({
   }
 }
 
-function createSilentWavBuffer({
-  durationSec = 1,
-  sampleRate = 8000,
-  channels = 1,
-} = {}) {
-  const frameCount = Math.max(1, Math.floor(durationSec * sampleRate));
-  const bytesPerSample = 2;
-  const dataSize = frameCount * channels * bytesPerSample;
-  const buffer = Buffer.alloc(44 + dataSize);
-  buffer.write("RIFF", 0, 4, "ascii");
-  buffer.writeUInt32LE(36 + dataSize, 4);
-  buffer.write("WAVE", 8, 4, "ascii");
-  buffer.write("fmt ", 12, 4, "ascii");
-  buffer.writeUInt32LE(16, 16); // PCM chunk size
-  buffer.writeUInt16LE(1, 20); // PCM format
-  buffer.writeUInt16LE(channels, 22);
-  buffer.writeUInt32LE(sampleRate, 24);
-  buffer.writeUInt32LE(sampleRate * channels * bytesPerSample, 28);
-  buffer.writeUInt16LE(channels * bytesPerSample, 32);
-  buffer.writeUInt16LE(bytesPerSample * 8, 34);
-  buffer.write("data", 36, 4, "ascii");
-  buffer.writeUInt32LE(dataSize, 40);
-  return buffer;
-}
-
 function formLabelByJudgePosition(position) {
   return position === JUDGE_POSITIONS.sight ? "Sight Reading Form" : "Stage Form";
 }
@@ -1241,20 +1216,6 @@ async function loadCanonicalPacketAssessmentsForEvent({db, eventId, ensembleId, 
     officialDocs,
     submissionDocs,
   });
-}
-
-function buildMockCaptionsForForm(formType) {
-  const template = CAPTION_TEMPLATES[formType] || CAPTION_TEMPLATES.stage || [];
-  const letters = ["A", "A", "B", "A", "B", "A", "B"];
-  const captions = {};
-  template.forEach((item, index) => {
-    captions[item.key] = {
-      gradeLetter: letters[index % letters.length],
-      gradeModifier: index % 3 === 0 ? "+" : "",
-      comment: `${item.label}: strong fundamentals with clear ensemble response.`,
-    };
-  });
-  return captions;
 }
 
 async function fetchWithTimeout(url, options, timeoutMs = OPENAI_TIMEOUT_MS) {
@@ -2179,6 +2140,89 @@ async function resolvePerformanceGrade(eventId, ensembleId) {
   return null;
 }
 
+async function resolveReleasedPacketRepairContext(db, eventId, ensembleId) {
+  const exportRef = db
+      .collection(COLLECTIONS.packetExports)
+      .doc(buildDirectorPacketExportId(eventId, ensembleId));
+  const entryRef = db
+      .collection(COLLECTIONS.events)
+      .doc(eventId)
+      .collection(COLLECTIONS.entries)
+      .doc(ensembleId);
+  const [exportSnap, entrySnap, scheduleSnap, submissionsSnap, officialSnap] = await Promise.all([
+    exportRef.get(),
+    entryRef.get(),
+    db.collection(COLLECTIONS.events)
+        .doc(eventId)
+        .collection(COLLECTIONS.schedule)
+        .where(FIELDS.schedule.ensembleId, "==", ensembleId)
+        .get(),
+    db.collection(COLLECTIONS.submissions)
+        .where(FIELDS.submissions.eventId, "==", eventId)
+        .where(FIELDS.submissions.ensembleId, "==", ensembleId)
+        .get(),
+    db.collection(COLLECTIONS.officialAssessments)
+        .where(FIELDS.officialAssessments.eventId, "==", eventId)
+        .where(FIELDS.officialAssessments.ensembleId, "==", ensembleId)
+        .get(),
+  ]);
+
+  const exportData = exportSnap.exists ? (exportSnap.data() || {}) : {};
+  const entryData = entrySnap.exists ? (entrySnap.data() || {}) : {};
+  const scheduleRows = scheduleSnap.docs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()}));
+  const submissions = submissionsSnap.docs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()}));
+  const officialAssessments = officialSnap.docs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()}));
+  const canonicalRows = [...officialAssessments, ...submissions];
+  const releasedCanonical = canonicalRows.find((row) => String(row.status || "").trim() === STATUSES.released) || {};
+  const grade = normalizeGrade(
+      exportData.grade ||
+      exportData.performanceGrade ||
+      exportData.declaredGradeLevel ||
+      releasedCanonical.performanceGrade ||
+      releasedCanonical.declaredGradeLevel ||
+      entryData[FIELDS.entries.performanceGrade] ||
+      entryData.declaredGradeLevel,
+  );
+  const schoolId = toCleanupText(
+      exportData.schoolId ||
+      entryData.schoolId ||
+      releasedCanonical.schoolId ||
+      scheduleRows[0]?.schoolId,
+  );
+  let schoolName = toCleanupText(
+      exportData.schoolName ||
+      entryData.schoolName ||
+      releasedCanonical.schoolName ||
+      scheduleRows[0]?.schoolName,
+  );
+  const ensembleName = toCleanupText(
+      exportData.ensembleName ||
+      entryData.ensembleName ||
+      releasedCanonical.ensembleName ||
+      scheduleRows[0]?.ensembleName ||
+      ensembleId,
+  );
+  if (schoolId && !schoolName) {
+    const schoolSnap = await db.collection(COLLECTIONS.schools).doc(schoolId).get();
+    if (schoolSnap.exists) {
+      schoolName = toCleanupText(schoolSnap.data()?.name || schoolId);
+    }
+  }
+
+  return {
+    exportData,
+    entryData,
+    entryRef,
+    entryExists: entrySnap.exists,
+    scheduleDocs: scheduleSnap.docs,
+    scheduleRows,
+    grade,
+    schoolId,
+    schoolName: schoolName || schoolId,
+    ensembleName,
+  };
+}
+
 function requiredPositionsForGrade(grade) {
   if (["I", "I/II"].includes(String(grade || "").trim())) {
     return [
@@ -2693,6 +2737,697 @@ async function deleteScheduledPacketGroup({
     deletedOfficialAssessments,
     deletedPacketExport,
   };
+}
+
+const POST_EVENT_CLEANUP_CATEGORY_META = {
+  scheduled_packets: {
+    label: "Unreleased Results Packets",
+    candidateType: "scheduled_packet",
+  },
+  raw_assessments: {
+    label: "Raw Assessments",
+    candidateType: "raw_assessment",
+  },
+  open_packets: {
+    label: "Open Packets",
+    candidateType: "open_packet",
+  },
+  stale_ensembles: {
+    label: "Stale Ensembles",
+    candidateType: "stale_ensemble",
+  },
+};
+
+function normalizeCleanupCategory(category = "") {
+  const normalized = String(category || "").trim().toLowerCase();
+  return POST_EVENT_CLEANUP_CATEGORY_META[normalized] ? normalized : "";
+}
+
+function normalizeCleanupCandidateType(candidateType = "") {
+  const normalized = String(candidateType || "").trim().toLowerCase();
+  return Object.values(POST_EVENT_CLEANUP_CATEGORY_META)
+      .some((meta) => meta.candidateType === normalized) ? normalized : "";
+}
+
+function toCleanupText(value = "") {
+  return String(value || "").trim();
+}
+
+function buildCleanupEnsembleLabel({
+  schoolName = "",
+  schoolId = "",
+  ensembleName = "",
+  ensembleId = "",
+} = {}) {
+  const resolvedSchool = toCleanupText(schoolName) || toCleanupText(schoolId) || "Unknown School";
+  const resolvedEnsemble = toCleanupText(ensembleName) || toCleanupText(ensembleId) || "Unknown Ensemble";
+  return `${resolvedSchool} - ${resolvedEnsemble}`;
+}
+
+async function fetchOpenPacketsForEvent(db, eventId) {
+  const packetsById = new Map();
+  const addFromQuery = async (queryRef) => {
+    const snap = await queryRef.get();
+    snap.docs.forEach((docSnap) => packetsById.set(docSnap.id, docSnap));
+  };
+  await addFromQuery(
+      db.collection(COLLECTIONS.packets).where(FIELDS.packets.assignmentEventId, "==", eventId),
+  );
+  await addFromQuery(
+      db.collection(COLLECTIONS.packets).where(FIELDS.packets.officialEventId, "==", eventId),
+  );
+  await addFromQuery(
+      db.collection(COLLECTIONS.packets).where(FIELDS.packets.eventId, "==", eventId),
+  );
+  return Array.from(packetsById.values());
+}
+
+async function fetchRegisteredSchoolEnsemblesForCleanup(db, schoolIds = []) {
+  const normalizedSchoolIds = Array.from(
+      new Set((schoolIds || []).map((value) => toCleanupText(value)).filter(Boolean)),
+  );
+  if (!normalizedSchoolIds.length) return [];
+  const snaps = await Promise.all(
+      normalizedSchoolIds.map((schoolId) =>
+        db.collection(COLLECTIONS.schools)
+            .doc(schoolId)
+            .collection(COLLECTIONS.ensembles)
+            .get()
+            .catch(() => null),
+      ),
+  );
+  const items = [];
+  snaps.forEach((snap, index) => {
+    const schoolId = normalizedSchoolIds[index];
+    if (!snap || snap.empty) return;
+    snap.docs.forEach((docSnap) => items.push({
+      id: docSnap.id,
+      schoolId,
+      ...docSnap.data(),
+    }));
+  });
+  return items;
+}
+
+async function buildPostEventCleanupContext(db, eventId) {
+  const [
+    entriesSnap,
+    scheduleSnap,
+    rawSnap,
+    submissionsSnap,
+    officialSnap,
+    packetExportsSnap,
+    openPacketDocs,
+  ] = await Promise.all([
+    db.collection(COLLECTIONS.events).doc(eventId).collection(COLLECTIONS.entries).get(),
+    db.collection(COLLECTIONS.events).doc(eventId).collection(COLLECTIONS.schedule).get(),
+    db.collection(COLLECTIONS.rawAssessments).where(FIELDS.rawAssessments.eventId, "==", eventId).get(),
+    db.collection(COLLECTIONS.submissions).where(FIELDS.submissions.eventId, "==", eventId).get(),
+    db.collection(COLLECTIONS.officialAssessments).where(FIELDS.officialAssessments.eventId, "==", eventId).get(),
+    db.collection(COLLECTIONS.packetExports).where(FIELDS.packetExports.eventId, "==", eventId).get(),
+    fetchOpenPacketsForEvent(db, eventId),
+  ]);
+
+  const schoolIdsForCleanup = new Set();
+  const addCleanupSchoolId = (value) => {
+    const normalized = toCleanupText(value);
+    if (normalized) schoolIdsForCleanup.add(normalized);
+  };
+  entriesSnap.docs.forEach((docSnap) => addCleanupSchoolId(docSnap.data()?.schoolId));
+  scheduleSnap.docs.forEach((docSnap) => addCleanupSchoolId(docSnap.data()?.schoolId));
+  rawSnap.docs.forEach((docSnap) => addCleanupSchoolId(docSnap.data()?.schoolId));
+  submissionsSnap.docs.forEach((docSnap) => addCleanupSchoolId(docSnap.data()?.schoolId));
+  officialSnap.docs.forEach((docSnap) => addCleanupSchoolId(docSnap.data()?.schoolId));
+  packetExportsSnap.docs.forEach((docSnap) => addCleanupSchoolId(docSnap.data()?.schoolId));
+  openPacketDocs.forEach((docSnap) => addCleanupSchoolId(docSnap.data()?.schoolId));
+
+  const registeredEnsembles = await fetchRegisteredSchoolEnsemblesForCleanup(
+      db,
+      Array.from(schoolIdsForCleanup),
+  );
+
+  const ctx = {
+    eventId,
+    entries: entriesSnap.docs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()})),
+    schedule: scheduleSnap.docs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()})),
+    rawAssessments: rawSnap.docs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()})),
+    submissions: submissionsSnap.docs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()})),
+    officialAssessments: officialSnap.docs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()})),
+    packetExports: packetExportsSnap.docs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()})),
+    openPackets: openPacketDocs.map((docSnap) => ({id: docSnap.id, ...docSnap.data()})),
+    registeredEnsembles,
+    entryByEnsemble: new Map(),
+    registeredByKey: new Map(),
+    scheduleByEnsemble: new Map(),
+    rawByEnsemble: new Map(),
+    submissionsByEnsemble: new Map(),
+    officialByEnsemble: new Map(),
+    exportsByEnsemble: new Map(),
+    openByEnsemble: new Map(),
+    releasedHistoryByEnsemble: new Set(),
+    linkedOfficialRawIds: new Set(),
+    linkedOfficialRawIdToOfficialId: new Map(),
+  };
+
+  const pushByEnsemble = (map, ensembleId, value) => {
+    const key = toCleanupText(ensembleId);
+    if (!key) return;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(value);
+  };
+
+  ctx.entries.forEach((entry) => {
+    const ensembleId = toCleanupText(entry.ensembleId || entry.id);
+    if (ensembleId) ctx.entryByEnsemble.set(ensembleId, entry);
+  });
+  ctx.registeredEnsembles.forEach((ensemble) => {
+    const schoolId = toCleanupText(ensemble.schoolId);
+    const ensembleId = toCleanupText(ensemble.id || ensemble.ensembleId);
+    if (!schoolId || !ensembleId) return;
+    ctx.registeredByKey.set(`${schoolId}__${ensembleId}`, ensemble);
+  });
+  ctx.schedule.forEach((row) => pushByEnsemble(ctx.scheduleByEnsemble, row.ensembleId, row));
+  ctx.rawAssessments.forEach((item) => pushByEnsemble(ctx.rawByEnsemble, item.ensembleId, item));
+  ctx.submissions.forEach((item) => {
+    pushByEnsemble(ctx.submissionsByEnsemble, item.ensembleId, item);
+    if (String(item.status || "").trim() === STATUSES.released) {
+      const ensembleId = toCleanupText(item.ensembleId);
+      if (ensembleId) ctx.releasedHistoryByEnsemble.add(ensembleId);
+    }
+  });
+  ctx.officialAssessments.forEach((item) => {
+    pushByEnsemble(ctx.officialByEnsemble, item.ensembleId, item);
+    const rawId = toCleanupText(item.sourceRawAssessmentId);
+    if (rawId) {
+      ctx.linkedOfficialRawIds.add(rawId);
+      ctx.linkedOfficialRawIdToOfficialId.set(rawId, item.id || `${eventId}_${item.ensembleId || ""}_${item.judgePosition || ""}`);
+    }
+    if (String(item.status || "").trim() === STATUSES.released) {
+      const ensembleId = toCleanupText(item.ensembleId);
+      if (ensembleId) ctx.releasedHistoryByEnsemble.add(ensembleId);
+    }
+  });
+  ctx.packetExports.forEach((item) => {
+    pushByEnsemble(ctx.exportsByEnsemble, item.ensembleId, item);
+  });
+  ctx.openPackets.forEach((item) => {
+    pushByEnsemble(ctx.openByEnsemble, item.ensembleId, item);
+    const ensembleId = toCleanupText(item.ensembleId);
+    if (ensembleId && isReleasedOpenPacketStatus(item.status)) {
+      ctx.releasedHistoryByEnsemble.add(ensembleId);
+    }
+  });
+
+  return ctx;
+}
+
+function buildPostEventCleanupCandidates(ctx) {
+  const items = [];
+  const categories = new Map(
+      Object.entries(POST_EVENT_CLEANUP_CATEGORY_META).map(([key, meta]) => [key, {
+        category: key,
+        label: meta.label,
+        candidateType: meta.candidateType,
+        items: [],
+        counts: {
+          reviewable: 0,
+          blocked: 0,
+          protected: 0,
+        },
+      }]),
+  );
+
+  const appendCandidate = (candidate) => {
+    if (!candidate) return;
+    const category = normalizeCleanupCategory(candidate.category);
+    if (!category || !categories.has(category)) return;
+    const normalizedDisposition = ["reviewable", "blocked", "protected"].includes(candidate.disposition) ?
+      candidate.disposition :
+      "blocked";
+    const enriched = {
+      ...candidate,
+      category,
+      categoryLabel: categories.get(category).label,
+      disposition: normalizedDisposition,
+      purgeAction: normalizedDisposition === "reviewable" ? "purge" : null,
+    };
+    categories.get(category).items.push(enriched);
+    categories.get(category).counts[normalizedDisposition] += 1;
+    items.push(enriched);
+  };
+
+  const sortedEnsembleIds = new Set();
+  [
+    ...ctx.entryByEnsemble.keys(),
+    ...Array.from(ctx.registeredByKey.values()).map((item) => toCleanupText(item.id || item.ensembleId)),
+    ...ctx.scheduleByEnsemble.keys(),
+    ...ctx.rawByEnsemble.keys(),
+    ...ctx.submissionsByEnsemble.keys(),
+    ...ctx.officialByEnsemble.keys(),
+    ...ctx.exportsByEnsemble.keys(),
+    ...ctx.openByEnsemble.keys(),
+  ].forEach((ensembleId) => {
+    if (ensembleId) sortedEnsembleIds.add(ensembleId);
+  });
+
+  Array.from(sortedEnsembleIds).sort().forEach((ensembleId) => {
+    const entry = ctx.entryByEnsemble.get(ensembleId) || {};
+    const scheduled = ctx.scheduleByEnsemble.get(ensembleId) || [];
+    const rawItems = ctx.rawByEnsemble.get(ensembleId) || [];
+    const submissions = ctx.submissionsByEnsemble.get(ensembleId) || [];
+    const official = ctx.officialByEnsemble.get(ensembleId) || [];
+    const exports = ctx.exportsByEnsemble.get(ensembleId) || [];
+    const openPackets = ctx.openByEnsemble.get(ensembleId) || [];
+    const registeredMatches = Array.from(ctx.registeredByKey.values()).filter((item) =>
+      toCleanupText(item.id || item.ensembleId) === ensembleId,
+    );
+    const registered = registeredMatches[0] || {};
+    const schoolId = toCleanupText(
+        registered.schoolId ||
+        entry.schoolId ||
+        scheduled[0]?.schoolId ||
+        rawItems[0]?.schoolId ||
+        submissions[0]?.schoolId ||
+        official[0]?.schoolId ||
+        exports[0]?.schoolId ||
+        openPackets[0]?.schoolId,
+    );
+    const schoolName = toCleanupText(
+        registered.schoolName ||
+        entry.schoolName ||
+        scheduled[0]?.schoolName ||
+        rawItems[0]?.schoolName ||
+        official[0]?.schoolName ||
+        submissions[0]?.schoolName ||
+        exports[0]?.schoolName ||
+        openPackets[0]?.schoolName ||
+        schoolId,
+    );
+    const ensembleName = toCleanupText(
+        registered.name ||
+        entry.ensembleName ||
+        scheduled[0]?.ensembleName ||
+        rawItems[0]?.ensembleName ||
+        official[0]?.ensembleName ||
+        submissions[0]?.ensembleName ||
+        exports[0]?.ensembleName ||
+        openPackets[0]?.ensembleName ||
+        ensembleId,
+    );
+    const label = buildCleanupEnsembleLabel({
+      schoolName,
+      schoolId,
+      ensembleName,
+      ensembleId,
+    });
+    const hasReleasedHistory = ctx.releasedHistoryByEnsemble.has(ensembleId);
+
+    if (submissions.length || official.length || exports.length) {
+      appendCandidate({
+        id: `${ctx.eventId}__${ensembleId}`,
+        candidateType: "scheduled_packet",
+        category: "scheduled_packets",
+        label,
+        schoolId,
+        schoolName,
+        ensembleId,
+        ensembleName,
+        disposition: hasReleasedHistory ? "protected" : "reviewable",
+        reasonCode: hasReleasedHistory ? "released_history" : "unreleased_scheduled_packet",
+        reason: hasReleasedHistory ?
+          "This performance has released director-visible results history and is protected." :
+          "Unreleased scheduled packet data still exists for this performance.",
+        detail: [
+          `${submissions.length} submission doc${submissions.length === 1 ? "" : "s"}`,
+          `${official.length} official assessment doc${official.length === 1 ? "" : "s"}`,
+          `${exports.length} packet export doc${exports.length === 1 ? "" : "s"}`,
+        ].join(" • "),
+      });
+    }
+
+    const hasResidualArtifacts =
+      scheduled.length > 0 ||
+      rawItems.length > 0 ||
+      submissions.length > 0 ||
+      official.length > 0 ||
+      exports.length > 0 ||
+      openPackets.length > 0;
+    const staleEnsembleId = `${schoolId}__${ensembleId}`;
+    if ((entry.id || registered.id) && !hasReleasedHistory) {
+      const disposition = hasResidualArtifacts ? "blocked" : "reviewable";
+      appendCandidate({
+        id: staleEnsembleId,
+        candidateType: "stale_ensemble",
+        category: "stale_ensembles",
+        label,
+        schoolId,
+        schoolName,
+        ensembleId,
+        ensembleName,
+        disposition,
+        reasonCode: disposition === "reviewable" ? "entry_only_stale" : "entry_has_linked_artifacts",
+        reason: disposition === "reviewable" ?
+          "Registered ensemble has no linked schedule or assessment artifacts for this event and can be purged." :
+          "Registered ensemble still has linked schedule or assessment artifacts. Clear those first.",
+        detail: [
+          registered.id ? "school registry doc" : "event entry only",
+          `${scheduled.length} schedule row${scheduled.length === 1 ? "" : "s"}`,
+          `${rawItems.length} raw assessment${rawItems.length === 1 ? "" : "s"}`,
+          `${openPackets.length} open packet${openPackets.length === 1 ? "" : "s"}`,
+        ].join(" • "),
+      });
+    } else if ((entry.id || registered.id) && hasReleasedHistory) {
+      appendCandidate({
+        id: staleEnsembleId,
+        candidateType: "stale_ensemble",
+        category: "stale_ensembles",
+        label,
+        schoolId,
+        schoolName,
+        ensembleId,
+        ensembleName,
+        disposition: "protected",
+        reasonCode: "released_history",
+        reason: "This performance has released director-visible results history and is protected.",
+        detail: "Protected by released history.",
+      });
+    }
+  });
+
+  ctx.rawAssessments.forEach((raw) => {
+    const rawId = toCleanupText(raw.id);
+    if (!rawId) return;
+    const ensembleId = toCleanupText(raw.ensembleId);
+    const schoolId = toCleanupText(raw.schoolId);
+    const schoolName = toCleanupText(raw.schoolName || schoolId);
+    const ensembleName = toCleanupText(raw.ensembleName || ensembleId);
+    const linkedPacket = toCleanupText(raw.packetId) ?
+      ctx.openPackets.find((packet) => packet.id === raw.packetId) || null :
+      null;
+    const hasReleasedHistory = ensembleId && ctx.releasedHistoryByEnsemble.has(ensembleId);
+    const isOfficialized = String(raw.status || "").trim() === STATUSES.officialized;
+    const linkedOfficialId =
+      toCleanupText(raw.officialAssessmentId) || ctx.linkedOfficialRawIdToOfficialId.get(rawId) || "";
+    let disposition = "reviewable";
+    let reasonCode = "stale_raw_assessment";
+    let reason = "Non-official raw assessment can be purged.";
+    if (hasReleasedHistory) {
+      disposition = "protected";
+      reasonCode = "released_history";
+      reason = "This performance has released director-visible results history and is protected.";
+    } else if (isOfficialized || linkedOfficialId) {
+      disposition = "blocked";
+      reasonCode = "officialized";
+      reason = "This raw assessment is already attached to official packet state.";
+    } else if (linkedPacket && (
+      toCleanupText(linkedPacket.officialAssessmentId) ||
+      toCleanupText(linkedPacket.officialSubmissionId) ||
+      isReleasedOpenPacketStatus(linkedPacket.status)
+    )) {
+      disposition = isReleasedOpenPacketStatus(linkedPacket.status) ? "protected" : "blocked";
+      reasonCode = isReleasedOpenPacketStatus(linkedPacket.status) ? "released_history" : "attached_open_packet";
+      reason = isReleasedOpenPacketStatus(linkedPacket.status) ?
+        "Linked packet has released history and is protected." :
+        "Linked open packet is already attached to official packet state.";
+    }
+    appendCandidate({
+      id: rawId,
+      candidateType: "raw_assessment",
+      category: "raw_assessments",
+      label: buildCleanupEnsembleLabel({
+        schoolName,
+        schoolId,
+        ensembleName,
+        ensembleId,
+      }),
+      schoolId,
+      schoolName,
+      ensembleId,
+      ensembleName,
+      disposition,
+      reasonCode,
+      reason,
+      detail: [
+        raw.judgeName || raw.judgeEmail || "Unknown judge",
+        raw.judgePosition || "No slot",
+        raw.status || raw.reviewState || "pending",
+      ].filter(Boolean).join(" • "),
+    });
+  });
+
+  ctx.openPackets.forEach((packet) => {
+    const packetId = toCleanupText(packet.id);
+    if (!packetId) return;
+    const schoolId = toCleanupText(packet.schoolId);
+    const schoolName = toCleanupText(packet.schoolName || schoolId);
+    const ensembleId = toCleanupText(packet.ensembleId);
+    const ensembleName = toCleanupText(packet.ensembleName || ensembleId);
+    const hasReleasedHistory =
+      (ensembleId && ctx.releasedHistoryByEnsemble.has(ensembleId)) ||
+      isReleasedOpenPacketStatus(packet.status);
+    let disposition = "reviewable";
+    let reasonCode = "orphaned_open_packet";
+    let reason = "Unreleased open packet can be purged.";
+    if (hasReleasedHistory) {
+      disposition = "protected";
+      reasonCode = "released_history";
+      reason = "This packet is tied to released director-visible history and is protected.";
+    } else if (
+      toCleanupText(packet.officialAssessmentId) ||
+      toCleanupText(packet.officialSubmissionId)
+    ) {
+      disposition = "blocked";
+      reasonCode = "attached_open_packet";
+      reason = "Open packet is attached to official packet state. Manage the scheduled packet instead.";
+    }
+    appendCandidate({
+      id: packetId,
+      candidateType: "open_packet",
+      category: "open_packets",
+      label: buildCleanupEnsembleLabel({
+        schoolName,
+        schoolId,
+        ensembleName: ensembleName || packetId,
+        ensembleId: ensembleId || packetId,
+      }),
+      schoolId,
+      schoolName,
+      ensembleId,
+      ensembleName,
+      disposition,
+      reasonCode,
+      reason,
+      detail: [
+        packet.createdByJudgeName || packet.createdByJudgeEmail || "Unknown judge",
+        packet.judgePosition || "No slot",
+        packet.status || "draft",
+      ].filter(Boolean).join(" • "),
+    });
+  });
+
+  categories.forEach((category) => {
+    category.items.sort((a, b) => {
+      const order = {reviewable: 0, blocked: 1, protected: 2};
+      const dispositionCompare = (order[a.disposition] || 9) - (order[b.disposition] || 9);
+      if (dispositionCompare !== 0) return dispositionCompare;
+      return String(a.label || "").localeCompare(String(b.label || ""));
+    });
+  });
+
+  return {
+    eventId: ctx.eventId,
+    categories: Array.from(categories.values()).filter((category) => (category.items || []).length > 0),
+    counts: items.reduce((acc, item) => {
+      acc.total += 1;
+      acc[item.disposition] += 1;
+      return acc;
+    }, {total: 0, reviewable: 0, blocked: 0, protected: 0}),
+  };
+}
+
+async function purgePostEventCleanupCandidateInternal({
+  db,
+  bucket,
+  eventId,
+  candidateType,
+  candidateId,
+} = {}) {
+  const ctx = await buildPostEventCleanupContext(db, eventId);
+  const discovery = buildPostEventCleanupCandidates(ctx);
+  const candidate = discovery.categories
+      .flatMap((category) => category.items || [])
+      .find((item) =>
+        item.candidateType === candidateType &&
+        String(item.id || "").trim() === String(candidateId || "").trim(),
+      );
+  if (!candidate) {
+    throw new HttpsError("not-found", "Cleanup candidate not found.");
+  }
+  if (candidate.disposition === "protected") {
+    throw new HttpsError(
+        "failed-precondition",
+        candidate.reason || "Released director-visible history is protected.",
+    );
+  }
+  if (candidate.disposition !== "reviewable") {
+    throw new HttpsError(
+        "failed-precondition",
+        candidate.reason || "This cleanup candidate is blocked.",
+    );
+  }
+
+  if (candidateType === "scheduled_packet") {
+    const result = await deleteScheduledPacketGroup({
+      db,
+      eventId,
+      ensembleId: candidate.ensembleId,
+    });
+    if (!result.found) {
+      throw new HttpsError("not-found", "No unreleased scheduled packet data found.");
+    }
+    if (result.hasReleased) {
+      throw new HttpsError(
+          "failed-precondition",
+          "This performance has released packet history and is protected.",
+      );
+    }
+    return {
+      ok: true,
+      eventId,
+      candidateType,
+      candidateId,
+      deletedSubmissions: result.deletedSubmissions || 0,
+      deletedOfficialAssessments: result.deletedOfficialAssessments || 0,
+      deletedPacketExports: result.deletedPacketExport || 0,
+    };
+  }
+
+  if (candidateType === "raw_assessment") {
+    const rawRef = db.collection(COLLECTIONS.rawAssessments).doc(candidateId);
+    const rawSnap = await rawRef.get();
+    if (!rawSnap.exists) {
+      throw new HttpsError("not-found", "Raw assessment not found.");
+    }
+    const raw = rawSnap.data() || {};
+    if (
+      String(raw.status || "").trim() === STATUSES.officialized ||
+      toCleanupText(raw.officialAssessmentId) ||
+      ctx.linkedOfficialRawIds.has(candidateId)
+    ) {
+      throw new HttpsError(
+          "failed-precondition",
+          "Approved queue items cannot be purged here.",
+      );
+    }
+    let deletedPacket = false;
+    const packetId = toCleanupText(raw.packetId);
+    if (packetId) {
+      const packetRef = db.collection(COLLECTIONS.packets).doc(packetId);
+      const packetSnap = await packetRef.get();
+      if (packetSnap.exists) {
+        const packet = packetSnap.data() || {};
+        if (
+          isReleasedOpenPacketStatus(packet.status) ||
+          toCleanupText(packet.officialAssessmentId) ||
+          toCleanupText(packet.officialSubmissionId)
+        ) {
+          throw new HttpsError(
+              "failed-precondition",
+              "This raw assessment is attached to protected packet state.",
+          );
+        }
+        await deleteOpenPacketDocument({
+          db,
+          bucket,
+          packetRef,
+          packet,
+          packetId,
+        });
+        deletedPacket = true;
+      }
+    }
+    await rawRef.delete();
+    return {
+      ok: true,
+      eventId,
+      candidateType,
+      candidateId,
+      deletedRawAssessments: 1,
+      deletedOpenPackets: deletedPacket ? 1 : 0,
+    };
+  }
+
+  if (candidateType === "open_packet") {
+    const packetRef = db.collection(COLLECTIONS.packets).doc(candidateId);
+    const packetSnap = await packetRef.get();
+    if (!packetSnap.exists) {
+      throw new HttpsError("not-found", "Open packet not found.");
+    }
+    const packet = packetSnap.data() || {};
+    if (
+      isReleasedOpenPacketStatus(packet.status) ||
+      toCleanupText(packet.officialAssessmentId) ||
+      toCleanupText(packet.officialSubmissionId)
+    ) {
+      throw new HttpsError(
+          "failed-precondition",
+          "This open packet is protected or attached to official packet state.",
+      );
+    }
+    const deletionResult = await deleteOpenPacketDocument({
+      db,
+      bucket,
+      packetRef,
+      packet,
+      packetId: candidateId,
+    });
+    return {
+      ok: true,
+      eventId,
+      candidateType,
+      candidateId,
+      deletedOpenPackets: 1,
+      deletedOpenPacketSessions: deletionResult.deletedSessionCount || 0,
+      deletedOpenPacketAuditDocs: deletionResult.deletedAuditCount || 0,
+    };
+  }
+
+  if (candidateType === "stale_ensemble") {
+    const schoolId = toCleanupText(candidate.schoolId);
+    const ensembleId = toCleanupText(candidate.ensembleId);
+    if (!schoolId || !ensembleId) {
+      throw new HttpsError("failed-precondition", "Cleanup candidate is missing ensemble identity.");
+    }
+    const entryRef = db.collection(COLLECTIONS.events).doc(eventId)
+        .collection(COLLECTIONS.entries).doc(ensembleId);
+    const ensembleRef = db.collection(COLLECTIONS.schools)
+        .doc(schoolId)
+        .collection(COLLECTIONS.ensembles)
+        .doc(ensembleId);
+    const [entrySnap, ensembleSnap] = await Promise.all([
+      entryRef.get(),
+      ensembleRef.get(),
+    ]);
+    if (!entrySnap.exists && !ensembleSnap.exists) {
+      throw new HttpsError("not-found", "Registered ensemble not found.");
+    }
+    if (entrySnap.exists) {
+      await entryRef.delete();
+    }
+    if (ensembleSnap.exists) {
+      await ensembleRef.delete();
+    }
+    return {
+      ok: true,
+      eventId,
+      candidateType,
+      candidateId,
+      deletedEntries: entrySnap.exists ? 1 : 0,
+      deletedRegisteredEnsembles: ensembleSnap.exists ? 1 : 0,
+    };
+  }
+
+  throw new HttpsError("invalid-argument", "Unsupported cleanup candidate type.");
 }
 
 async function deleteScheduledAssessmentAtPosition({
@@ -5511,6 +6246,112 @@ exports.deleteAllUnreleasedPackets = onCall(APPCHECK_SENSITIVE_OPTIONS, async (r
   };
 });
 
+exports.getPostEventCleanupCandidates = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  if (!eventId) {
+    throw new HttpsError("invalid-argument", "eventId is required.");
+  }
+  const db = admin.firestore();
+  const eventSnap = await db.collection(COLLECTIONS.events).doc(eventId).get();
+  if (!eventSnap.exists) {
+    throw new HttpsError("not-found", "Event not found.");
+  }
+  const ctx = await buildPostEventCleanupContext(db, eventId);
+  return {
+    ok: true,
+    ...buildPostEventCleanupCandidates(ctx),
+  };
+});
+
+exports.purgePostEventCleanupCandidate = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const candidateType = normalizeCleanupCandidateType(data.candidateType);
+  const candidateId = String(data.candidateId || "").trim();
+  if (!eventId || !candidateType || !candidateId) {
+    throw new HttpsError(
+        "invalid-argument",
+        "eventId, candidateType, and candidateId are required.",
+    );
+  }
+  const db = admin.firestore();
+  const eventSnap = await db.collection(COLLECTIONS.events).doc(eventId).get();
+  if (!eventSnap.exists) {
+    throw new HttpsError("not-found", "Event not found.");
+  }
+  const result = await purgePostEventCleanupCandidateInternal({
+    db,
+    bucket: admin.storage().bucket(),
+    eventId,
+    candidateType,
+    candidateId,
+  });
+  logger.info("purgePostEventCleanupCandidate", {
+    actorUid: request.auth.uid,
+    eventId,
+    candidateType,
+    candidateId,
+    result,
+  });
+  return result;
+});
+
+exports.purgePostEventCleanupCategory = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const category = normalizeCleanupCategory(data.category);
+  if (!eventId || !category) {
+    throw new HttpsError("invalid-argument", "eventId and category are required.");
+  }
+  const db = admin.firestore();
+  const eventSnap = await db.collection(COLLECTIONS.events).doc(eventId).get();
+  if (!eventSnap.exists) {
+    throw new HttpsError("not-found", "Event not found.");
+  }
+  const ctx = await buildPostEventCleanupContext(db, eventId);
+  const discovery = buildPostEventCleanupCandidates(ctx);
+  const categoryData = discovery.categories.find((item) => item.category === category);
+  if (!categoryData) {
+    throw new HttpsError("not-found", "Cleanup category not found.");
+  }
+  const reviewableItems = (categoryData.items || []).filter((item) => item.disposition === "reviewable");
+  const results = [];
+  for (const item of reviewableItems) {
+    const result = await purgePostEventCleanupCandidateInternal({
+      db,
+      bucket: admin.storage().bucket(),
+      eventId,
+      candidateType: item.candidateType,
+      candidateId: item.id,
+    });
+    results.push(result);
+  }
+  const aggregate = results.reduce((acc, item) => {
+    Object.entries(item || {}).forEach(([key, value]) => {
+      if (!Number.isFinite(value)) return;
+      acc[key] = (acc[key] || 0) + Number(value);
+    });
+    return acc;
+  }, {});
+  logger.info("purgePostEventCleanupCategory", {
+    actorUid: request.auth.uid,
+    eventId,
+    category,
+    purgedCount: reviewableItems.length,
+  });
+  return {
+    ok: true,
+    eventId,
+    category,
+    purgedCount: reviewableItems.length,
+    ...aggregate,
+  };
+});
+
 exports.transcribePacketSession = onCall(
     APPCHECK_SENSITIVE_SECRET_OPTIONS,
     async (request) => {
@@ -6233,6 +7074,119 @@ exports.repairPacketReleaseState = onCall(APPCHECK_SENSITIVE_OPTIONS, async (req
     grade,
     repaired: true,
     releasedPositions,
+  };
+});
+
+exports.repairReleasedPacketMetadata = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
+  await assertAdmin(request);
+  const data = request.data || {};
+  const eventId = String(data.eventId || "").trim();
+  const ensembleId = String(data.ensembleId || "").trim();
+
+  if (!eventId || !ensembleId) {
+    throw new HttpsError("invalid-argument", "eventId and ensembleId required.");
+  }
+
+  const db = admin.firestore();
+  const repair = await resolveReleasedPacketRepairContext(db, eventId, ensembleId);
+  if (!Object.keys(repair.exportData || {}).length) {
+    throw new HttpsError(
+        "failed-precondition",
+        "No released packet export found for this ensemble.",
+    );
+  }
+  if (!repair.grade) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Released packet export does not contain a repairable grade.",
+    );
+  }
+  if (!repair.schoolId) {
+    throw new HttpsError(
+        "failed-precondition",
+        "Released packet export does not identify a school for this ensemble.",
+    );
+  }
+
+  const schoolRegistrationRef = db
+      .collection(COLLECTIONS.events)
+      .doc(eventId)
+      .collection("schoolRegistrations")
+      .doc(repair.schoolId);
+  const schoolRegistrationSnap = await schoolRegistrationRef.get();
+  const schoolEnsembleRef = db
+      .collection(COLLECTIONS.schools)
+      .doc(repair.schoolId)
+      .collection(COLLECTIONS.ensembles)
+      .doc(ensembleId);
+  const schoolEnsembleSnap = await schoolEnsembleRef.get();
+
+  const batch = db.batch();
+  const entryPayload = {
+    eventId,
+    schoolId: repair.schoolId,
+    schoolName: repair.schoolName,
+    ensembleId,
+    ensembleName: repair.ensembleName || ensembleId,
+    [FIELDS.entries.performanceGrade]: repair.grade,
+    performanceGradeFlex: false,
+    status: String(repair.entryData.status || "").trim() || "ready",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  if (!repair.entryExists) {
+    entryPayload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+  batch.set(repair.entryRef, entryPayload, {merge: true});
+
+  const schoolRegistrationPayload = {
+    eventId,
+    schoolId: repair.schoolId,
+    schoolName: repair.schoolName,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  if (!schoolRegistrationSnap.exists) {
+    schoolRegistrationPayload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+  batch.set(schoolRegistrationRef, schoolRegistrationPayload, {merge: true});
+
+  const schoolEnsemblePayload = {
+    name: repair.ensembleName || ensembleId,
+    performanceGrade: repair.grade,
+    performanceGradeFlex: false,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  if (!schoolEnsembleSnap.exists) {
+    schoolEnsemblePayload.createdAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+  batch.set(schoolEnsembleRef, schoolEnsemblePayload, {merge: true});
+
+  repair.scheduleDocs.forEach((docSnap) => {
+    batch.set(docSnap.ref, {
+      schoolId: repair.schoolId,
+      schoolName: repair.schoolName,
+      ensembleId,
+      ensembleName: repair.ensembleName || ensembleId,
+      performanceGrade: repair.grade,
+      grade: repair.grade,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+
+  await batch.commit();
+
+  return {
+    ok: true,
+    eventId,
+    ensembleId,
+    schoolId: repair.schoolId,
+    schoolName: repair.schoolName,
+    ensembleName: repair.ensembleName || ensembleId,
+    grade: repair.grade,
+    updatedScheduleRows: repair.scheduleRows.length,
+    duplicateScheduleRowsDetected: Math.max(0, repair.scheduleRows.length - 1),
+    repairedEntry: true,
+    repairedSchoolRegistration: true,
+    repairedSchoolEnsemble: true,
   };
 });
 
@@ -8343,197 +9297,6 @@ exports.recreateOpenPacketFromCanonical = onCall(APPCHECK_SENSITIVE_OPTIONS, asy
     packetId: packetRef.id,
     submissionId,
     judgePosition,
-  };
-});
-
-exports.releaseMockPacketForAshleyTesting = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {
-  await assertAdmin(request);
-  assertDestructiveAdminToolsAllowed("releaseMockPacketForAshleyTesting");
-  const data = request.data || {};
-  const db = admin.firestore();
-  const activeSnap = await db
-      .collection(COLLECTIONS.events)
-      .where(FIELDS.events.isActive, "==", true)
-      .limit(1)
-      .get();
-  if (activeSnap.empty) {
-    throw new HttpsError("failed-precondition", "No active event.");
-  }
-  const eventId = activeSnap.docs[0].id;
-  const schoolIdInput = String(data.schoolId || "").trim();
-  const ensembleIdInput = String(data.ensembleId || "").trim();
-  const grade = normalizeGrade(String(data.grade || "IV")) || "IV";
-
-  let schoolId = schoolIdInput;
-  let schoolName = "";
-  if (!schoolId) {
-    const schoolsSnap = await db.collection(COLLECTIONS.schools).get();
-    const match = schoolsSnap.docs.find((docSnap) => {
-      const name = String(docSnap.data()?.name || "").toLowerCase();
-      return name.includes("ashley") && name.includes("high");
-    });
-    if (!match) {
-      throw new HttpsError("not-found", "Ashley High School was not found.");
-    }
-    schoolId = match.id;
-    schoolName = String(match.data()?.name || "");
-  } else {
-    const schoolSnap = await db.collection(COLLECTIONS.schools).doc(schoolId).get();
-    if (!schoolSnap.exists) {
-      throw new HttpsError("not-found", "School not found.");
-    }
-    schoolName = String(schoolSnap.data()?.name || schoolId);
-  }
-
-  let ensembleId = ensembleIdInput;
-  let ensembleName = "";
-  if (!ensembleId) {
-    const scheduleSnap = await db
-        .collection(COLLECTIONS.events)
-        .doc(eventId)
-        .collection(COLLECTIONS.schedule)
-        .where(FIELDS.schedule.schoolId, "==", schoolId)
-        .get();
-    if (!scheduleSnap.empty) {
-      const preferred = scheduleSnap.docs.find((docSnap) => {
-        const name = String(docSnap.data()?.ensembleName || "").toLowerCase();
-        return name.includes("concert") && name.includes("band");
-      }) || scheduleSnap.docs[0];
-      ensembleId = String(preferred.data()?.ensembleId || preferred.id);
-      ensembleName = String(preferred.data()?.ensembleName || ensembleId);
-    }
-  }
-  if (!ensembleId) {
-    const ensembleSnap = await db
-        .collection(COLLECTIONS.schools)
-        .doc(schoolId)
-        .collection(COLLECTIONS.ensembles)
-        .limit(1)
-        .get();
-    if (ensembleSnap.empty) {
-      throw new HttpsError("not-found", "No ensemble found for school.");
-    }
-    ensembleId = ensembleSnap.docs[0].id;
-    ensembleName = String(ensembleSnap.docs[0].data()?.name || ensembleId);
-  }
-  if (!ensembleName) {
-    const scheduleDoc = await db
-        .collection(COLLECTIONS.events)
-        .doc(eventId)
-        .collection(COLLECTIONS.schedule)
-        .where(FIELDS.schedule.ensembleId, "==", ensembleId)
-        .limit(1)
-        .get();
-    if (!scheduleDoc.empty) {
-      ensembleName = String(scheduleDoc.docs[0].data()?.ensembleName || ensembleId);
-    } else {
-      const ensSnap = await db
-          .collection(COLLECTIONS.schools)
-          .doc(schoolId)
-          .collection(COLLECTIONS.ensembles)
-          .doc(ensembleId)
-          .get();
-      ensembleName = ensSnap.exists ? String(ensSnap.data()?.name || ensembleId) : ensembleId;
-    }
-  }
-
-  await db
-      .collection(COLLECTIONS.events)
-      .doc(eventId)
-      .collection(COLLECTIONS.entries)
-      .doc(ensembleId)
-      .set({
-        eventId,
-        schoolId,
-        schoolName,
-        ensembleId,
-        ensembleName,
-        [FIELDS.entries.performanceGrade]: grade,
-        status: "ready",
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, {merge: true});
-
-  const bucket = admin.storage().bucket();
-  const positions = requiredPositionsForGrade(grade);
-  const now = admin.firestore.FieldValue.serverTimestamp();
-  const writeOps = [];
-  for (const position of positions) {
-    const formType = position === JUDGE_POSITIONS.sight ? FORM_TYPES.sight : FORM_TYPES.stage;
-    const captions = buildMockCaptionsForForm(formType);
-    const total = calculateCaptionTotal(captions);
-    const rating = computeFinalRatingFromTotal(total);
-    const audioPath = `audio/mock/${eventId}/${ensembleId}/${position}.wav`;
-    const wav = createSilentWavBuffer({durationSec: 4});
-    await bucket.file(audioPath).save(wav, {
-      resumable: false,
-      contentType: "audio/wav",
-      metadata: {
-        metadata: {
-          eventId,
-          ensembleId,
-          judgePosition: position,
-          source: "mock",
-        },
-      },
-    });
-    const submissionId = `${eventId}_${ensembleId}_${position}`;
-    const ref = db.collection(COLLECTIONS.submissions).doc(submissionId);
-    writeOps.push(ref.set({
-      eventId,
-      ensembleId,
-      schoolId,
-      judgePosition: position,
-      formType,
-      status: STATUSES.released,
-      locked: true,
-      audioUrl: "",
-      audioPath,
-      audioDurationSec: 4,
-      transcript: `${judgeLabelByPosition(position)} mock transcript for Ashley High School testing.`,
-      captions,
-      captionScoreTotal: total,
-      computedFinalRatingJudge: rating.value,
-      computedFinalRatingLabel: rating.label,
-      judgeName: `${judgeLabelByPosition(position)} Mock`,
-      judgeEmail: `${position}.mock@mpajudge.local`,
-      judgeTitle: "Mock Judge",
-      judgeAffiliation: "Testing",
-      submittedAt: now,
-      releasedAt: now,
-      releasedBy: request.auth.uid,
-      updatedAt: now,
-      createdAt: now,
-    }, {merge: true}));
-  }
-  await Promise.all(writeOps);
-
-  try {
-    await generateDirectorPacketExportInternal({
-      eventId,
-      ensembleId,
-      grade,
-      actorUid: request.auth.uid,
-    });
-  } catch (error) {
-    await markDirectorPacketExportFailure({
-      eventId,
-      ensembleId,
-      schoolId,
-      error: error?.message || String(error),
-      actorUid: request.auth.uid,
-    });
-    throw new HttpsError("internal", `Mock submissions created, but export failed: ${error?.message || String(error)}`);
-  }
-
-  return {
-    ok: true,
-    eventId,
-    schoolId,
-    schoolName,
-    ensembleId,
-    ensembleName,
-    grade,
-    released: true,
   };
 });
 

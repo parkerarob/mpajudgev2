@@ -9,6 +9,7 @@ Frontend (`public/`)
 - Global state and constants in `public/state.js`
 - Main orchestration in `public/modules/ui.js`
 - Role-focused modules for admin, judge, and director flows
+- Admin navigation is centered on `Setup`, `Directory`, `Event Prep`, `Event Day`, and `Announcer`
 
 Backend (`functions/`)
 - Firebase Functions v2 callables
@@ -19,6 +20,15 @@ Data and security
 - One active event model
 - Protected director/school/event-entry data remains in place
 - Official results now flow through `officialAssessments`
+
+## Documentation
+
+- [AGENTS.md](AGENTS.md): repo guardrails for engineering and product work
+- [USER_INSTRUCTIONS.md](USER_INSTRUCTIONS.md): event-day operating guide by role
+- [PRD.md](PRD.md): current product requirements
+- [docs/Domain-Language.md](docs/Domain-Language.md): canonical glossary for domain terms
+- [docs/Director-User-Guide.md](docs/Director-User-Guide.md): director workflow details
+- [docs/Judge-User-Guide.md](docs/Judge-User-Guide.md): judge workflow details
 
 ## Local Development
 

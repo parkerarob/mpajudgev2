@@ -1,6 +1,6 @@
 # MPAapp Product Requirements
 
-Last updated: 2026-04-01
+Last updated: 2026-04-03
 
 ## Product Goal
 
@@ -18,15 +18,11 @@ MPAapp should let a district run Music Performance Adjudication with:
 Admins run the event.
 
 Current admin workspaces (tab order):
-- Settings
-- Registrations
-- Schedule & Flow
-- Review Queue
-- Packets & Results
-- Ratings
+- Setup
+- Directory
+- Event Prep
+- Event Day
 - Announcer
-- Readiness
-- Dashboard
 
 Admin responsibilities:
 - create and activate the event
@@ -119,7 +115,7 @@ Required sight captions:
 
 ### Review Queue
 
-This is the raw-assessment review queue.
+This capability lives inside the `Event Day` admin workspace.
 
 Admins must be able to:
 - inspect audio, transcript/reference notes, and caption data
@@ -133,7 +129,7 @@ Guardrail:
 
 ### Packets & Results
 
-This is the official packet management surface.
+This capability also lives inside the `Event Day` admin workspace.
 
 Admins must be able to:
 - view packet completeness by judge position
@@ -142,6 +138,17 @@ Admins must be able to:
 - release and unrelease complete packets
 - delete a specific officialized slot when necessary
 - generate and load result files
+- review ratings summary alongside packet operations
+
+### Event Prep
+
+This is the school-first pre-event management surface.
+
+Admins must be able to:
+- drill into one school at a time
+- review registration readiness before event day
+- build or repair the schedule
+- run readiness and preflight actions from the pre-event flow
 
 ## Director Requirements
 

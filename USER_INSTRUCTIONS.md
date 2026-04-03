@@ -71,35 +71,38 @@ If you submitted in error, contact admin immediately.
 ## Admins
 
 ### 1. Operational workspaces
-- `Settings`: event creation and judge assignment
-- `Registrations`: registration and director-input review
-- `Schedule & Flow`: check-in queue and stage flow
-- `Review Queue`: raw assessment review
-- `Packets & Results`: official slot management and release
-- `Ratings`: ratings summary by judge position
+- `Setup`: event creation, active-event control, and judge assignments
+- `Directory`: school and user management
+- `Event Prep`: registration review, school drill-down, schedule builder, and readiness entry points
+- `Event Day`: raw assessment review, packet operations, ratings summary, and live flow
 - `Announcer`: announcer display
-- `Readiness`: preflight, walkthrough, and cleanup
-- `Dashboard`: high-level event status and next-step routing
 
-### 2. Review Queue
+### 2. Event Prep
+Use this workspace to:
+- review registrations by school
+- open school detail without loading every admin panel at once
+- build or repair the event schedule
+- run readiness checks and walkthrough actions
+
+### 3. Event Day
 Use this workspace to:
 - review raw assessments
 - reassign ensemble / judge position / form type
 - officialize assessments
 - exclude stray assessments
 - delete non-official raw assessments
-
-### 3. Packets & Results
-Use this workspace to:
 - inspect blocking judge positions
 - manage per-position official results
+- review ratings by judge position
 - generate result files
 - release and unrelease complete results packets
 
 ### 4. If something is wrong
-- wrong association: use `Review Queue`
-- wrong official slot: use `Packets & Results`
+- wrong association: use `Event Day`
+- wrong official slot: use `Event Day`
 - packet incomplete: check the explicit blocking positions
+- school or user issue: use `Directory`
+- event setup or assignments issue: use `Setup`
 
 ## Practical Tips
 

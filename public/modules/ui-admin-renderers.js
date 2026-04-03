@@ -30,8 +30,6 @@ export function createAdminRenderers({
   deriveAutoScheduleDayBreaks,
   mergeScheduleDayBreaks,
   formatPerformanceAt,
-  getLunchTotalsByDay,
-  getLunchTotalsBySchool,
   getPacketData,
   officializeRawAssessment,
   excludeRawAssessment,
@@ -114,9 +112,6 @@ export function createAdminRenderers({
   let adminPacketsRenderQueued = false;
   let registeredRenderInFlight = false;
   let registeredRenderQueued = false;
-  let adminPizzaTotalsRenderTokenDay = 0;
-  let adminPizzaTotalsRenderTokenSchool = 0;
-  let adminPizzaTotalsRenderToken = 0;
 
 
   function formatBlockerError(error, fallbackMessage) {
@@ -849,7 +844,7 @@ export function createAdminRenderers({
         packetsBtn.className = "ghost";
         packetsBtn.textContent = "Open Packets & Results";
         packetsBtn.addEventListener("click", () => {
-          window.location.hash = "#admin/results";
+          window.location.hash = "#admin/event-day";
         });
         actions.appendChild(packetsBtn);
       }
@@ -1663,7 +1658,7 @@ export function createAdminRenderers({
       nextHint = "Move to Packets & Results to manage release-ready results packets.";
       nextActionLabel = "Open Packets & Results";
       nextAction = () => {
-        window.location.hash = "#admin/results";
+          window.location.hash = "#admin/event-day";
       };
     }
 
@@ -2012,130 +2007,6 @@ export function createAdminRenderers({
     };
   }
 
-  function renderPizzaTotalsGrid(container, rows, emptyText) {
-    if (!container) return false;
-    container.innerHTML = "";
-    if (!Array.isArray(rows) || !rows.length) {
-      container.innerHTML = `<div class='note'>${emptyText}</div>`;
-      return false;
-    }
-    const grid = document.createElement("div");
-    grid.className = "admin-pizza-totals-grid";
-    const header = document.createElement("div");
-    header.className = "admin-pizza-totals-row admin-pizza-totals-row--header";
-    ["Day", "Cheese", "Pepperoni", "Total"].forEach((label) => {
-      const cell = document.createElement("span");
-      cell.textContent = label;
-      header.appendChild(cell);
-    });
-    grid.appendChild(header);
-    rows.forEach((rowData) => {
-      const rowNode = document.createElement("div");
-      rowNode.className = "admin-pizza-totals-row";
-      const dayCell = document.createElement("span");
-      dayCell.textContent = rowData.label;
-      rowNode.appendChild(dayCell);
-      ["cheese", "pepperoni", "total"].forEach((key) => {
-        const valueCell = document.createElement("span");
-        valueCell.textContent = String(rowData[key]);
-        valueCell.className = `admin-pizza-totals-value admin-pizza-totals-value--${key}`;
-        rowNode.appendChild(valueCell);
-      });
-      grid.appendChild(rowNode);
-    });
-    container.appendChild(grid);
-    return true;
-  }
-
-  async function renderAdminPizzaTotalsByDay() {
-    if (!els.adminPizzaTotalsTable) return;
-    const eventId = String(state.event.active?.id || "").trim();
-    if (!eventId) {
-      els.adminPizzaTotalsTable.innerHTML = "";
-      if (els.adminPizzaTotalsHint) {
-        els.adminPizzaTotalsHint.textContent = "Set an active event to begin.";
-      }
-      return;
-    }
-    const renderToken = ++adminPizzaTotalsRenderTokenDay;
-    if (els.adminPizzaTotalsHint) els.adminPizzaTotalsHint.textContent = "Loading pizza totals...";
-    els.adminPizzaTotalsTable.innerHTML = "<div class='note'>Loading pizza totals...</div>";
-    try {
-      const totals = await getLunchTotalsByDay(eventId);
-      if (renderToken !== adminPizzaTotalsRenderTokenDay) return;
-      const rendered = renderPizzaTotalsGrid(
-        els.adminPizzaTotalsTable,
-        totals,
-        "No pizza orders recorded yet."
-      );
-      if (rendered && els.adminPizzaTotalsHint) {
-        els.adminPizzaTotalsHint.textContent = `Last updated ${new Date().toLocaleTimeString([], {
-          hour: "numeric",
-          minute: "2-digit",
-        })}.`;
-      } else if (els.adminPizzaTotalsHint) {
-        els.adminPizzaTotalsHint.textContent = "No pizza orders recorded for this event.";
-      }
-    } catch (error) {
-      console.error("renderAdminPizzaTotalsByDay failed", error);
-      if (renderToken !== adminPizzaTotalsRenderTokenDay) return;
-      if (els.adminPizzaTotalsTable) {
-        els.adminPizzaTotalsTable.innerHTML = "<div class='note'>Unable to load pizza totals right now.</div>";
-      }
-      if (els.adminPizzaTotalsHint) {
-        els.adminPizzaTotalsHint.textContent = "Unable to load pizza totals right now.";
-      }
-    }
-  }
-
-  async function renderAdminPizzaTotalsBySchool() {
-    if (!els.adminPizzaBySchoolTable) return;
-    const eventId = String(state.event.active?.id || "").trim();
-    if (!eventId) {
-      els.adminPizzaBySchoolTable.innerHTML = "";
-      if (els.adminPizzaBySchoolHint) {
-        els.adminPizzaBySchoolHint.textContent = "Set an active event to begin.";
-      }
-      return;
-    }
-    const renderToken = ++adminPizzaTotalsRenderTokenSchool;
-    if (els.adminPizzaBySchoolHint) els.adminPizzaBySchoolHint.textContent = "Loading school totals...";
-    els.adminPizzaBySchoolTable.innerHTML = "<div class='note'>Loading school totals...</div>";
-    try {
-      const totals = await getLunchTotalsBySchool(eventId);
-      if (renderToken !== adminPizzaTotalsRenderTokenSchool) return;
-      const rendered = renderPizzaTotalsGrid(
-        els.adminPizzaBySchoolTable,
-        totals,
-        "No pizza orders recorded yet."
-      );
-      if (rendered && els.adminPizzaBySchoolHint) {
-        els.adminPizzaBySchoolHint.textContent = `Last updated ${new Date().toLocaleTimeString([], {
-          hour: "numeric",
-          minute: "2-digit",
-        })}.`;
-      } else if (els.adminPizzaBySchoolHint) {
-        els.adminPizzaBySchoolHint.textContent = "No pizza orders recorded for this event.";
-      }
-    } catch (error) {
-      console.error("renderAdminPizzaTotalsBySchool failed", error);
-      if (renderToken !== adminPizzaTotalsRenderTokenSchool) return;
-      if (els.adminPizzaBySchoolTable) {
-        els.adminPizzaBySchoolTable.innerHTML = "<div class='note'>Unable to load totals right now.</div>";
-      }
-      if (els.adminPizzaBySchoolHint) {
-        els.adminPizzaBySchoolHint.textContent = "Unable to load school totals right now.";
-      }
-    }
-  }
-
-  async function renderAdminPizzaTotals() {
-    await Promise.allSettled([
-      renderAdminPizzaTotalsByDay(),
-      renderAdminPizzaTotalsBySchool(),
-    ]);
-  }
-
   function buildAdminEntryEditPanel({
     entryData,
     eventId,
@@ -2317,7 +2188,7 @@ export function createAdminRenderers({
         getDocs(collection(db, COLLECTIONS.events, eventId, COLLECTIONS.entries)),
       ]);
       const stale =
-        state.admin.currentView !== "preEvent" ||
+        state.admin.currentView !== "eventPrep" ||
         (state.event.active?.id || "") !== eventId ||
         state.admin.selectedSchoolId !== schoolId;
       if (stale) return;
@@ -2608,16 +2479,14 @@ export function createAdminRenderers({
       els.adminPacketsList.innerHTML = "";
       await appendPostEventCleanupPanel({ eventId });
       const appendBulkCleanupPanel = () => {
-        const cleanupRow = document.createElement("li");
-        cleanupRow.className = "panel";
-        const cleanupTitle = document.createElement("h4");
-        cleanupTitle.textContent = "Packet Maintenance";
-        cleanupRow.appendChild(cleanupTitle);
+        const maintenanceBody = document.querySelector(".admin-maintenance-body");
+        if (!maintenanceBody) return;
+        maintenanceBody.innerHTML = "";
         const cleanupHint = document.createElement("p");
         cleanupHint.className = "hint";
         cleanupHint.textContent =
           "Release-safe maintenance tools only. Destructive cleanup actions are disabled on this branch.";
-        cleanupRow.appendChild(cleanupHint);
+        maintenanceBody.appendChild(cleanupHint);
         const repairBtn = document.createElement("button");
         repairBtn.type = "button";
         repairBtn.className = "ghost";
@@ -2643,7 +2512,7 @@ export function createAdminRenderers({
             repairBtn.disabled = false;
           }
         });
-        cleanupRow.appendChild(repairBtn);
+        maintenanceBody.appendChild(repairBtn);
         const repairOpenTapeBtn = document.createElement("button");
         repairOpenTapeBtn.type = "button";
         repairOpenTapeBtn.className = "ghost";
@@ -2677,7 +2546,7 @@ export function createAdminRenderers({
             repairOpenTapeBtn.disabled = false;
           }
         });
-        cleanupRow.appendChild(repairOpenTapeBtn);
+        maintenanceBody.appendChild(repairOpenTapeBtn);
         const repairLinkageBtn = document.createElement("button");
         repairLinkageBtn.type = "button";
         repairLinkageBtn.className = "ghost";
@@ -2707,7 +2576,7 @@ export function createAdminRenderers({
             repairLinkageBtn.disabled = false;
           }
         });
-        cleanupRow.appendChild(repairLinkageBtn);
+        maintenanceBody.appendChild(repairLinkageBtn);
         const restorePacketBtn = document.createElement("button");
         restorePacketBtn.type = "button";
         restorePacketBtn.className = "ghost";
@@ -2738,8 +2607,7 @@ export function createAdminRenderers({
             restorePacketBtn.disabled = false;
           }
         });
-        cleanupRow.appendChild(restorePacketBtn);
-        els.adminPacketsList.appendChild(cleanupRow);
+        maintenanceBody.appendChild(restorePacketBtn);
       };
       appendBulkCleanupPanel();
       renderAdminPacketsWorkflowGuidance({
@@ -2748,7 +2616,7 @@ export function createAdminRenderers({
       });
 
       const scheduleEntries = await fetchScheduleEntries(eventId);
-      if (state.admin.currentView !== "results" || (state.event.active?.id || "") !== eventId) return;
+      if (state.admin.currentView !== "eventDay" || (state.event.active?.id || "") !== eventId) return;
 
       const ordered = [...(scheduleEntries || [])].sort((a, b) => {
         const aMs = toDateOrNull(a.performanceAt)?.getTime() || 0;
@@ -2832,7 +2700,7 @@ export function createAdminRenderers({
             return { entryId: entry.id, packetData };
           })
         );
-        if (state.admin.currentView !== "results" || (state.event.active?.id || "") !== eventId) return;
+        if (state.admin.currentView !== "eventDay" || (state.event.active?.id || "") !== eventId) return;
         packetPayloads.forEach(({ entryId, packetData }) => {
           if (!entryId) return;
           packetDataByEntryId.set(entryId, packetData);
@@ -3434,7 +3302,7 @@ export function createAdminRenderers({
           where("schoolId", "==", selectedSchoolId)
         )
       );
-      if (state.admin.currentView !== "results" || (state.event.active?.id || "") !== eventId) return;
+      if (state.admin.currentView !== "eventDay" || (state.event.active?.id || "") !== eventId) return;
       const openPackets = openPacketsSnap.docs
         .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
         .filter((packet) => {
@@ -4036,7 +3904,7 @@ export function createAdminRenderers({
         btn.addEventListener("click", () => {
           state.admin.selectedSchoolId = schoolId;
           state.admin.selectedSchoolName = schoolName;
-          applyAdminView("preEvent");
+          applyAdminView("eventPrep");
         });
         actionTd.appendChild(btn);
         tr.appendChild(actionTd);
@@ -4541,8 +4409,5 @@ export function createAdminRenderers({
     renderAdminPacketsBySchedule,
     renderRegisteredEnsemblesList,
     renderScheduleBuilder,
-    renderAdminPizzaTotals,
-    renderAdminPizzaTotalsByDay,
-    renderAdminPizzaTotalsBySchool,
   };
 }

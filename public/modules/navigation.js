@@ -78,7 +78,7 @@ export function resolveHash(hash) {
   if (value === "#director") return { type: "tab", tab: "director" };
   if (value === "#checkin" || value === "#check-in") return { type: "tab", tab: "checkin" };
   if (value === "#judge" || value === "#judge-open") {
-    if (!judgeEnabled) return { type: "tab", tab: "admin", adminView: "dashboard" };
+    if (!judgeEnabled) return { type: "tab", tab: "admin", adminView: liveEnabled ? "eventDay" : "eventPrep" };
     return { type: "tab", tab: "judge-open" };
   }
   if (value === "#admin" || value.startsWith("#admin/")) {
@@ -86,7 +86,7 @@ export function resolveHash(hash) {
     const adminView = resolveAdminViewFromHashSegment(segment, {
       liveEnabled,
       settingsEnabled,
-      fallback: "dashboard",
+      fallback: liveEnabled ? "eventDay" : "eventPrep",
     });
     return { type: "tab", tab: "admin", adminView };
   }

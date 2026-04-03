@@ -3,15 +3,14 @@ export function resolveAdminDirectorPersistPrimary(persistPrimary) {
 }
 
 const ADMIN_RETURN_VIEWS = new Set([
-  "preEvent",
-  "liveEvent",
-  "packets",
-  "readiness",
-  "settings",
+  "eventPrep",
+  "eventDay",
+  "setup",
+  "directory",
 ]);
 
-export function resolveAdminDirectorReturnView(view, fallback = "preEvent") {
-  const normalizedFallback = ADMIN_RETURN_VIEWS.has(fallback) ? fallback : "preEvent";
+export function resolveAdminDirectorReturnView(view, fallback = "eventPrep") {
+  const normalizedFallback = ADMIN_RETURN_VIEWS.has(fallback) ? fallback : "eventPrep";
   const normalizedView = String(view || "").trim();
   return ADMIN_RETURN_VIEWS.has(normalizedView) ? normalizedView : normalizedFallback;
 }

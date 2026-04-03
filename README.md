@@ -24,6 +24,10 @@ Data and security
 ## Documentation
 
 - [AGENTS.md](AGENTS.md): repo guardrails for engineering and product work
+- [ARCHITECTURE.md](ARCHITECTURE.md): system structure and release flow
+- [CONTRIBUTING.md](CONTRIBUTING.md): setup and contribution workflow
+- [CHANGELOG.md](CHANGELOG.md): release history
+- [VERSION](VERSION): current project version
 - [USER_INSTRUCTIONS.md](USER_INSTRUCTIONS.md): event-day operating guide by role
 - [PRD.md](PRD.md): current product requirements
 - [docs/Domain-Language.md](docs/Domain-Language.md): canonical glossary for domain terms

@@ -615,6 +615,15 @@ export function createAdminHandlerBinder({
       });
     }
 
+    if (els.adminPacketsAuditLoadBtn) {
+      els.adminPacketsAuditLoadBtn.addEventListener("click", () => {
+        state.admin.packetsAuditLoaded = true;
+        if (state.admin.currentView === "eventDay") {
+          renderAdminPacketsBySchedule();
+        }
+      });
+    }
+
     if (els.adminSubmissionsFilter) {
       els.adminSubmissionsFilter.addEventListener("change", () => {
         state.admin.rawAssessmentFilter = els.adminSubmissionsFilter?.value || "pending";

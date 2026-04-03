@@ -166,46 +166,8 @@
 
           <div id="adminViewEventDay" class="admin-view stack is-hidden" data-admin-view="eventDay">
           <div class="panel">
-            <h3>Check-in / Schedule Flow</h3>
-            <p class="hint">Review the running order, stage transitions, and setup flow for scheduled ensembles.</p>
-            <div class="admin-workflow-card stack" id="adminLiveWorkflowCard">
-              <div class="row row--between row--center">
-                <div class="admin-workflow-title">Next Step</div>
-                <span class="badge" id="adminLiveCurrentStepPill">Start</span>
-              </div>
-              <div class="admin-workflow-next" id="adminLiveNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminLiveNextStepHint">Then review the running order and manage stage flow for scheduled ensembles.</div>
-              <div class="row">
-                <button type="button" class="ghost btn--sm" id="adminLiveWorkflowActionBtn">Open Next Step</button>
-              </div>
-              <div class="admin-step-chips">
-                <span class="admin-step-chip" id="adminLiveStepChipEvent">Event</span>
-                <span class="admin-step-chip" id="adminLiveStepChipQueue">Running Order</span>
-                <span class="admin-step-chip" id="adminLiveStepChipSetup">Stage Flow</span>
-              </div>
-            </div>
-            <div id="liveEventContent"></div>
-          </div>
-          <div class="panel">
             <h3>Review Queue</h3>
             <p class="hint">Review submitted Event Day source sheets, fix routing if needed, and add them into the Results Packet.</p>
-            <div class="admin-workflow-card stack" id="adminSubmissionsWorkflowCard">
-              <div class="row row--between row--center">
-                <div class="admin-workflow-title">Next Step</div>
-                <span class="badge" id="adminSubmissionsCurrentStepPill">Start</span>
-              </div>
-              <div class="admin-workflow-next" id="adminSubmissionsNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminSubmissionsNextStepHint">Then review incoming source sheets and add them into the Results Packet.</div>
-              <div class="row">
-                <button type="button" class="ghost btn--sm" id="adminSubmissionsWorkflowActionBtn">Open Next Step</button>
-              </div>
-              <div class="admin-step-chips">
-                <span class="admin-step-chip" id="adminSubmissionsStepChipEvent">Event</span>
-                <span class="admin-step-chip" id="adminSubmissionsStepChipQueue">Queue</span>
-                <span class="admin-step-chip" id="adminSubmissionsStepChipReview">Review</span>
-                <span class="admin-step-chip" id="adminSubmissionsStepChipOfficialize">Approve</span>
-              </div>
-            </div>
             <div class="row row--between row--center">
               <div class="note" id="adminSubmissionsHint">Waiting for submitted source sheets.</div>
               <label>
@@ -230,25 +192,11 @@
           <div class="panel">
             <h3>Packets &amp; Results</h3>
             <p class="hint">Select a school, then review current-event official packets and release state for that school.</p>
-            <div class="admin-workflow-card stack" id="adminPacketsWorkflowCard">
-              <div class="row row--between row--center">
-                <div class="admin-workflow-title">Next Step</div>
-                <span class="badge" id="adminPacketsCurrentStepPill">Start</span>
-              </div>
-              <div class="admin-workflow-next" id="adminPacketsNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminPacketsNextStepHint">Then select a school and review official results readiness before release.</div>
-              <div class="row">
-                <button type="button" class="ghost btn--sm" id="adminPacketsWorkflowActionBtn">Open Next Step</button>
-              </div>
-              <div class="admin-step-chips">
-                <span class="admin-step-chip" id="adminPacketsStepChipEvent">Event</span>
-                <span class="admin-step-chip" id="adminPacketsStepChipSchool">School</span>
-                <span class="admin-step-chip" id="adminPacketsStepChipReview">Review</span>
-                <span class="admin-step-chip" id="adminPacketsStepChipRelease">Release</span>
-              </div>
-            </div>
             <div class="panel stack">
-              <h4>Release Audit</h4>
+              <div class="row row--between row--center">
+                <h4>Release Audit</h4>
+                <button type="button" class="ghost btn--sm" id="adminPacketsAuditLoadBtn">Load Release Audit</button>
+              </div>
               <p class="hint">All scheduled ensembles for the active event and whether the Results Packet has been released to the director.</p>
               <div class="note" id="adminPacketsAuditHint">Set an active event to begin.</div>
               <div class="schedule-timeline-table-wrap">

@@ -10,7 +10,6 @@ export function createAdminViewController({
   isAdminLiveEventEnabled,
   isAdminSettingsEnabled,
   getEffectiveRole,
-  renderLiveEventCheckinQueue,
   renderAdminSchoolDetail,
   renderRegisteredEnsemblesList,
   renderScheduleBuilder,
@@ -37,7 +36,6 @@ export function createAdminViewController({
   });
   const eventDayController = createAdminEventDayController({
     els,
-    renderLiveEventCheckinQueue,
     renderAdminLiveSubmissions,
     renderAdminPacketsBySchedule,
     renderAdminRatingsView,

@@ -1,6 +1,5 @@
 export function createAdminEventDayController({
   els,
-  renderLiveEventCheckinQueue,
   renderAdminLiveSubmissions,
   renderAdminPacketsBySchedule,
   renderAdminRatingsView,
@@ -12,7 +11,6 @@ export function createAdminEventDayController({
 
   function render({ visible, heavyLoaded } = {}) {
     if (!visible || !heavyLoaded) return;
-    renderLiveEventCheckinQueue?.();
     renderAdminLiveSubmissions?.();
     renderAdminPacketsBySchedule?.();
     renderAdminRatingsView?.();

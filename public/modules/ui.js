@@ -211,7 +211,6 @@ import {
 import { createAdminViewController } from "./ui-admin-shell.js";
 import { createAdminAnnouncerController } from "./ui-admin-announcer.js";
 import { createAdminRenderers } from "./ui-admin-renderers.js";
-import { createAdminLiveRenderers } from "./ui-admin-live-renderers.js";
 import { createJudgeOpenRenderers } from "./ui-judge-open-renderers.js";
 import { createJudgeOpenHandlerBinder } from "./ui-judge-open-handlers.js";
 import { createDirectorEnsembleRenderer } from "./ui-director-ensembles.js";
@@ -259,6 +258,8 @@ export function alertUser(message) {
 export function confirmUser(message) {
   return window.confirm(message);
 }
+
+function closeLiveEventCheckinModal() {}
 
 function getEffectiveRole(profile) {
   if (!profile) return null;
@@ -2002,7 +2003,6 @@ let adminPreflightRefreshTimer = null;
 let adminPreflightRefreshInFlight = false;
 let adminViewController = null;
 let adminRenderers = null;
-let adminLiveRenderers = null;
 let adminAnnouncerController = null;
 let authHandlerBinder = null;
 let adminHandlerBinder = null;
@@ -2088,7 +2088,6 @@ function getAdminViewController() {
     isAdminLiveEventEnabled,
     isAdminSettingsEnabled,
     getEffectiveRole,
-    renderLiveEventCheckinQueue,
     renderAdminSchoolDetail,
     renderRegisteredEnsemblesList,
     renderScheduleBuilder,
@@ -2280,37 +2279,6 @@ function getAdminRenderers() {
     deleteEntry,
   });
   return adminRenderers;
-}
-
-function getAdminLiveRenderers() {
-  if (adminLiveRenderers) return adminLiveRenderers;
-  adminLiveRenderers = createAdminLiveRenderers({
-    els,
-    state,
-    db,
-    COLLECTIONS,
-    FIELDS,
-    collection,
-    getDocs,
-    query,
-    where,
-    fetchScheduleEntries,
-    fetchRegisteredEnsembles,
-    getSchoolNameById,
-    normalizeEnsembleDisplayName,
-    toDateOrNull,
-    computeEnsembleCheckinStatus,
-    computeEnsembleCheckinProgress,
-    escapeHtml,
-    formatStartTime,
-    formatSchoolEnsembleLabel,
-    buildAdminLogisticsEntryPanel,
-    buildAdminLogisticsDiffPanel,
-    updateEntryCheckinFields,
-    openModal: openManagedModal,
-    closeModal: closeManagedModal,
-  });
-  return adminLiveRenderers;
 }
 
 function getCheckinView() {
@@ -3426,7 +3394,6 @@ export function startWatchers() {
       }
     }
     if (liveEnabled && state.admin.currentView === "eventDay" && isAdminHeavyViewLoaded("eventDay")) {
-      renderLiveEventCheckinQueue();
       renderAdminPacketsBySchedule();
       renderAdminLiveSubmissions();
     }
@@ -3450,6 +3417,7 @@ export function startWatchers() {
     if (state.app.currentTab === "admin" && state.admin.currentView === "eventDay") {
       renderAdminPacketsBySchedule();
       renderAdminLiveSubmissions();
+      renderAdminRatingsView();
     }
     if (state.app.currentTab === "admin" && state.admin.currentView === "eventPrep") {
       renderAdminReadinessView();
@@ -3475,6 +3443,7 @@ export function startWatchers() {
       stage3Uid: "",
       sightUid: "",
     };
+    state.admin.packetsAuditLoaded = false;
     state.admin.readinessBulkResetSupport = "unknown";
     state.admin.readinessBulkResetCheckedAt = 0;
     invalidateDirectorSchoolLunchTotalCache({
@@ -3495,8 +3464,8 @@ export function startWatchers() {
     }
     startActiveAssignmentsWatcher();
     if (liveEnabled && state.app.currentTab === "admin" && state.admin.currentView === "eventDay" && isAdminHeavyViewLoaded("eventDay")) {
-      renderLiveEventCheckinQueue();
       renderAdminLiveSubmissions();
+      renderAdminRatingsView();
     }
     if (state.app.currentTab === "checkin") {
       renderCheckinView();
@@ -3510,6 +3479,7 @@ export function startWatchers() {
     }
     if (state.app.currentTab === "admin" && state.admin.currentView === "eventDay") {
       renderAdminPacketsBySchedule();
+      renderAdminRatingsView();
     }
     if (state.app.currentTab === "admin" && state.admin.currentView === "eventPrep") {
       renderAdminReadinessView();
@@ -3532,9 +3502,9 @@ export function startWatchers() {
     }
     refreshSchoolDropdowns();
     if (liveEnabled && state.app.currentTab === "admin" && state.admin.currentView === "eventDay") {
-      renderLiveEventCheckinQueue();
       renderAdminPacketsBySchedule();
       renderAdminLiveSubmissions();
+      renderAdminRatingsView();
     }
     if (judgeEnabled && canUseOpenJudge(state.auth.userProfile)) {
       if (state.app.currentTab === "judge-open") {
@@ -5510,14 +5480,6 @@ export async function refreshSchedulerTimeline(override) {
     els.schedulerApplyBtn.classList.remove("is-hidden");
     els.schedulerApplyBtn.disabled = timeline.length === 0;
   }
-}
-
-async function renderLiveEventCheckinQueue() {
-  return getAdminLiveRenderers().renderLiveEventCheckinQueue();
-}
-
-function closeLiveEventCheckinModal() {
-  return getAdminLiveRenderers().closeLiveEventCheckinModal();
 }
 
 export function renderJudgeOptions(judges) {

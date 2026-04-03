@@ -3593,6 +3593,7 @@ function refreshDirectorWatchers() {
   });
   watchDirectorEnsembles((ensembles) => {
     renderDirectorEnsembles(ensembles || []);
+    renderDayOfEnsembleSelector();
     renderDirectorDebugSummary();
     updateDirectorActiveEnsembleLabel();
     refreshDirectorSchoolLunchTotal();

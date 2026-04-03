@@ -864,22 +864,31 @@ export function createDirectorEntryFormRenderers({
         ? `Complete ${nextIncomplete.label.toLowerCase()} next to keep this ensemble moving toward ready.`
         : "All required sections are complete. Review your entry, then mark it ready.";
     }
-    const sectionStatusMap = {
-      repertoire: s.repertoire ? "Complete" : nextIncomplete?.key === "repertoire" ? "Next" : "Missing",
-      instrumentation: s.instrumentation ? "Complete" : nextIncomplete?.key === "instrumentation" ? "Next" : "Missing",
-      "instrumentation-notes": "Optional",
-      rule3c: "Review",
-      seating: s.seating ? "Complete" : nextIncomplete?.key === "seating" ? "Next" : "Missing",
-      percussion: s.percussion ? "Complete" : nextIncomplete?.key === "percussion" ? "Next" : "Missing",
-      lunch: s.lunch ? "Complete" : nextIncomplete?.key === "lunch" ? "Next" : "Missing",
-    };
-    Object.entries(sectionStatusMap).forEach(([key, value]) => {
-      const chip = document.querySelector(`[data-director-section-status="${key}"]`);
-      if (!chip) return;
-      chip.textContent = value;
-      chip.className = "director-section-status";
-      chip.classList.add(`is-${String(value).toLowerCase().replace(/\s+/g, "-")}`);
-    });
+    if (_entry === null) {
+      ["repertoire", "instrumentation", "instrumentation-notes", "rule3c", "seating", "percussion", "lunch"].forEach((key) => {
+        const chip = document.querySelector(`[data-director-section-status="${key}"]`);
+        if (!chip) return;
+        chip.textContent = "";
+        chip.className = "director-section-status";
+      });
+    } else {
+      const sectionStatusMap = {
+        repertoire: s.repertoire ? "Complete" : nextIncomplete?.key === "repertoire" ? "Next" : "Missing",
+        instrumentation: s.instrumentation ? "Complete" : nextIncomplete?.key === "instrumentation" ? "Next" : "Missing",
+        "instrumentation-notes": "Optional",
+        rule3c: "Review",
+        seating: s.seating ? "Complete" : nextIncomplete?.key === "seating" ? "Next" : "Missing",
+        percussion: s.percussion ? "Complete" : nextIncomplete?.key === "percussion" ? "Next" : "Missing",
+        lunch: s.lunch ? "Complete" : nextIncomplete?.key === "lunch" ? "Next" : "Missing",
+      };
+      Object.entries(sectionStatusMap).forEach(([key, value]) => {
+        const chip = document.querySelector(`[data-director-section-status="${key}"]`);
+        if (!chip) return;
+        chip.textContent = value;
+        chip.className = "director-section-status";
+        chip.classList.add(`is-${String(value).toLowerCase().replace(/\s+/g, "-")}`);
+      });
+    }
     const nextPanelKey = nextIncomplete
       ? ({
           ensemble: "rule3c",

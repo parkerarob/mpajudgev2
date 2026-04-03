@@ -12,18 +12,12 @@ function makeMockEls(overrides = {}) {
   return {
     adminViewEvents: { classList: { contains: () => false, toggle: () => {}, add: () => {} } },
     preEventFlowPanel: { classList: { add: () => {} } },
-    adminRegisteredEnsemblesSection: { classList: { toggle: () => {} } },
-    adminParticipationSummarySection: { classList: { toggle: () => {} } },
-    adminScheduleSection: { classList: { toggle: () => {} } },
-    adminPizzaTotalsSection: { classList: { toggle: () => {} } },
-    adminPizzaBySchoolSection: { classList: { toggle: () => {} } },
-    adminSchoolDetailSection: { classList: { toggle: () => {} } },
+    preEventSubtabBar: { classList: { toggle: () => {} } },
+    adminRegisteredEnsemblesSection: { classList: { toggle: () => {}, add: () => {} } },
+    adminScheduleBuilderSection: { classList: { add: () => {}, toggle: () => {} } },
+    adminSchoolDetailSection: { classList: { toggle: () => {}, add: () => {} } },
     adminRegisteredEnsemblesList: { innerHTML: "" },
-    adminParticipationSummaryHint: { textContent: "" },
-    adminParticipationSummaryStats: { innerHTML: "" },
-    adminParticipationSummaryBody: { innerHTML: "" },
-    adminPizzaTotalsHint: { textContent: "" },
-    adminPizzaBySchoolHint: { textContent: "" },
+    adminSchoolDetailHint: { textContent: "" },
     ...overrides,
   };
 }
@@ -40,48 +34,34 @@ describe("createAdminPreEventController safe mode (regression: P0 ReferenceError
     expect(() => controller.render({ showSchoolDetail: false, heavyLoaded: false })).not.toThrow();
   });
 
-  it("writes safe mode copy to els.adminParticipationSummaryHint", () => {
+  it("writes safe mode copy to the registered ensembles list", () => {
     const els = makeMockEls();
     const controller = createAdminPreEventController({
       els,
       renderAdminSchoolDetail: () => {},
       renderRegisteredEnsemblesList: () => {},
-      renderAdminPizzaTotals: () => {},
+      renderScheduleBuilder: () => {},
     });
     controller.render({ showSchoolDetail: false, heavyLoaded: false });
-    expect(els.adminParticipationSummaryHint.textContent).toBe(
-      "Admin safe mode is on. Load this view to refresh participation totals."
-    );
+    expect(els.adminRegisteredEnsemblesList.innerHTML).toContain("Safe mode");
   });
 
-  it("writes safe mode markup to els.adminParticipationSummaryStats", () => {
+  it("writes safe mode copy to the school detail hint when school detail is visible", () => {
     const els = makeMockEls();
     const controller = createAdminPreEventController({
       els,
       renderAdminSchoolDetail: () => {},
       renderRegisteredEnsemblesList: () => {},
-      renderAdminPizzaTotals: () => {},
+      renderScheduleBuilder: () => {},
     });
-    controller.render({ showSchoolDetail: false, heavyLoaded: false });
-    expect(els.adminParticipationSummaryStats.innerHTML).toContain("Safe mode");
+    controller.render({ showSchoolDetail: true, heavyLoaded: false });
+    expect(els.adminSchoolDetailHint.textContent).toContain("Safe mode active");
   });
 
-  it("writes safe mode markup to els.adminParticipationSummaryBody", () => {
-    const els = makeMockEls();
-    const controller = createAdminPreEventController({
-      els,
-      renderAdminSchoolDetail: () => {},
-      renderRegisteredEnsemblesList: () => {},
-      renderAdminPizzaTotals: () => {},
-    });
-    controller.render({ showSchoolDetail: false, heavyLoaded: false });
-    expect(els.adminParticipationSummaryBody.innerHTML).toContain("Safe mode");
-  });
-
-  it("hides participation summary section when school detail is shown", () => {
+  it("hides the subtab bar when school detail is shown", () => {
     const toggleCalls = [];
     const els = makeMockEls({
-      adminParticipationSummarySection: {
+      preEventSubtabBar: {
         classList: { toggle: (cls, val) => toggleCalls.push({ cls, val }) },
       },
     });
@@ -89,7 +69,7 @@ describe("createAdminPreEventController safe mode (regression: P0 ReferenceError
       els,
       renderAdminSchoolDetail: () => {},
       renderRegisteredEnsemblesList: () => {},
-      renderAdminPizzaTotals: () => {},
+      renderScheduleBuilder: () => {},
     });
     controller.render({ showSchoolDetail: true, heavyLoaded: false });
     expect(toggleCalls).toContainEqual({ cls: "is-hidden", val: true });

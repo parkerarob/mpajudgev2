@@ -15,7 +15,7 @@ import {
 describe("readiness walkthrough helpers", () => {
   it("exposes a stable 4-step walkthrough key list", () => {
     expect(WALKTHROUGH_STEP_KEYS).toEqual([
-      "rehearsalComplete",
+      "eventRunthroughComplete",
       "judgeAudioCheck",
       "directorVisibilityCheck",
       "releaseGateCheck",
@@ -24,7 +24,7 @@ describe("readiness walkthrough helpers", () => {
 
   it("counts complete steps only", () => {
     const steps = {
-      rehearsalComplete: { status: "complete" },
+      eventRunthroughComplete: { status: "complete" },
       judgeAudioCheck: { status: "incomplete" },
       directorVisibilityCheck: { status: "COMPLETE" },
     };
@@ -35,7 +35,7 @@ describe("readiness walkthrough helpers", () => {
     expect(
       resolveWalkthroughStatusLabel({
         steps: {
-          rehearsalComplete: { status: "complete" },
+          eventRunthroughComplete: { status: "complete" },
           judgeAudioCheck: { status: "complete" },
           directorVisibilityCheck: { status: "complete" },
           releaseGateCheck: { status: "complete" },
@@ -57,7 +57,7 @@ describe("readiness walkthrough helpers", () => {
   it("resolves In Progress when steps are complete but walkthrough status not complete", () => {
     expect(
       resolveWalkthroughStatusLabel({
-        steps: { rehearsalComplete: { status: "complete" } },
+        steps: { eventRunthroughComplete: { status: "complete" } },
         walkthrough: { status: "in-progress" },
       })
     ).toBe("In Progress");
@@ -66,7 +66,7 @@ describe("readiness walkthrough helpers", () => {
   it("builds deterministic summary text", () => {
     const summary = buildWalkthroughSummary({
       steps: {
-        rehearsalComplete: { status: "complete" },
+        eventRunthroughComplete: { status: "complete" },
       },
       walkthrough: { status: "in-progress" },
     });
@@ -85,25 +85,23 @@ describe("readiness walkthrough helpers", () => {
     expect(isMissingWalkthroughCallableError({ code: "functions/internal" })).toBe(false);
   });
 
-  it("builds fallback checks with walkthrough blocker for live events", () => {
+  it("builds fallback checks with walkthrough blocker when walkthrough steps are not ready", () => {
     const checks = buildFallbackReadinessChecks({
       assignmentsComplete: true,
-      isLiveEvent: true,
       walkthroughStepsReady: false,
     });
     const walkthroughCheck = checks.find((check) => check.key === "walkthroughComplete");
     expect(walkthroughCheck?.pass).toBe(false);
   });
 
-  it("passes walkthrough fallback check automatically for rehearsal events", () => {
+  it("passes walkthrough fallback check when walkthrough steps are ready", () => {
     const checks = buildFallbackReadinessChecks({
       assignmentsComplete: true,
-      isLiveEvent: false,
-      walkthroughStepsReady: false,
+      walkthroughStepsReady: true,
     });
     const walkthroughCheck = checks.find((check) => check.key === "walkthroughComplete");
     expect(walkthroughCheck?.pass).toBe(true);
-    expect(walkthroughCheck?.message).toContain("not required for rehearsal events");
+    expect(walkthroughCheck?.message).toContain("All walkthrough checkpoints are complete");
   });
 
   it("returns fallback checks when preflight checks are empty", () => {
@@ -199,50 +197,38 @@ describe("readiness walkthrough helpers", () => {
   });
 
   it("computes disabled readiness controls when no active event", () => {
-    const state = computeReadinessControlState({
+    const controlState = computeReadinessControlState({
       hasActiveEvent: false,
       readinessInFlight: false,
-      isRehearsalEvent: false,
     });
-    expect(state.runPreflight.disabled).toBe(true);
-    expect(state.runPreflight.title).toContain("Set an active event");
-    expect(state.cleanupRehearsal.disabled).toBe(true);
-    expect(state.readinessStepsDisabled).toBe(true);
-    expect(state.readinessOpenViewDisabled).toBe(true);
+    expect(controlState.runPreflight.disabled).toBe(true);
+    expect(controlState.runPreflight.title).toContain("Set an active event");
+    expect(controlState.walkthroughStart.disabled).toBe(true);
+    expect(controlState.walkthroughReset.disabled).toBe(true);
+    expect(controlState.readinessStepsDisabled).toBe(true);
+    expect(controlState.readinessOpenViewDisabled).toBe(true);
   });
 
-  it("computes live-event cleanup restriction when active and idle", () => {
-    const state = computeReadinessControlState({
+  it("enables readiness controls when an active event is idle", () => {
+    const controlState = computeReadinessControlState({
       hasActiveEvent: true,
       readinessInFlight: false,
-      isRehearsalEvent: false,
     });
-    expect(state.runPreflight.disabled).toBe(false);
-    expect(state.cleanupRehearsal.disabled).toBe(true);
-    expect(state.cleanupRehearsal.title).toContain("only for rehearsal events");
-    expect(state.walkthroughStart.disabled).toBe(false);
-  });
-
-  it("enables rehearsal cleanup when active rehearsal event is idle", () => {
-    const state = computeReadinessControlState({
-      hasActiveEvent: true,
-      readinessInFlight: false,
-      isRehearsalEvent: true,
-    });
-    expect(state.cleanupRehearsal.disabled).toBe(false);
-    expect(state.cleanupRehearsal.title).toBe("");
+    expect(controlState.runPreflight.disabled).toBe(false);
+    expect(controlState.runPreflight.title).toBe("");
+    expect(controlState.walkthroughStart.disabled).toBe(false);
+    expect(controlState.walkthroughReset.disabled).toBe(false);
   });
 
   it("computes global lock state while readiness action is in flight", () => {
-    const state = computeReadinessControlState({
+    const controlState = computeReadinessControlState({
       hasActiveEvent: true,
       readinessInFlight: true,
-      isRehearsalEvent: true,
     });
-    expect(state.runPreflight.disabled).toBe(true);
-    expect(state.cleanupRehearsal.disabled).toBe(true);
-    expect(state.walkthroughStart.disabled).toBe(true);
-    expect(state.readinessStepsDisabled).toBe(true);
-    expect(state.readinessOpenViewDisabled).toBe(true);
+    expect(controlState.runPreflight.disabled).toBe(true);
+    expect(controlState.walkthroughStart.disabled).toBe(true);
+    expect(controlState.walkthroughReset.disabled).toBe(true);
+    expect(controlState.readinessStepsDisabled).toBe(true);
+    expect(controlState.readinessOpenViewDisabled).toBe(true);
   });
 });

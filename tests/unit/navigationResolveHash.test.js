@@ -39,16 +39,16 @@ afterEach(() => {
 });
 
 describe("resolveHash", () => {
-  it("resolves readiness admin route (legacy alias → preEvent)", () => {
+  it("resolves readiness admin route (legacy alias → eventPrep)", () => {
     const resolved = resolveHash("#admin/readiness");
     expect(resolved).toEqual({
       type: "tab",
       tab: "admin",
-      adminView: "preEvent",
+      adminView: "eventPrep",
     });
   });
 
-  it("falls back to dashboard when live route is disabled", () => {
+  it("falls back to eventPrep when live route is disabled", () => {
     mockState.app.features = {
       ...mockState.app.features,
       enableAdminLiveEvent: false,
@@ -57,11 +57,11 @@ describe("resolveHash", () => {
     expect(resolved).toEqual({
       type: "tab",
       tab: "admin",
-      adminView: "dashboard",
+      adminView: "eventPrep",
     });
   });
 
-  it("falls back to dashboard when settings/directory route is disabled", () => {
+  it("falls back to eventDay when settings/directory route is disabled", () => {
     mockState.app.features = {
       ...mockState.app.features,
       enableAdminSettings: false,
@@ -70,11 +70,11 @@ describe("resolveHash", () => {
     expect(resolved).toEqual({
       type: "tab",
       tab: "admin",
-      adminView: "dashboard",
+      adminView: "eventDay",
     });
   });
 
-  it("routes judge-open hash to admin dashboard when judge-open is disabled", () => {
+  it("routes judge-open hash to admin eventDay when judge-open is disabled", () => {
     mockState.app.features = {
       ...mockState.app.features,
       enableJudgeOpen: false,
@@ -83,7 +83,7 @@ describe("resolveHash", () => {
     expect(resolved).toEqual({
       type: "tab",
       tab: "admin",
-      adminView: "dashboard",
+      adminView: "eventDay",
     });
   });
 

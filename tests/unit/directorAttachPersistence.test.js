@@ -20,20 +20,19 @@ describe("resolveAdminDirectorPersistPrimary", () => {
 
 describe("resolveAdminDirectorReturnView", () => {
   it("returns known admin views", () => {
-    expect(resolveAdminDirectorReturnView("preEvent")).toBe("preEvent");
-    expect(resolveAdminDirectorReturnView("liveEvent")).toBe("liveEvent");
-    expect(resolveAdminDirectorReturnView("packets")).toBe("packets");
-    expect(resolveAdminDirectorReturnView("readiness")).toBe("readiness");
-    expect(resolveAdminDirectorReturnView("settings")).toBe("settings");
+    expect(resolveAdminDirectorReturnView("eventPrep")).toBe("eventPrep");
+    expect(resolveAdminDirectorReturnView("eventDay")).toBe("eventDay");
+    expect(resolveAdminDirectorReturnView("setup")).toBe("setup");
+    expect(resolveAdminDirectorReturnView("directory")).toBe("directory");
   });
 
-  it("falls back to preEvent for unknown views", () => {
-    expect(resolveAdminDirectorReturnView("unknown")).toBe("preEvent");
-    expect(resolveAdminDirectorReturnView("")).toBe("preEvent");
+  it("falls back to eventPrep for unknown views", () => {
+    expect(resolveAdminDirectorReturnView("unknown")).toBe("eventPrep");
+    expect(resolveAdminDirectorReturnView("")).toBe("eventPrep");
   });
 
   it("uses a valid custom fallback when provided", () => {
-    expect(resolveAdminDirectorReturnView("unknown", "packets")).toBe("packets");
-    expect(resolveAdminDirectorReturnView("unknown", "bad")).toBe("preEvent");
+    expect(resolveAdminDirectorReturnView("unknown", "eventDay")).toBe("eventDay");
+    expect(resolveAdminDirectorReturnView("unknown", "bad")).toBe("eventPrep");
   });
 });

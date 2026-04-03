@@ -28,16 +28,16 @@ describe("callable auth contract coverage", () => {
     expect(block).toContain('String(exportData.status || "") !== "ready"');
   });
 
-  it("release/unrelease and lock/unlock critical transitions require ops lead", () => {
+  it("release/unrelease and lock/unlock critical transitions require admin access", () => {
     const releaseBlock = getExportBlock("releasePacket");
     const unreleaseBlock = getExportBlock("unreleasePacket");
     const lockBlock = getExportBlock("lockSubmission");
     const unlockBlock = getExportBlock("unlockSubmission");
 
-    expect(releaseBlock).toContain("await assertOpsLead(request)");
-    expect(unreleaseBlock).toContain("await assertOpsLead(request)");
-    expect(lockBlock).toContain("await assertOpsLead(request)");
-    expect(unlockBlock).toContain("await assertOpsLead(request)");
+    expect(releaseBlock).toContain("await assertAdmin(request)");
+    expect(unreleaseBlock).toContain("await assertAdmin(request)");
+    expect(lockBlock).toContain("await assertAdmin(request)");
+    expect(unlockBlock).toContain("await assertAdmin(request)");
   });
 
   it("repairDirectorEntrySchoolMismatch enforces auth and director/admin access", () => {
@@ -48,16 +48,16 @@ describe("callable auth contract coverage", () => {
     expect(block).toContain("Director is not attached to a school.");
   });
 
-  it("raw assessment admin transitions require ops lead and explicit identifiers", () => {
+  it("raw assessment admin transitions require admin access and explicit identifiers", () => {
     const officializeBlock = getExportBlock("officializeRawAssessment");
     const excludeBlock = getExportBlock("excludeRawAssessment");
     const reassignBlock = getExportBlock("reassignRawAssessment");
 
-    expect(officializeBlock).toContain("await assertOpsLead(request)");
+    expect(officializeBlock).toContain("await assertAdmin(request)");
     expect(officializeBlock).toContain("rawAssessmentId, eventId, ensembleId, and judgePosition are required.");
-    expect(excludeBlock).toContain("await assertOpsLead(request)");
+    expect(excludeBlock).toContain("await assertAdmin(request)");
     expect(excludeBlock).toContain("rawAssessmentId is required.");
-    expect(reassignBlock).toContain("await assertOpsLead(request)");
+    expect(reassignBlock).toContain("await assertAdmin(request)");
     expect(reassignBlock).toContain("rawAssessmentId, eventId, ensembleId, and judgePosition are required.");
   });
 

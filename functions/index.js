@@ -44,12 +44,8 @@ const ADJUDICATION_MODES = {
   practice: "practice",
   official: "official",
 };
-const EVENT_MODES = {
-  live: "live",
-  rehearsal: "rehearsal",
-};
 const READINESS_STEP_ORDER = [
-  "rehearsalComplete",
+  "eventRunthroughComplete",
   "judgeAudioCheck",
   "directorVisibilityCheck",
   "releaseGateCheck",
@@ -1689,12 +1685,6 @@ function detectJudgePositionFromAssignments(assignments, uid) {
   if (assignments.stage3Uid === uid) return JUDGE_POSITIONS.stage3;
   if (assignments.sightUid === uid) return JUDGE_POSITIONS.sight;
   return null;
-}
-
-function normalizeEventMode(value) {
-  return String(value || "").trim().toLowerCase() === EVENT_MODES.rehearsal ?
-    EVENT_MODES.rehearsal :
-    EVENT_MODES.live;
 }
 
 function normalizeAssignmentUid(value) {
@@ -5369,7 +5359,6 @@ exports.runEventPreflight = onCall(async (request) => {
   const walkthroughComplete = READINESS_STEP_ORDER.every(
       (key) => String(readinessSteps?.[key]?.status || "").trim().toLowerCase() === "complete",
   );
-  const isLiveEvent = normalizeEventMode(event.eventMode) === EVENT_MODES.live;
   const assignments = assignmentsSnap.exists ? (assignmentsSnap.data() || {}) : {};
   const assignmentChecks = buildAssignmentChecks(assignments);
   const assignedUids = [assignmentChecks.stage1Uid, assignmentChecks.stage2Uid, assignmentChecks.stage3Uid, assignmentChecks.sightUid]
@@ -5497,12 +5486,10 @@ exports.runEventPreflight = onCall(async (request) => {
     {
       key: "walkthroughComplete",
       label: "Readiness walkthrough is complete",
-      pass: isLiveEvent ? walkthroughComplete : true,
-      message: isLiveEvent ?
-        (walkthroughComplete ?
-          "All walkthrough checkpoints are complete." :
-          "Complete all walkthrough checkpoints in Admin > Readiness.") :
-        "Walkthrough completion is not required for rehearsal events.",
+      pass: walkthroughComplete,
+      message: walkthroughComplete ?
+        "All walkthrough checkpoints are complete." :
+        "Complete all walkthrough checkpoints in Admin > Readiness.",
     },
   ];
   const blockers = checks
@@ -5546,7 +5533,7 @@ exports.runEventPreflight = onCall(async (request) => {
     (existingStartedBy || request.auth.uid) :
     "";
   await eventRef.set({
-    eventMode: normalizeEventMode(event.eventMode),
+    eventMode: "live",
     readinessState: {
       preflight,
       walkthrough: {
@@ -6012,133 +5999,6 @@ exports.cleanupTestArtifacts = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request
   }
 
   return summary;
-});
-
-exports.cleanupRehearsalArtifacts = onCall(async (request) => {
-  await assertAdmin(request);
-  const data = request.data || {};
-  const eventId = String(data.eventId || "").trim();
-  if (!eventId) {
-    throw new HttpsError("invalid-argument", "eventId is required.");
-  }
-  const db = admin.firestore();
-  const bucket = admin.storage().bucket();
-  const eventRef = db.collection(COLLECTIONS.events).doc(eventId);
-  const eventSnap = await eventRef.get();
-  if (!eventSnap.exists) {
-    throw new HttpsError("not-found", "Event not found.");
-  }
-  const event = eventSnap.data() || {};
-  if (normalizeEventMode(event.eventMode) !== EVENT_MODES.rehearsal) {
-    throw new HttpsError(
-        "failed-precondition",
-        "Cleanup is limited to rehearsal events.",
-    );
-  }
-
-  let deletedOpenPackets = 0;
-  let skippedReleasedOpenPackets = 0;
-  let deletedOpenPacketSessions = 0;
-  let deletedOpenPacketAuditDocs = 0;
-  let deletedScheduledPackets = 0;
-  let skippedReleasedScheduledPackets = 0;
-  let deletedSubmissions = 0;
-  let deletedOfficialAssessments = 0;
-  let deletedPacketExports = 0;
-
-  const [assignmentPacketsSnap, officialPacketsSnap] = await Promise.all([
-    db.collection(COLLECTIONS.packets)
-        .where(FIELDS.packets.assignmentEventId, "==", eventId)
-        .get(),
-    db.collection(COLLECTIONS.packets)
-        .where(FIELDS.packets.officialEventId, "==", eventId)
-        .get(),
-  ]);
-  const openPacketDocs = new Map();
-  assignmentPacketsSnap.docs.forEach((docSnap) => openPacketDocs.set(docSnap.id, docSnap));
-  officialPacketsSnap.docs.forEach((docSnap) => openPacketDocs.set(docSnap.id, docSnap));
-  for (const packetDoc of openPacketDocs.values()) {
-    const packet = packetDoc.data() || {};
-    if (isReleasedOpenPacketStatus(packet.status)) {
-      skippedReleasedOpenPackets += 1;
-      continue;
-    }
-    const deletionResult = await deleteOpenPacketDocument({
-      db,
-      bucket,
-      packetRef: packetDoc.ref,
-      packet,
-      packetId: packetDoc.id,
-    });
-    deletedOpenPackets += 1;
-    deletedOpenPacketSessions += deletionResult.deletedSessionCount;
-    deletedOpenPacketAuditDocs += deletionResult.deletedAuditCount;
-  }
-
-  const [submissionsSnap, officialAssessmentsSnap] = await Promise.all([
-    db
-        .collection(COLLECTIONS.submissions)
-        .where(FIELDS.submissions.eventId, "==", eventId)
-        .get(),
-    db
-        .collection(COLLECTIONS.officialAssessments)
-        .where(FIELDS.officialAssessments.eventId, "==", eventId)
-        .get(),
-  ]);
-  const scheduledGroups = new Map();
-  const registerScheduledGroup = (item = {}) => {
-    const ensembleId = String(item.ensembleId || "").trim();
-    if (!ensembleId) return;
-    if (!scheduledGroups.has(ensembleId)) {
-      scheduledGroups.set(ensembleId, {ensembleId, hasReleased: false});
-    }
-    if (item.status === STATUSES.released) {
-      scheduledGroups.get(ensembleId).hasReleased = true;
-    }
-  };
-  submissionsSnap.forEach((docSnap) => registerScheduledGroup(docSnap.data() || {}));
-  officialAssessmentsSnap.forEach((docSnap) => registerScheduledGroup(docSnap.data() || {}));
-  for (const group of scheduledGroups.values()) {
-    if (group.hasReleased) {
-      skippedReleasedScheduledPackets += 1;
-      continue;
-    }
-    const result = await deleteScheduledPacketGroup({
-      db,
-      eventId,
-      ensembleId: group.ensembleId,
-    });
-    if (!result.found || result.hasReleased) {
-      if (result.hasReleased) skippedReleasedScheduledPackets += 1;
-      continue;
-    }
-    if (result.deletedSubmissions > 0 || result.deletedOfficialAssessments > 0) {
-      deletedScheduledPackets += 1;
-      deletedSubmissions += result.deletedSubmissions;
-      deletedOfficialAssessments += result.deletedOfficialAssessments;
-      deletedPacketExports += result.deletedPacketExport;
-    }
-  }
-
-  await eventRef.set({
-    readinessState: {
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-  }, {merge: true});
-
-  return {
-    ok: true,
-    eventId,
-    deletedOpenPackets,
-    skippedReleasedOpenPackets,
-    deletedOpenPacketSessions,
-    deletedOpenPacketAuditDocs,
-    deletedScheduledPackets,
-    skippedReleasedScheduledPackets,
-    deletedSubmissions,
-    deletedOfficialAssessments,
-    deletedPacketExports,
-  };
 });
 
 exports.deleteAllUnreleasedPackets = onCall(APPCHECK_SENSITIVE_OPTIONS, async (request) => {

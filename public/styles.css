@@ -1313,42 +1313,6 @@ h3 {
   resize: vertical;
 }
 
-.admin-pizza-totals-table {
-  min-height: 48px;
-}
-
-.admin-pizza-totals-grid {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.admin-pizza-totals-row {
-  display: grid;
-  grid-template-columns: 2fr repeat(3, 1fr);
-  gap: 0.75rem;
-  padding: 0.35rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.admin-pizza-totals-row:last-child {
-  border-bottom: none;
-}
-
-.admin-pizza-totals-row--header {
-  font-size: var(--text-xs);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.admin-pizza-totals-value {
-  text-align: right;
-}
-
-.admin-pizza-totals-value--total {
-  font-weight: 600;
-}
-
 .gap-sm {
   gap: var(--space-2);
 }
@@ -2250,17 +2214,6 @@ body.judge-open-recording-safe .level-meter {
   color: var(--text);
   font-size: var(--text-sm);
   font-family: var(--font-ui);
-}
-
-#eventModeBanner {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-#eventModeBanner.is-hidden {
-  display: none;
 }
 
 button.ghost.is-done {

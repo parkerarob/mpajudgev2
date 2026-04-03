@@ -1,5 +1,5 @@
 export const WALKTHROUGH_STEP_KEYS = [
-  "rehearsalComplete",
+  "eventRunthroughComplete",
   "judgeAudioCheck",
   "directorVisibilityCheck",
   "releaseGateCheck",
@@ -34,7 +34,6 @@ export function buildWalkthroughSummary({ steps, walkthrough } = {}) {
 
 export function buildFallbackReadinessChecks({
   assignmentsComplete = false,
-  isLiveEvent = true,
   walkthroughStepsReady = false,
 } = {}) {
   return [
@@ -53,12 +52,10 @@ export function buildFallbackReadinessChecks({
     {
       key: "walkthroughComplete",
       label: "Readiness walkthrough is complete",
-      pass: isLiveEvent ? Boolean(walkthroughStepsReady) : true,
-      message: isLiveEvent ?
-        (walkthroughStepsReady ?
-          "All walkthrough checkpoints are complete." :
-          "Complete all walkthrough checkpoints in Admin > Readiness.") :
-        "Walkthrough completion is not required for rehearsal events.",
+      pass: Boolean(walkthroughStepsReady),
+      message: walkthroughStepsReady ?
+        "All walkthrough checkpoints are complete." :
+        "Complete all walkthrough checkpoints in Admin > Readiness.",
     },
   ];
 }
@@ -109,12 +106,10 @@ export function shouldRetryBulkResetCallable({
 export function computeReadinessControlState({
   hasActiveEvent = false,
   readinessInFlight = false,
-  isRehearsalEvent = false,
 } = {}) {
   if (!hasActiveEvent) {
     return {
       runPreflight: { disabled: true, title: "Set an active event first." },
-      cleanupRehearsal: { disabled: true, title: "Set an active event first." },
       walkthroughStart: { disabled: true, title: "Set an active event first." },
       walkthroughReset: { disabled: true, title: "Set an active event first." },
       readinessStepsDisabled: true,
@@ -126,12 +121,6 @@ export function computeReadinessControlState({
     runPreflight: {
       disabled: busy,
       title: busy ? "Readiness action in progress." : "",
-    },
-    cleanupRehearsal: {
-      disabled: busy || !isRehearsalEvent,
-      title: busy ?
-        "Readiness action in progress." :
-        (isRehearsalEvent ? "" : "Cleanup is available only for rehearsal events."),
     },
     walkthroughStart: {
       disabled: busy,

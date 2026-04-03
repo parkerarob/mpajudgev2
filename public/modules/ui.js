@@ -20,7 +20,6 @@ import {
   createEvent,
   createScheduleEntry,
   generateOpenPacketPrintAsset,
-  cleanupRehearsalArtifacts,
   deleteUserAccount,
   updateUserDisplayName,
   saveJudgeBio,
@@ -51,9 +50,6 @@ import {
   deleteSchool,
   assignDirectorSchool,
   getPacketData,
-  getLunchTotalsBySchool,
-  getLunchTotalsByDay,
-  importConfirmedScheduleRows,
   publishPublicProgram,
   publishEventResultsOverviewPdf,
   regenerateDirectorPacketExport,
@@ -251,12 +247,9 @@ import {
   computeEnsembleCheckinProgress,
 } from "./ui-admin-formatters.js";
 import {
-  buildConfirmedSchedulePreview,
   buildProgramCsv,
   buildProgramHtml,
   buildProgramRows,
-  parseConfirmedScheduleCsv,
-  summarizeConfirmedSchedulePreview,
 } from "./admin-event-tools.js";
 
 export function alertUser(message) {
@@ -1780,7 +1773,6 @@ export function updateAuthUI() {
       }
       els.authIdentityBanner.classList.remove("is-hidden");
     }
-    updateEventModeBanner();
     if (els.headerAuthButtons) {
       if (els.signOutBtn.parentElement !== els.headerAuthButtons) {
         els.headerAuthButtons.appendChild(els.signOutBtn);
@@ -1833,7 +1825,6 @@ export function updateAuthUI() {
     if (els.authIdentityBanner) {
       els.authIdentityBanner.classList.add("is-hidden");
     }
-    updateEventModeBanner();
     if (els.modalAuthActions && els.signOutBtn.parentElement !== els.modalAuthActions) {
       els.modalAuthActions.appendChild(els.signOutBtn);
     }
@@ -2173,7 +2164,6 @@ function getAdminHandlerBinder() {
     runEventPreflight,
     markReadinessStep,
     setReadinessWalkthrough,
-    cleanupRehearsalArtifacts,
     renderAdminReadinessView,
     scheduleAdminPreflightRefresh,
     showStatusMessage,
@@ -2183,7 +2173,6 @@ function getAdminHandlerBinder() {
     deleteSchool,
     deleteEnsemble,
     bulkImportSchools,
-    importConfirmedScheduleRows,
     provisionUser,
     updateUserDisplayName,
     deleteUserAccount,
@@ -2196,9 +2185,6 @@ function getAdminHandlerBinder() {
     unassignDirectorSchool,
     fetchRegisteredEnsembles,
     fetchScheduleEntries,
-    parseConfirmedScheduleCsv,
-    buildConfirmedSchedulePreview,
-    summarizeConfirmedSchedulePreview,
     buildProgramRows,
     buildProgramCsv,
     buildProgramHtml,
@@ -2281,8 +2267,6 @@ function getAdminRenderers() {
     createScheduleEntry,
     deleteScheduleEntry,
     updateScheduleEntryTime,
-    getLunchTotalsByDay,
-    getLunchTotalsBySchool,
     updateEntryFields,
     computeScheduleTimeline,
     formatAdminDayOfReadOnly,
@@ -2725,14 +2709,12 @@ function applyAdminView(view) {
   return getAdminViewController().applyAdminView(view);
 }
 
-function renderAdminDashboard() {
-  return getAdminViewController().renderDashboardView();
-}
-
 function updateTabUI(tabName, role) {
   if (tabName === "judge-open" && state.app.features?.enableJudgeOpen === false) {
     setTab("admin", { force: true });
-    const adminHash = getAdminHashForView("dashboard");
+    const adminHash = getAdminHashForView(
+      isAdminLiveEventEnabled() ? "eventDay" : "eventPrep"
+    );
     if (window.location.hash !== adminHash) window.location.hash = adminHash;
     return;
   }
@@ -2825,7 +2807,7 @@ export function setTab(tabName, { force } = {}) {
     state.director.adminLaunchContext = null;
   }
   if (tabName === "admin" && state.app.currentTab !== "admin") {
-    state.admin.currentView = "dashboard";
+    state.admin.currentView = isAdminLiveEventEnabled() ? "eventDay" : "eventPrep";
   }
   const result = setTabState(tabName, { force });
   if (!result.changed) return result;
@@ -3164,12 +3146,12 @@ export function handleHashChange() {
       const nextAdminView = resolveAdminView(action.adminView, {
         liveEnabled: isAdminLiveEventEnabled(),
         settingsEnabled: isAdminSettingsEnabled(),
-        fallback: "dashboard",
+        fallback: isAdminLiveEventEnabled() ? "eventDay" : "eventPrep",
       });
       const activeView = resolveAdminView(state.admin.currentView, {
         liveEnabled: isAdminLiveEventEnabled(),
         settingsEnabled: isAdminSettingsEnabled(),
-        fallback: "dashboard",
+        fallback: isAdminLiveEventEnabled() ? "eventDay" : "eventPrep",
       });
       if (state.admin.readinessInFlight && nextAdminView !== activeView) {
         const activeHash = getAdminHashForView(activeView);
@@ -3195,9 +3177,9 @@ export function updateRoleUI() {
     if (els.judgeOpenCard) els.judgeOpenCard.style.display = "none";
     if (els.directorCard) els.directorCard.style.display = "none";
     els.tabButtons.forEach((button) => {
-      button.setAttribute("aria-selected", "false");
-      button.disabled = true;
-      button.hidden = false;
+        button.setAttribute("aria-selected", "false");
+        button.disabled = true;
+        button.hidden = false;
     });
     setRoleHint("Sign in with your provisioned account.");
     setProvisioningNotice("");
@@ -3425,27 +3407,23 @@ export function startWatchers() {
   const onRosterUpdate = (entries) => {
     if (state.app.currentTab !== "admin") return;
     const shouldRenderScheduleData =
-      (state.admin.currentView === "dashboard" || state.admin.currentView === "preEvent") &&
-      isAdminHeavyViewLoaded("preEvent") &&
+      state.admin.currentView === "eventPrep" &&
+      isAdminHeavyViewLoaded("eventPrep") &&
       !isAdminSchoolDetailOpen();
     if (shouldRenderScheduleData) {
       renderAdminScheduleList(entries);
     }
-    if (state.admin.currentView === "dashboard") {
-      renderAdminDashboard();
-    }
-    if (state.admin.currentView === "preEvent" && isAdminHeavyViewLoaded("preEvent")) {
+    if (state.admin.currentView === "eventPrep" && isAdminHeavyViewLoaded("eventPrep")) {
       if (isAdminSchoolDetailOpen()) {
         renderAdminSchoolDetail();
       } else {
         renderRegisteredEnsemblesList();
       }
     }
-    if (liveEnabled && state.admin.currentView === "liveEvent" && isAdminHeavyViewLoaded("liveEvent")) {
+    if (liveEnabled && state.admin.currentView === "eventDay" && isAdminHeavyViewLoaded("eventDay")) {
       renderLiveEventCheckinQueue();
-    }
-    if (state.admin.currentView === "results") {
       renderAdminPacketsBySchedule();
+      renderAdminLiveSubmissions();
     }
     if (state.admin.currentView === "announcer") {
       renderAdminAnnouncerView();
@@ -3461,19 +3439,14 @@ export function startWatchers() {
     if (settingsEnabled && state.app.currentTab === "admin" && state.admin.currentView === "setup") {
       renderEventList();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "dashboard") {
-      renderAdminDashboard();
+    if (state.app.currentTab === "admin" && state.admin.currentView === "eventPrep" && !isAdminSchoolDetailOpen()) {
+      if (isAdminHeavyViewLoaded("eventPrep")) renderRegisteredEnsemblesList();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent" && !isAdminSchoolDetailOpen()) {
-      if (isAdminHeavyViewLoaded("preEvent")) renderRegisteredEnsemblesList();
-    }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "results") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "eventDay") {
       renderAdminPacketsBySchedule();
-    }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "liveEvent") {
       renderAdminLiveSubmissions();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "eventPrep") {
       renderAdminReadinessView();
     }
     if (state.app.currentTab === "admin" && state.admin.currentView === "announcer") {
@@ -3504,12 +3477,8 @@ export function startWatchers() {
       schoolId: getDirectorSchoolId() || null,
     });
     renderActiveEventDisplay();
-    updateEventModeBanner();
     updateAdminEmptyState();
     renderDirectorEventOptions();
-    if (state.app.currentTab === "admin" && state.admin.currentView === "dashboard") {
-      renderAdminDashboard();
-    }
     if (state.app.currentTab === "admin" && state.admin.currentView === "announcer") {
       renderAdminAnnouncerView();
     }
@@ -3520,23 +3489,24 @@ export function startWatchers() {
       refreshJudgeOpenDirectorReference({ persistToPacket: true });
     }
     startActiveAssignmentsWatcher();
-    if (liveEnabled && state.app.currentTab === "admin" && state.admin.currentView === "liveEvent" && isAdminHeavyViewLoaded("liveEvent")) {
+    if (liveEnabled && state.app.currentTab === "admin" && state.admin.currentView === "eventDay" && isAdminHeavyViewLoaded("eventDay")) {
       renderLiveEventCheckinQueue();
+      renderAdminLiveSubmissions();
     }
     if (state.app.currentTab === "checkin") {
       renderCheckinView();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent" && isAdminHeavyViewLoaded("preEvent")) {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "eventPrep" && isAdminHeavyViewLoaded("eventPrep")) {
       if (isAdminSchoolDetailOpen()) {
         renderAdminSchoolDetail();
       } else {
         renderRegisteredEnsemblesList();
       }
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "results") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "eventDay") {
       renderAdminPacketsBySchedule();
     }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
+    if (state.app.currentTab === "admin" && state.admin.currentView === "eventPrep") {
       renderAdminReadinessView();
     }
     if (state.app.currentTab === "director") renderDirectorRegistrationPanel();
@@ -3556,11 +3526,10 @@ export function startWatchers() {
       }
     }
     refreshSchoolDropdowns();
-    if (liveEnabled && state.app.currentTab === "admin" && state.admin.currentView === "liveEvent") {
+    if (liveEnabled && state.app.currentTab === "admin" && state.admin.currentView === "eventDay") {
       renderLiveEventCheckinQueue();
-    }
-    if (state.app.currentTab === "admin" && state.admin.currentView === "results") {
       renderAdminPacketsBySchedule();
+      renderAdminLiveSubmissions();
     }
     if (judgeEnabled && canUseOpenJudge(state.auth.userProfile)) {
       if (state.app.currentTab === "judge-open") {
@@ -3615,10 +3584,7 @@ export function startWatchers() {
   if (getEffectiveRole(state.auth.userProfile) === "admin") {
     state.subscriptions.rawAssessments = watchRawAssessments((items) => {
       state.admin.rawAssessments = Array.isArray(items) ? items : [];
-      if (state.app.currentTab === "admin" && state.admin.currentView === "dashboard") {
-        renderAdminDashboard();
-      }
-      if (state.app.currentTab === "admin" && state.admin.currentView === "liveEvent") {
+      if (state.app.currentTab === "admin" && state.admin.currentView === "eventDay") {
         renderAdminLiveSubmissions();
       }
     });
@@ -3686,7 +3652,7 @@ export function initTabs() {
   els.tabButtons.forEach((button) => {
     button.addEventListener("click", () => {
       if (button.dataset.tab === "admin" && state.app.currentTab !== "admin") {
-        state.admin.currentView = "dashboard";
+        state.admin.currentView = isAdminLiveEventEnabled() ? "eventDay" : "eventPrep";
         if (window.location.hash !== "#admin") {
           window.location.hash = "#admin";
           return;
@@ -3710,7 +3676,7 @@ export function initTabs() {
       if (target) {
         target.focus();
         if (target.dataset.tab === "admin" && state.app.currentTab !== "admin") {
-          state.admin.currentView = "dashboard";
+          state.admin.currentView = isAdminLiveEventEnabled() ? "eventDay" : "eventPrep";
           if (window.location.hash !== "#admin") {
             window.location.hash = "#admin";
             return;
@@ -3725,7 +3691,7 @@ export function initTabs() {
       const targetTab = els.roleSwitcherSelect.value;
       if (!targetTab) return;
       if (targetTab === "admin" && state.app.currentTab !== "admin") {
-        state.admin.currentView = "dashboard";
+        state.admin.currentView = isAdminLiveEventEnabled() ? "eventDay" : "eventPrep";
         if (window.location.hash !== "#admin") {
           window.location.hash = "#admin";
           return;
@@ -3747,32 +3713,6 @@ export function updateAdminEmptyState() {
       : "No active event";
   }
   renderAdminReadiness();
-}
-
-function getEventModeLabel(eventMode) {
-  return String(eventMode || "").trim().toLowerCase() === "rehearsal" ?
-    "REHEARSAL EVENT" :
-    "LIVE EVENT";
-}
-
-function updateEventModeBanner() {
-  if (!els.eventModeBanner || !els.eventModeBannerLabel || !els.eventModeBannerDetail) return;
-  const isSignedIn = Boolean(state.auth.currentUser);
-  const event = state.event.active || null;
-  if (!isSignedIn) {
-    els.eventModeBanner.classList.add("is-hidden");
-    return;
-  }
-  if (!event) {
-    els.eventModeBanner.classList.remove("is-hidden");
-    els.eventModeBannerLabel.textContent = "NO ACTIVE EVENT";
-    els.eventModeBannerDetail.textContent = "Practice and setup actions are available.";
-    return;
-  }
-  const modeLabel = getEventModeLabel(event.eventMode);
-  els.eventModeBanner.classList.remove("is-hidden");
-  els.eventModeBannerLabel.textContent = modeLabel;
-  els.eventModeBannerDetail.textContent = `${event.name || "Active Event"}`;
 }
 
 function formatReadinessTimestamp(value) {
@@ -3827,10 +3767,7 @@ export function renderEventList() {
 
     const activeBadge = document.createElement("span");
     activeBadge.className = "badge";
-    const modeLabel = String(event.eventMode || "").trim().toLowerCase() === "rehearsal" ?
-      "Rehearsal" :
-      "Live";
-    activeBadge.textContent = `${event.isActive ? "Active" : "Inactive"} · ${modeLabel}`;
+    activeBadge.textContent = event.isActive ? "Active" : "Inactive";
 
     const activateBtn = document.createElement("button");
     activateBtn.className = "ghost";
@@ -3941,20 +3878,14 @@ export async function renderAdminReadinessView() {
   if (els.adminReadinessHistoryList) els.adminReadinessHistoryList.innerHTML = "";
   const event = state.event.active || null;
   const hasActiveEvent = Boolean(event?.id);
-  const isRehearsalEvent = String(event?.eventMode || "").trim().toLowerCase() === "rehearsal";
   const controlState = computeReadinessControlState({
     hasActiveEvent,
     readinessInFlight: state.admin.readinessInFlight,
-    isRehearsalEvent,
   });
 
   if (els.adminRunPreflightBtn) {
     els.adminRunPreflightBtn.disabled = controlState.runPreflight.disabled;
     els.adminRunPreflightBtn.title = controlState.runPreflight.title;
-  }
-  if (els.adminCleanupRehearsalBtn) {
-    els.adminCleanupRehearsalBtn.disabled = controlState.cleanupRehearsal.disabled;
-    els.adminCleanupRehearsalBtn.title = controlState.cleanupRehearsal.title;
   }
   if (els.adminWalkthroughStartBtn) {
     els.adminWalkthroughStartBtn.disabled = controlState.walkthroughStart.disabled;
@@ -3998,7 +3929,6 @@ export async function renderAdminReadinessView() {
   const walkthrough = readiness.walkthrough && typeof readiness.walkthrough === "object" ?
     readiness.walkthrough :
     {};
-  const isLiveEvent = String(event.eventMode || "").trim().toLowerCase() !== "rehearsal";
   const walkthroughStepsReady = WALKTHROUGH_STEP_KEYS.every(
     (key) => String(steps?.[key]?.status || "").trim().toLowerCase() === "complete"
   );
@@ -4008,7 +3938,6 @@ export async function renderAdminReadinessView() {
       Boolean(state.event.assignments?.stage2Uid) &&
       Boolean(state.event.assignments?.stage3Uid) &&
       Boolean(state.event.assignments?.sightUid),
-    isLiveEvent,
     walkthroughStepsReady,
   });
   const resolvedChecks = mergeReadinessChecks({
@@ -4023,14 +3952,14 @@ export async function renderAdminReadinessView() {
   els.adminReadinessPreflightSummary.textContent =
     `Preflight: ${pass ? "PASS" : "BLOCKED"} · ${passCount}/${total} checks passed${blockerSuffix}.`;
   const blockerViewByKey = {
-    activeEvent: "settings",
-    assignmentsComplete: "settings",
-    assignmentsUnique: "settings",
-    assignedUsersValid: "settings",
-    schedulePresent: "preEvent",
-    entriesPresentForScheduled: "preEvent",
-    directorEntriesReady: "preEvent",
-    walkthroughComplete: "readiness",
+    activeEvent: "setup",
+    assignmentsComplete: "setup",
+    assignmentsUnique: "setup",
+    assignedUsersValid: "setup",
+    schedulePresent: "eventPrep",
+    entriesPresentForScheduled: "eventPrep",
+    directorEntriesReady: "eventPrep",
+    walkthroughComplete: "eventPrep",
   };
 
   resolvedChecks.forEach((check) => {
@@ -4051,13 +3980,11 @@ export async function renderAdminReadinessView() {
       li.appendChild(hint);
     }
     if (!ok) {
-      const goToView = blockerViewByKey[String(check.key || "").trim()] || "preEvent";
+      const goToView = blockerViewByKey[String(check.key || "").trim()] || "eventPrep";
       const fixBtn = document.createElement("button");
       fixBtn.type = "button";
       fixBtn.className = "ghost";
-      fixBtn.textContent = goToView === "settings" ?
-        "Fix in Settings" :
-        "Fix in Registrations";
+      fixBtn.textContent = goToView === "setup" ? "Fix in Setup" : "Fix in Event Prep";
       fixBtn.addEventListener("click", () => {
         state.admin.currentView = goToView;
         applyAdminView(goToView);
@@ -4806,7 +4733,7 @@ export function renderDirectorChecklist(entry, completionState) {
 }
 
 export function renderAdminReadiness() {
-  if (state.app.currentTab === "admin" && state.admin.currentView === "preEvent") {
+  if (state.app.currentTab === "admin" && state.admin.currentView === "eventPrep") {
     return renderAdminReadinessView();
   }
   return null;
@@ -5679,7 +5606,7 @@ async function openDirectorDayOfFromAdmin({ eventId, schoolId, ensembleId }) {
   try {
     state.director.adminLaunchContext = {
       source: "admin-pre-event",
-      adminView: state.admin.currentView || "preEvent",
+      adminView: state.admin.currentView || "eventPrep",
       selectedSchoolId: state.admin.selectedSchoolId || null,
       selectedSchoolName: state.admin.selectedSchoolName || "",
       eventId: eventId || state.event.active?.id || null,
@@ -5717,11 +5644,11 @@ function returnToAdminPreEventFromDirector() {
   const context = state.director.adminLaunchContext;
   if (!context || state.auth.userProfile?.role !== "admin") return;
   const targetView = resolveAdminView(
-    resolveAdminDirectorReturnView(context.adminView, "preEvent"),
+    resolveAdminDirectorReturnView(context.adminView, "eventPrep"),
     {
       liveEnabled: isAdminLiveEventEnabled(),
       settingsEnabled: isAdminSettingsEnabled(),
-      fallback: "preEvent",
+      fallback: "eventPrep",
     }
   );
   state.director.adminViewSchoolId = null;
@@ -5737,9 +5664,9 @@ function returnToAdminPreEventFromDirector() {
     window.location.hash = targetHash;
   }
   applyAdminView(targetView);
-  if (targetView === "preEvent" && state.admin.selectedSchoolId) {
+  if (targetView === "eventPrep" && state.admin.selectedSchoolId) {
     void renderAdminSchoolDetail();
-  } else if (targetView === "preEvent") {
+  } else if (targetView === "eventPrep") {
     closeAdminSchoolDetail();
     void renderRegisteredEnsemblesList();
   }
@@ -5751,10 +5678,6 @@ async function renderAdminSchoolDetail() {
 
 async function renderAdminPacketsBySchedule() {
   return getAdminRenderers().renderAdminPacketsBySchedule();
-}
-
-async function renderAdminPizzaTotals() {
-  return getAdminRenderers().renderAdminPizzaTotals();
 }
 
 async function renderAdminLiveSubmissions() {

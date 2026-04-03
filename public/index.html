@@ -67,10 +67,6 @@
         <div class="public-program-body" id="publicProgramBody"></div>
       </section>
       <div class="notice notice--info" id="provisioningNotice" hidden role="status" aria-live="polite"></div>
-      <div class="notice notice--info is-hidden" id="eventModeBanner" role="status" aria-live="polite">
-        <strong id="eventModeBannerLabel">No Active Event</strong>
-        <span id="eventModeBannerDetail"></span>
-      </div>
       <nav class="tabs" role="tablist" aria-label="Role views">
         <button class="tab" type="button" id="adminTab" role="tab" aria-controls="adminCard" data-tab="admin" aria-selected="false">
           Admin
@@ -95,60 +91,19 @@
           </div>
           <div class="tab-header-actions">
             <span class="badge" id="adminStatusBadge">No active event</span>
+            <a class="ghost admin-subnav-link" id="adminSubnavAnnouncerLink" href="#admin/announcer">Announcer</a>
             <button type="button" class="ghost" id="adminProfileToggleBtn">Update Profile</button>
           </div>
         </div>
         <nav class="admin-subnav" id="adminSubnav" role="tablist" aria-label="Admin views">
-          <button type="button" class="admin-subnav-btn" id="adminSubnavDashboardBtn" role="tab" data-admin-view="dashboard" aria-selected="true">Dashboard</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavSetupBtn" role="tab" data-admin-view="setup" aria-selected="false">Setup</button>
           <button type="button" class="admin-subnav-btn" id="adminSubnavDirectoryBtn" role="tab" data-admin-view="directory" aria-selected="false">Directory</button>
-          <button type="button" class="admin-subnav-btn" id="adminSubnavEventChairBtn" role="tab" data-admin-view="preEvent" aria-selected="false">Pre-Event</button>
-          <button type="button" class="admin-subnav-btn" id="adminSubnavLiveBtn" role="tab" data-admin-view="liveEvent" aria-selected="false">Live Day</button>
-          <button type="button" class="admin-subnav-btn" id="adminSubnavResultsBtn" role="tab" data-admin-view="results" aria-selected="false">Results</button>
-          <a class="admin-subnav-btn admin-subnav-link" id="adminSubnavAnnouncerLink" href="#admin/announcer">Announcer</a>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavEventPrepBtn" role="tab" data-admin-view="eventPrep" aria-selected="true">Event Prep</button>
+          <button type="button" class="admin-subnav-btn" id="adminSubnavEventDayBtn" role="tab" data-admin-view="eventDay" aria-selected="false">Event Day</button>
         </nav>
         <div class="ios-screen">
         <div class="stack">
-          <div id="adminViewDashboard" class="admin-view stack" data-admin-view="dashboard">
-          <div class="panel stack">
-            <div class="row row--between row--center">
-              <div>
-                <h3>Operational Dashboard</h3>
-                <p class="hint">High-signal event status with direct links into registrations, schedule flow, live submissions, and packets.</p>
-              </div>
-              <span class="badge" id="adminDashboardEventBadge">No active event</span>
-            </div>
-            <div class="note" id="adminDashboardEventMeta">Set an active event to begin.</div>
-            <div class="admin-dashboard-grid">
-              <div class="admin-dashboard-card">
-                <div class="admin-dashboard-label">Registrations</div>
-                <div class="admin-dashboard-value" id="adminDashboardRegistrationsValue">0</div>
-                <div class="hint" id="adminDashboardRegistrationsHint">No active event.</div>
-                <button type="button" class="ghost" data-admin-go-view="preEvent">Open Pre-Event</button>
-              </div>
-              <div class="admin-dashboard-card">
-                <div class="admin-dashboard-label">Live Day</div>
-                <div class="admin-dashboard-value" id="adminDashboardScheduleValue">0</div>
-                <div class="hint" id="adminDashboardScheduleHint">No scheduled ensembles.</div>
-                <button type="button" class="ghost" data-admin-go-view="liveEvent">Open Live Day</button>
-              </div>
-              <div class="admin-dashboard-card">
-                <div class="admin-dashboard-label">Review Queue</div>
-                <div class="admin-dashboard-value" id="adminDashboardSubmissionsValue">0</div>
-                <div class="hint" id="adminDashboardSubmissionsHint">No assessments in queue.</div>
-                <button type="button" class="ghost" data-admin-go-view="liveEvent">Open Live Day</button>
-              </div>
-              <div class="admin-dashboard-card">
-                <div class="admin-dashboard-label">Director Input Ready</div>
-                <div class="admin-dashboard-value" id="adminDashboardReadyValue">0</div>
-                <div class="hint" id="adminDashboardReadyHint">No active event.</div>
-                <button type="button" class="ghost" data-admin-go-view="results">Open Results</button>
-              </div>
-            </div>
-          </div>
-          </div>
-
-          <div id="adminViewEvents" class="admin-view stack" data-admin-view="preEvent">
+          <div id="adminViewEvents" class="admin-view stack" data-admin-view="eventPrep">
           <div class="panel" id="preEventFlowPanel">
             <h3>Registrations Guided Flow</h3>
             <p class="hint" id="preEventFlowSummary">Set an active event to begin.</p>
@@ -209,7 +164,69 @@
           </div>
           </div>
 
-          <div id="adminViewResults" class="admin-view stack is-hidden" data-admin-view="results">
+          <div id="adminViewEventDay" class="admin-view stack is-hidden" data-admin-view="eventDay">
+          <div class="panel">
+            <h3>Check-in / Schedule Flow</h3>
+            <p class="hint">Review the running order, stage transitions, and setup flow for scheduled ensembles.</p>
+            <div class="admin-workflow-card stack" id="adminLiveWorkflowCard">
+              <div class="row row--between row--center">
+                <div class="admin-workflow-title">Next Step</div>
+                <span class="badge" id="adminLiveCurrentStepPill">Start</span>
+              </div>
+              <div class="admin-workflow-next" id="adminLiveNextStepTitle">Set an active event to begin.</div>
+              <div class="hint" id="adminLiveNextStepHint">Then review the running order and manage stage flow for scheduled ensembles.</div>
+              <div class="row">
+                <button type="button" class="ghost btn--sm" id="adminLiveWorkflowActionBtn">Open Next Step</button>
+              </div>
+              <div class="admin-step-chips">
+                <span class="admin-step-chip" id="adminLiveStepChipEvent">Event</span>
+                <span class="admin-step-chip" id="adminLiveStepChipQueue">Running Order</span>
+                <span class="admin-step-chip" id="adminLiveStepChipSetup">Stage Flow</span>
+              </div>
+            </div>
+            <div id="liveEventContent"></div>
+          </div>
+          <div class="panel">
+            <h3>Review Queue</h3>
+            <p class="hint">Review submitted Event Day source sheets, fix routing if needed, and add them into the Results Packet.</p>
+            <div class="admin-workflow-card stack" id="adminSubmissionsWorkflowCard">
+              <div class="row row--between row--center">
+                <div class="admin-workflow-title">Next Step</div>
+                <span class="badge" id="adminSubmissionsCurrentStepPill">Start</span>
+              </div>
+              <div class="admin-workflow-next" id="adminSubmissionsNextStepTitle">Set an active event to begin.</div>
+              <div class="hint" id="adminSubmissionsNextStepHint">Then review incoming source sheets and add them into the Results Packet.</div>
+              <div class="row">
+                <button type="button" class="ghost btn--sm" id="adminSubmissionsWorkflowActionBtn">Open Next Step</button>
+              </div>
+              <div class="admin-step-chips">
+                <span class="admin-step-chip" id="adminSubmissionsStepChipEvent">Event</span>
+                <span class="admin-step-chip" id="adminSubmissionsStepChipQueue">Queue</span>
+                <span class="admin-step-chip" id="adminSubmissionsStepChipReview">Review</span>
+                <span class="admin-step-chip" id="adminSubmissionsStepChipOfficialize">Approve</span>
+              </div>
+            </div>
+            <div class="row row--between row--center">
+              <div class="note" id="adminSubmissionsHint">Waiting for submitted source sheets.</div>
+              <label>
+                Filter
+                <select id="adminSubmissionsFilter">
+                  <option value="pending">Pending Review</option>
+                  <option value="all">All</option>
+                  <option value="attached">Attached</option>
+                  <option value="uncertain">Uncertain</option>
+                  <option value="officialized">Approved</option>
+                  <option value="excluded">Excluded</option>
+                </select>
+              </label>
+            </div>
+            <div class="admin-submissions-layout">
+              <ul id="adminSubmissionsList" class="list"></ul>
+              <div id="adminSubmissionDetail" class="panel stack">
+                <div class="note">Select an assessment to review.</div>
+              </div>
+            </div>
+          </div>
           <div class="panel">
             <h3>Packets &amp; Results</h3>
             <p class="hint">Select a school, then review current-event official packets and release state for that school.</p>
@@ -278,75 +295,21 @@
               </table>
             </div>
           </div>
+          <div class="panel">
+            <h3>Program Export</h3>
+            <p class="hint">Build a printable program, create an event-wide results PDF, or export a CSV from the saved active-event schedule and repertoire data.</p>
+            <div class="row">
+              <button type="button" id="programPreviewBtn">Open Print Preview</button>
+              <button type="button" class="ghost" id="resultsPdfBtn">Create Results PDF</button>
+              <button type="button" class="ghost" id="programCsvBtn">Download CSV</button>
+              <button type="button" class="ghost" id="programPublishBtn">Publish to Homepage</button>
+            </div>
+            <div class="note" id="programExportStatus">Program export uses the active event schedule currently saved in the system.</div>
+          </div>
           <details class="panel admin-maintenance-panel">
-            <summary><strong>Maintenance</strong> <span class="hint">Repair and cleanup tools — use with care.</span></summary>
+            <summary><strong>Troubleshooting</strong> <span class="hint">Repair and recovery tools — use with care.</span></summary>
             <div class="stack admin-maintenance-body"></div>
           </details>
-          </div>
-
-          <div id="adminViewChair" class="admin-view stack is-hidden" data-admin-view="liveEvent">
-          <div class="panel">
-            <h3>Schedule &amp; Flow</h3>
-            <p class="hint">Review the running order, stage transitions, and setup flow for scheduled ensembles.</p>
-            <div class="admin-workflow-card stack" id="adminLiveWorkflowCard">
-              <div class="row row--between row--center">
-                <div class="admin-workflow-title">Next Step</div>
-                <span class="badge" id="adminLiveCurrentStepPill">Start</span>
-              </div>
-              <div class="admin-workflow-next" id="adminLiveNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminLiveNextStepHint">Then review the running order and manage stage flow for scheduled ensembles.</div>
-              <div class="row">
-                <button type="button" class="ghost btn--sm" id="adminLiveWorkflowActionBtn">Open Next Step</button>
-              </div>
-              <div class="admin-step-chips">
-                <span class="admin-step-chip" id="adminLiveStepChipEvent">Event</span>
-                <span class="admin-step-chip" id="adminLiveStepChipQueue">Running Order</span>
-                <span class="admin-step-chip" id="adminLiveStepChipSetup">Stage Flow</span>
-              </div>
-            </div>
-            <div id="liveEventContent"></div>
-          </div>
-          <div class="panel">
-            <h3>Review Queue</h3>
-            <p class="hint">Review submitted Event Day source sheets, fix routing if needed, and add them into the Results Packet.</p>
-            <div class="admin-workflow-card stack" id="adminSubmissionsWorkflowCard">
-              <div class="row row--between row--center">
-                <div class="admin-workflow-title">Next Step</div>
-                <span class="badge" id="adminSubmissionsCurrentStepPill">Start</span>
-              </div>
-              <div class="admin-workflow-next" id="adminSubmissionsNextStepTitle">Set an active event to begin.</div>
-              <div class="hint" id="adminSubmissionsNextStepHint">Then review incoming source sheets and add them into the Results Packet.</div>
-              <div class="row">
-                <button type="button" class="ghost btn--sm" id="adminSubmissionsWorkflowActionBtn">Open Next Step</button>
-              </div>
-              <div class="admin-step-chips">
-                <span class="admin-step-chip" id="adminSubmissionsStepChipEvent">Event</span>
-                <span class="admin-step-chip" id="adminSubmissionsStepChipQueue">Queue</span>
-                <span class="admin-step-chip" id="adminSubmissionsStepChipReview">Review</span>
-                <span class="admin-step-chip" id="adminSubmissionsStepChipOfficialize">Approve</span>
-              </div>
-            </div>
-            <div class="row row--between row--center">
-              <div class="note" id="adminSubmissionsHint">Waiting for submitted source sheets.</div>
-              <label>
-                Filter
-                <select id="adminSubmissionsFilter">
-                  <option value="pending">Pending Review</option>
-                  <option value="all">All</option>
-                  <option value="attached">Attached</option>
-                  <option value="uncertain">Uncertain</option>
-                  <option value="officialized">Approved</option>
-                  <option value="excluded">Excluded</option>
-                </select>
-              </label>
-            </div>
-            <div class="admin-submissions-layout">
-              <ul id="adminSubmissionsList" class="list"></ul>
-              <div id="adminSubmissionDetail" class="panel stack">
-                <div class="note">Select an assessment to review.</div>
-              </div>
-            </div>
-          </div>
           </div>
 
           <div id="adminViewAnnouncer" class="admin-view stack is-hidden" data-admin-view="announcer">
@@ -363,26 +326,19 @@
             <p class="hint">Create events and assign judges for official scoring lanes.</p>
             <div class="stack admin-settings-sections">
               <div class="admin-settings-block">
-                <h4>Create Event</h4>
+                <h4>Events</h4>
+                <ul id="eventList" class="list"></ul>
+              </div>
+              <div class="admin-settings-block">
+                <h4>Create New Event</h4>
                 <label>
                   Event Name
                   <input type="text" id="eventNameInput" placeholder="Eastern District MPA" />
-                </label>
-                <label>
-                  Event Mode
-                  <select id="eventModeInput">
-                    <option value="live">Schedule &amp; Flow Event</option>
-                    <option value="rehearsal">Rehearsal Event</option>
-                  </select>
                 </label>
                 <div class="row">
                   <button type="button" id="createEventBtn">Create Event</button>
                 </div>
                 <div class="note" id="activeEventDisplay">No active event.</div>
-              </div>
-              <div class="admin-settings-block">
-                <h4>Events</h4>
-                <ul id="eventList" class="list"></ul>
               </div>
               <div class="admin-settings-block">
                 <h4>Judge Assignments</h4>
@@ -406,46 +362,6 @@
                   <button type="submit">Save Assignments</button>
                 </form>
                 <div class="note" id="assignmentsError"></div>
-              </div>
-              <div class="admin-settings-block">
-                <h4>Confirmed Schedule Import</h4>
-                <p class="hint">Upload the final locked CSV schedule for the active event. This updates schedule times only.</p>
-                <label>
-                  Schedule CSV
-                  <input type="file" id="confirmedScheduleFileInput" accept=".csv,text/csv" />
-                </label>
-                <div class="row">
-                  <button type="button" id="confirmedScheduleAnalyzeBtn">Analyze CSV</button>
-                  <button type="button" class="ghost" id="confirmedScheduleApplyBtn" disabled>Apply to Active Event</button>
-                </div>
-                <div class="note" id="confirmedScheduleStatus">Choose a CSV file to preview matches.</div>
-                <div class="schedule-timeline-table-wrap">
-                  <table class="schedule-timeline-table" id="confirmedSchedulePreviewTable">
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Band Name</th>
-                        <th>Performance</th>
-                        <th>Match</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody id="confirmedSchedulePreviewBody">
-                      <tr><td colspan="5" class="hint">No schedule preview loaded.</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              <div class="admin-settings-block">
-                <h4>Program Export</h4>
-                <p class="hint">Build a printable program, create an event-wide results PDF, or export a CSV from the saved active-event schedule and repertoire data.</p>
-                <div class="row">
-                  <button type="button" id="programPreviewBtn">Open Print Preview</button>
-                  <button type="button" class="ghost" id="resultsPdfBtn">Create Results PDF</button>
-                  <button type="button" class="ghost" id="programCsvBtn">Download CSV</button>
-                  <button type="button" class="ghost" id="programPublishBtn">Publish to Homepage</button>
-                </div>
-                <div class="note" id="programExportStatus">Program export uses the active event schedule currently saved in the system.</div>
               </div>
             </div>
           </div>

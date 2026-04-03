@@ -92,20 +92,16 @@ export async function publishEventResultsOverviewPdf({
 
 export async function createEvent({
   name,
-  eventMode = "live",
   startAtDate,
   endAtDate,
   registrationDeadlineDate,
 }) {
   const deadlineDate = registrationDeadlineDate ||
     new Date(startAtDate.getFullYear(), startAtDate.getMonth() - 1, startAtDate.getDate());
-  const normalizedMode = String(eventMode || "").trim().toLowerCase() === "rehearsal" ?
-    "rehearsal" :
-    "live";
   return addDoc(collection(db, COLLECTIONS.events), {
     name: name.trim(),
     isActive: false,
-    eventMode: normalizedMode,
+    eventMode: "live",
     pizzaOrdersClosed: false,
     readinessState: {
       preflight: null,
@@ -169,12 +165,6 @@ export async function markReadinessStep({ eventId, stepKey, status, note = "" })
 export async function setReadinessWalkthrough({ eventId, status, note = "" }) {
   const fn = httpsCallable(functions, "setReadinessWalkthrough");
   const response = await fn({ eventId, status, note });
-  return response.data || {};
-}
-
-export async function cleanupRehearsalArtifacts({ eventId }) {
-  const fn = httpsCallable(functions, "cleanupRehearsalArtifacts");
-  const response = await fn({ eventId });
   return response.data || {};
 }
 

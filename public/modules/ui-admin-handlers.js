@@ -23,7 +23,6 @@ export function createAdminHandlerBinder({
   runEventPreflight,
   markReadinessStep,
   setReadinessWalkthrough,
-  cleanupRehearsalArtifacts,
   renderAdminReadinessView,
   scheduleAdminPreflightRefresh,
   showStatusMessage,
@@ -34,7 +33,6 @@ export function createAdminHandlerBinder({
   deleteSchool,
   deleteEnsemble,
   bulkImportSchools,
-  importConfirmedScheduleRows,
   provisionUser,
   updateUserDisplayName,
   deleteUserAccount,
@@ -47,9 +45,6 @@ export function createAdminHandlerBinder({
   unassignDirectorSchool,
   fetchRegisteredEnsembles,
   fetchScheduleEntries,
-  parseConfirmedScheduleCsv,
-  buildConfirmedSchedulePreview,
-  summarizeConfirmedSchedulePreview,
   buildProgramRows,
   buildProgramCsv,
   buildProgramHtml,
@@ -87,11 +82,9 @@ export function createAdminHandlerBinder({
   const setReadinessControlsDisabled = (disabled) => {
     state.admin.readinessInFlight = Boolean(disabled);
     const hasActiveEvent = Boolean(state.event.active?.id);
-    const isRehearsalEvent = String(state.event.active?.eventMode || "").trim().toLowerCase() === "rehearsal";
     const controlState = computeReadinessControlState({
       hasActiveEvent,
       readinessInFlight: state.admin.readinessInFlight,
-      isRehearsalEvent,
     });
     if (els.adminWalkthroughStartBtn) {
       els.adminWalkthroughStartBtn.disabled = controlState.walkthroughStart.disabled;
@@ -105,10 +98,6 @@ export function createAdminHandlerBinder({
       els.adminRunPreflightBtn.disabled = controlState.runPreflight.disabled;
       els.adminRunPreflightBtn.title = controlState.runPreflight.title;
     }
-    if (els.adminCleanupRehearsalBtn) {
-      els.adminCleanupRehearsalBtn.disabled = controlState.cleanupRehearsal.disabled;
-      els.adminCleanupRehearsalBtn.title = controlState.cleanupRehearsal.title;
-    }
     Array.from(document.querySelectorAll("[data-readiness-step]")).forEach((btn) => {
       btn.disabled = controlState.readinessStepsDisabled;
     });
@@ -119,177 +108,6 @@ export function createAdminHandlerBinder({
   const isReadinessBusy = () => Boolean(state.admin.readinessInFlight);
 
   const getActiveEvent = () => state.event.active || null;
-
-  const updateConfirmedScheduleControls = () => {
-    const summary = summarizeConfirmedSchedulePreview(state.admin.confirmedSchedulePreviewRows);
-    if (els.confirmedScheduleApplyBtn) {
-      els.confirmedScheduleApplyBtn.disabled = !summary.canApply;
-    }
-  };
-
-  const renderConfirmedSchedulePreview = () => {
-    if (!els.confirmedSchedulePreviewBody) return;
-    const rows = Array.isArray(state.admin.confirmedSchedulePreviewRows)
-      ? state.admin.confirmedSchedulePreviewRows
-      : [];
-    const summary = summarizeConfirmedSchedulePreview(rows);
-    if (els.confirmedScheduleStatus) {
-      if (!rows.length) {
-        els.confirmedScheduleStatus.textContent = "Choose a CSV file to preview matches.";
-      } else {
-        const parts = [
-          `${summary.selected}/${summary.total} matched`,
-          summary.needsReview ? `${summary.needsReview} need review` : null,
-          summary.unmatched ? `${summary.unmatched} unmatched` : null,
-          summary.duplicateCount ? `${summary.duplicateCount} duplicate target${summary.duplicateCount === 1 ? "" : "s"}` : null,
-        ].filter(Boolean);
-        els.confirmedScheduleStatus.textContent = parts.join(" - ");
-      }
-    }
-    updateConfirmedScheduleControls();
-    if (!rows.length) {
-      els.confirmedSchedulePreviewBody.innerHTML =
-        "<tr><td colspan='5' class='hint'>No schedule preview loaded.</td></tr>";
-      return;
-    }
-    els.confirmedSchedulePreviewBody.innerHTML = "";
-    const selectedIds = rows.map((row) => row.matchedEnsembleId).filter(Boolean);
-    const duplicateIds = new Set(
-      selectedIds.filter((ensembleId, index) => selectedIds.indexOf(ensembleId) !== index)
-    );
-    rows.forEach((row, index) => {
-      const tr = document.createElement("tr");
-      const indexCell = document.createElement("td");
-      indexCell.textContent = String(row.rowNumber || index + 1);
-      const nameCell = document.createElement("td");
-      nameCell.textContent = row.bandName || "";
-      const timeCell = document.createElement("td");
-      timeCell.textContent = row.performanceAt
-        ? row.performanceAt.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
-        : row.performanceTime || "Time missing";
-      const matchCell = document.createElement("td");
-      const select = document.createElement("select");
-      select.setAttribute("data-schedule-preview-index", String(index));
-      const blank = document.createElement("option");
-      blank.value = "";
-      blank.textContent = row.candidates.length ? "Select ensemble" : "No match found";
-      select.appendChild(blank);
-      const optionMap = new Map();
-      row.candidates.forEach((candidate) => {
-        optionMap.set(candidate.ensembleId, candidate);
-      });
-      (row.allCandidates || []).forEach((candidate) => {
-        if (!optionMap.has(candidate.ensembleId)) {
-          optionMap.set(candidate.ensembleId, candidate);
-        }
-      });
-      Array.from(optionMap.values()).forEach((candidate) => {
-        const option = document.createElement("option");
-        option.value = candidate.ensembleId;
-        const suffix = candidate.score ? ` (${candidate.score})` : "";
-        option.textContent = `${candidate.fullLabel}${suffix}`;
-        if (candidate.ensembleId === row.matchedEnsembleId) option.selected = true;
-        select.appendChild(option);
-      });
-      matchCell.appendChild(select);
-
-      const matchedCandidate = row.candidates.find((candidate) => candidate.ensembleId === row.matchedEnsembleId);
-      const duplicate = row.matchedEnsembleId && duplicateIds.has(row.matchedEnsembleId);
-      const statusText = duplicate
-        ? "Duplicate target"
-        : row.matchedEnsembleId
-          ? "Ready"
-          : row.status === "unmatched"
-            ? "No candidate"
-            : "Needs review";
-      const statusCell = document.createElement("td");
-      statusCell.textContent = `${statusText}${matchedCandidate?.existingPerformanceAt ? ` - currently ${matchedCandidate.existingPerformanceAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`;
-      tr.appendChild(indexCell);
-      tr.appendChild(nameCell);
-      tr.appendChild(timeCell);
-      tr.appendChild(matchCell);
-      tr.appendChild(statusCell);
-      els.confirmedSchedulePreviewBody.appendChild(tr);
-    });
-  };
-
-  const loadConfirmedSchedulePreview = async (file) => {
-    const event = getActiveEvent();
-    if (!event?.id) {
-      alertUser("Set the active 2026 event first.");
-      return;
-    }
-    if (!file) {
-      alertUser("Choose a CSV file first.");
-      return;
-    }
-    const defaultYear = event.startAt?.toDate?.()?.getFullYear?.() || new Date().getFullYear();
-    const text = await file.text();
-    const parsedRows = parseConfirmedScheduleCsv(text, { defaultYear });
-    if (!parsedRows.length) {
-      state.admin.confirmedSchedulePreviewRows = [];
-      state.admin.confirmedScheduleFileName = file.name || "";
-      renderConfirmedSchedulePreview();
-      alertUser("No schedule rows were found in that CSV.");
-      return;
-    }
-    const [registeredEntries, scheduleEntries] = await Promise.all([
-      fetchRegisteredEnsembles(event.id),
-      fetchScheduleEntries(event.id),
-    ]);
-    state.admin.confirmedScheduleFileName = file.name || "";
-    state.admin.confirmedSchedulePreviewRows = buildConfirmedSchedulePreview({
-      csvRows: parsedRows,
-      registeredEntries,
-      scheduleEntries,
-      schoolsList: state.admin.schoolsList,
-      getSchoolNameById,
-      normalizeEnsembleDisplayName,
-    });
-    renderConfirmedSchedulePreview();
-  };
-
-  const applyConfirmedSchedulePreview = async () => {
-    const event = getActiveEvent();
-    if (!event?.id) {
-      alertUser("Set the active 2026 event first.");
-      return;
-    }
-    const previewRows = Array.isArray(state.admin.confirmedSchedulePreviewRows)
-      ? state.admin.confirmedSchedulePreviewRows
-      : [];
-    const summary = summarizeConfirmedSchedulePreview(previewRows);
-    if (!summary.canApply) {
-      alertUser("Resolve every unmatched or duplicate schedule row before applying.");
-      return;
-    }
-    const payload = previewRows.map((row) => {
-      const selected = [...(row.candidates || []), ...(row.allCandidates || [])]
-        .find((candidate) => candidate.ensembleId === row.matchedEnsembleId);
-      return {
-        entryId: selected?.existingScheduleEntryId || "",
-        schoolId: selected?.schoolId || "",
-        schoolName: selected?.schoolName || "",
-        ensembleId: selected?.ensembleId || "",
-        ensembleName: selected?.ensembleName || row.bandName || "",
-        performanceAtDate: row.performanceAt,
-        orderIndex: row.orderIndex,
-      };
-    });
-    const confirmed = confirmUser(
-      `Apply ${payload.length} confirmed schedule time${payload.length === 1 ? "" : "s"} to the active event? This updates schedule docs only.`
-    );
-    if (!confirmed) return;
-    await importConfirmedScheduleRows({
-      eventId: event.id,
-      rows: payload,
-    });
-    scheduleAdminPreflightRefresh?.({ immediate: true });
-    if (els.confirmedScheduleStatus) {
-      els.confirmedScheduleStatus.textContent =
-        `Applied ${payload.length} schedule row${payload.length === 1 ? "" : "s"} from ${state.admin.confirmedScheduleFileName || "CSV"}.`;
-    }
-  };
 
   const loadProgramRows = async () => {
     const event = getActiveEvent();
@@ -749,9 +567,9 @@ export function createAdminHandlerBinder({
       if (!view) return;
       btn.addEventListener("click", () => {
         if (isReadinessBusy()) return;
-        if (view === "liveEvent" && !isAdminLiveEventEnabled()) return;
+        if (view === "eventDay" && !isAdminLiveEventEnabled()) return;
         if ((view === "setup" || view === "directory") && !isAdminSettingsEnabled()) return;
-        if (view === "preEvent") {
+        if (view === "eventPrep") {
           state.admin.selectedSchoolId = null;
           state.admin.selectedSchoolName = "";
         }
@@ -769,7 +587,7 @@ export function createAdminHandlerBinder({
       if (!view) return;
       btn.addEventListener("click", () => {
         if (isReadinessBusy()) return;
-        if (view === "preEvent") {
+        if (view === "eventPrep") {
           state.admin.selectedSchoolId = null;
           state.admin.selectedSchoolName = "";
         }
@@ -791,7 +609,7 @@ export function createAdminHandlerBinder({
     if (els.adminPacketsSchoolSelect) {
       els.adminPacketsSchoolSelect.addEventListener("change", () => {
         state.admin.packetsSchoolId = els.adminPacketsSchoolSelect?.value || "";
-        if (state.admin.currentView === "results") {
+        if (state.admin.currentView === "eventDay") {
           renderAdminPacketsBySchedule();
         }
       });
@@ -800,7 +618,7 @@ export function createAdminHandlerBinder({
     if (els.adminSubmissionsFilter) {
       els.adminSubmissionsFilter.addEventListener("change", () => {
         state.admin.rawAssessmentFilter = els.adminSubmissionsFilter?.value || "pending";
-        if (state.admin.currentView === "liveEvent") {
+        if (state.admin.currentView === "eventDay") {
           renderAdminLiveSubmissions();
         }
       });
@@ -809,7 +627,6 @@ export function createAdminHandlerBinder({
     if (els.createEventBtn) {
       els.createEventBtn.addEventListener("click", async () => {
         const name = els.eventNameInput?.value.trim() || "";
-        const eventMode = els.eventModeInput?.value || "live";
         if (!name) {
           alertUser("Enter an event name.");
           return;
@@ -819,7 +636,7 @@ export function createAdminHandlerBinder({
         const endAtDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
         els.createEventBtn.dataset.loadingLabel = "Creating...";
         await withLoading(els.createEventBtn, async () => {
-          await createEvent({ name, eventMode, startAtDate, endAtDate });
+          await createEvent({ name, startAtDate, endAtDate });
           if (els.eventNameInput) els.eventNameInput.value = "";
           scheduleAdminPreflightRefresh?.();
         });
@@ -899,7 +716,7 @@ export function createAdminHandlerBinder({
     const openAdminView = (view) => {
       if (!view) return;
       if (isReadinessBusy()) return;
-      if (view === "liveEvent" && !isAdminLiveEventEnabled()) return;
+      if (view === "eventDay" && !isAdminLiveEventEnabled()) return;
       if ((view === "setup" || view === "directory") && !isAdminSettingsEnabled()) return;
       state.admin.currentView = view;
       applyAdminView(view);
@@ -997,32 +814,6 @@ export function createAdminHandlerBinder({
       });
     });
 
-    if (els.adminCleanupRehearsalBtn) {
-      els.adminCleanupRehearsalBtn.addEventListener("click", async () => {
-        if (isReadinessBusy()) return;
-        const eventId = state.event.active?.id || "";
-        if (!eventId) {
-          alertUser("Set an active event first.");
-          return;
-        }
-        const ok = confirmUser("Delete unreleased rehearsal packets/open sheets for the active event?");
-        if (!ok) return;
-        setReadinessControlsDisabled(true);
-        try {
-          const result = await cleanupRehearsalArtifacts({ eventId });
-          alertUser(
-            `Cleanup complete. Open deleted: ${result.deletedOpenPackets || 0}; scheduled deleted: ${result.deletedScheduledPackets || 0}; released skipped: ${(result.skippedReleasedOpenPackets || 0) + (result.skippedReleasedScheduledPackets || 0)}.`
-          );
-          await renderAdminReadinessView?.();
-        } catch (error) {
-          console.error("cleanupRehearsalArtifacts failed", error);
-          alertUser(error?.message || "Unable to cleanup rehearsal artifacts.");
-        } finally {
-          setReadinessControlsDisabled(false);
-        }
-      });
-    }
-
     Array.from(document.querySelectorAll("[data-readiness-step]")).forEach((btn) => {
       btn.addEventListener("click", async () => {
         if (isReadinessBusy()) return;
@@ -1056,64 +847,6 @@ export function createAdminHandlerBinder({
         }
       });
     });
-
-    renderConfirmedSchedulePreview();
-
-    if (els.confirmedSchedulePreviewBody) {
-      els.confirmedSchedulePreviewBody.addEventListener("change", (event) => {
-        const select = event.target.closest("[data-schedule-preview-index]");
-        if (!select) return;
-        const index = Number(select.getAttribute("data-schedule-preview-index") || -1);
-        if (!Number.isInteger(index) || index < 0) return;
-        const previewRows = Array.isArray(state.admin.confirmedSchedulePreviewRows)
-          ? [...state.admin.confirmedSchedulePreviewRows]
-          : [];
-        const row = previewRows[index];
-        if (!row) return;
-        row.matchedEnsembleId = select.value || "";
-        row.status = row.matchedEnsembleId
-          ? "matched"
-          : row.candidates.length
-            ? "needs_review"
-            : "unmatched";
-        previewRows[index] = row;
-        state.admin.confirmedSchedulePreviewRows = previewRows;
-        renderConfirmedSchedulePreview();
-      });
-    }
-
-    if (els.confirmedScheduleAnalyzeBtn) {
-      els.confirmedScheduleAnalyzeBtn.addEventListener("click", async () => {
-        const file = els.confirmedScheduleFileInput?.files?.[0] || null;
-        els.confirmedScheduleAnalyzeBtn.dataset.loadingLabel = "Analyzing...";
-        await withLoading(els.confirmedScheduleAnalyzeBtn, async () => {
-          try {
-            await loadConfirmedSchedulePreview(file);
-          } catch (error) {
-            console.error("Confirmed schedule analyze failed", error);
-            const message = error?.message || "Unable to analyze confirmed schedule CSV.";
-            if (els.confirmedScheduleStatus) els.confirmedScheduleStatus.textContent = message;
-            alertUser(message);
-          }
-        });
-      });
-    }
-
-    if (els.confirmedScheduleApplyBtn) {
-      els.confirmedScheduleApplyBtn.addEventListener("click", async () => {
-        els.confirmedScheduleApplyBtn.dataset.loadingLabel = "Applying...";
-        await withLoading(els.confirmedScheduleApplyBtn, async () => {
-          try {
-            await applyConfirmedSchedulePreview();
-          } catch (error) {
-            console.error("Confirmed schedule apply failed", error);
-            const message = error?.message || "Unable to apply confirmed schedule.";
-            if (els.confirmedScheduleStatus) els.confirmedScheduleStatus.textContent = message;
-            alertUser(message);
-          }
-        });
-      });
-    }
 
     if (els.programPreviewBtn) {
       els.programPreviewBtn.addEventListener("click", async () => {
